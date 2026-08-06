@@ -1,0 +1,99 @@
+name: TrustNode bot poll
+
+on:
+  workflow_dispatch:
+    inputs:
+      telegram_update:
+        description: "Telegram update JSON (from webhook)"
+        required: false
+        default: ""
+      telegram_update_2:
+        description: "Long text chunk 2 (from webhook)"
+        required: false
+        default: ""
+      telegram_update_3:
+        description: "Long text chunk 3 (from webhook)"
+        required: false
+        default: ""
+      telegram_update_4:
+        description: "Long text chunk 4 (from webhook)"
+        required: false
+        default: ""
+      telegram_update_5:
+        description: "Long text chunk 5 (from webhook)"
+        required: false
+        default: ""
+      telegram_update_6:
+        description: "Long text chunk 6 (from webhook)"
+        required: false
+        default: ""
+      telegram_update_7:
+        description: "Long text chunk 7 (from webhook)"
+        required: false
+        default: ""
+      telegram_update_8:
+        description: "Long text chunk 8 (from webhook)"
+        required: false
+        default: ""
+      telegram_update_9:
+        description: "Long text chunk 9 (from webhook)"
+        required: false
+        default: ""
+      telegram_update_10:
+        description: "Long text chunk 10 (from webhook)"
+        required: false
+        default: ""
+
+concurrency:
+  # Ровно один ран бота за раз: параллельные раны (несколько кандидатов за cron,
+  # webhook + кнопки) конфликтуют за data/state.json и упрутся в rate limit GigaChat.
+  group: bot-poll
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run bot
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          VK_TOKEN: ${{ secrets.VK_TOKEN }}
+          VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
+          VK_ALBUM_ID: ${{ secrets.VK_ALBUM_ID }}
+          VK_CARD_URL_BASE: ${{ secrets.VK_CARD_URL_BASE }}
+          BOT_WORKER_URL: ${{ secrets.BOT_WORKER_URL }}
+          BOT_WORKER_TOKEN: ${{ secrets.BOT_WORKER_TOKEN }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          TELEGRAM_UPDATE_JSON: ${{ github.event.inputs.telegram_update }}
+          TELEGRAM_UPDATE_JSON_2: ${{ github.event.inputs.telegram_update_2 }}
+          TELEGRAM_UPDATE_JSON_3: ${{ github.event.inputs.telegram_update_3 }}
+          TELEGRAM_UPDATE_JSON_4: ${{ github.event.inputs.telegram_update_4 }}
+          TELEGRAM_UPDATE_JSON_5: ${{ github.event.inputs.telegram_update_5 }}
+          TELEGRAM_UPDATE_JSON_6: ${{ github.event.inputs.telegram_update_6 }}
+          TELEGRAM_UPDATE_JSON_7: ${{ github.event.inputs.telegram_update_7 }}
+          TELEGRAM_UPDATE_JSON_8: ${{ github.event.inputs.telegram_update_8 }}
+          TELEGRAM_UPDATE_JSON_9: ${{ github.event.inputs.telegram_update_9 }}
+          TELEGRAM_UPDATE_JSON_10: ${{ github.event.inputs.telegram_update_10 }}
+        run: python bot/main.py
+
+      # Фаза 1 миграции: состояние бота (state/черновики/история) живёт в Cloudflare
+      # KV/R2 через Worker (BOT_WORKER_URL/BOT_WORKER_TOKEN), а не в git. Ран больше
+      # не коммитит data/ — меньше нагрузка на GitHub и нет конфликтов пуша.
+      # Если remote-бэкенд не настроен (нет секретов), state.py сам запишет файлы,
+      # и они останутся на раннере (эфемерно) — поведение как раньше не гарантируется.

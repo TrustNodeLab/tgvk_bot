@@ -1,0 +1,11 @@
+# Render Blueprint: бесплатный веб-сервис рендера карточек TrustNode.
+# Деплой: dashboard.render.com -> New -> Blueprint (укажи свой git-репозиторий),
+# либо задеплой через render.yaml в корне репозитория.
+services:
+  - type: web
+    name: trustnode-card-render
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot/render_service.py
+    healthCheckPath: /health

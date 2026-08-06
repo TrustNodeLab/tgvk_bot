@@ -1,0 +1,34 @@
+name = "tgvk-bot-webhook"
+main = "worker.js"
+compatibility_date = "2024-11-01"
+
+# Cron: сканирование RSS каждые 5 минут (как раньше это делал GitHub Actions
+# по расписанию, теперь — Cloudflare). Отключается удалением секции.
+[triggers]
+crons = ["*/5 * * * *"]
+
+[vars]
+OWNER = "TrustNodeLab"
+REPO = "tgvk_bot"
+
+# KV: состояние бота (state.json, черновики, история). Создай один раз:
+#   npx wrangler kv namespace create BOT_KV
+# и вставь сюда id из вывода (и в preview_id).
+[[kv_namespaces]]
+binding = "BOT_KV"
+id = "3bc5ff47849e41d49396e6e26736a461"
+preview_id = "3bc5ff47849e41d49396e6e26736a461"
+
+# R2: PNG-файлы (карточки, черновики, история). Пока R2 не включён в дашборде,
+# worker.js хранит файлы как base64 в KV (см. /files/*). Когда включишь R2
+# (Cloudflare Dashboard -> R2 -> Start using) — раскомментируй и выполни:
+#   npx wrangler r2 bucket create tgvk-bot-files
+# [[r2_buckets]]
+# binding = "BOT_R2"
+# bucket_name = "tgvk-bot-files"
+
+# Секреты через `wrangler secret put` (не хранить в коде):
+#   GITHUB_TOKEN  — Personal Access Token с правами workflow
+#   WEBHOOK_SECRET — тот же secret_token, что передаётся в setWebhook
+#   BOT_AUTH     — общий ключ для бота (GH Actions) к /kv и /files/*,
+#                  если не задан — используется WEBHOOK_SECRET
