@@ -204,12 +204,14 @@ def _call_openai_compatible(api_key: str, api_base: str, model: str, messages: l
     return resp.json()["choices"][0]["message"]["content"]
 
 
-def extract_post_data(raw_text: str, prev_post: dict = None) -> dict:
+def extract_post_data(raw_text: str, prev_post: dict = None, provider: str = None) -> dict:
     """prev_post (опц.) — данные предыдущего поста канала: их количество/типы карточек
     и layout. Передаётся в промпт, чтобы бот не публиковал подряд посты с одинаковой
-    сеткой и набором карточек."""
-    api_key = os.environ["LLM_API_KEY"]
-    provider = os.environ.get("LLM_PROVIDER", "").strip().lower()
+    сеткой и набором карточек.
+
+    provider (опц.) — явный выбор: "gigachat" | "gemini" | иной OpenAI-совместимый.
+    Если не задан — берётся из LLM_PROVIDER env (по умолчанию gigachat)."""
+    p = (provider or os.environ.get("LLM_PROVIDER", "") or "").strip().lower()
 
     user_content = raw_text
     if prev_post:
@@ -229,10 +231,17 @@ def extract_post_data(raw_text: str, prev_post: dict = None) -> dict:
         {"role": "user", "content": user_content},
     ]
 
-    if provider == "gigachat":
-        model = os.environ.get("LLM_MODEL") or DEFAULT_GIGACHAT_MODEL
+    if p == "gigachat":
+        api_key = os.environ.get("GIGACHAT_API_KEY") or os.environ["LLM_API_KEY"]
+        model = os.environ.get("GIGACHAT_MODEL") or os.environ.get("LLM_MODEL") or DEFAULT_GIGACHAT_MODEL
         content = _call_gigachat_with_fallback(api_key, model, messages)
+    elif p == "gemini":
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ["LLM_API_KEY"]
+        api_base = os.environ.get("GEMINI_API_BASE") or os.environ.get("LLM_API_BASE", DEFAULT_API_BASE)
+        model = os.environ.get("GEMINI_MODEL") or os.environ.get("LLM_MODEL") or DEFAULT_MODEL
+        content = _call_openai_compatible(api_key, api_base, model, messages)
     else:
+        api_key = os.environ["LLM_API_KEY"]
         api_base = os.environ.get("LLM_API_BASE", DEFAULT_API_BASE)
         model = os.environ.get("LLM_MODEL") or DEFAULT_MODEL
         content = _call_openai_compatible(api_key, api_base, model, messages)

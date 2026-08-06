@@ -321,6 +321,29 @@ test("generateByRules: из русского текста получается �
   assert.ok(data.cards.some((c) => c.type === "list" && c.items.length >= 2), "тезисы собраны");
 });
 
+test("providerPlan: ротация провайдеров по времени суток МСК", async () => {
+  const { providerPlan } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
+  const env = { LLM_PROXY_URL: "https://render.test" };
+  const h = (hour) => ({ hour });
+  assert.equal(providerPlan(env, h(8)).joint, false, "утро — не совместный");
+  assert.equal(providerPlan(env, h(8)).order[0], "gigachat", "утро — GigaChat первым");
+  assert.equal(providerPlan(env, h(14)).joint, true, "день — совместный пост");
+  assert.equal(providerPlan(env, h(14)).order.length, 2, "день — оба LLM");
+  assert.equal(providerPlan(env, h(19)).order[0], "gemini", "вечер — Gemini первым");
+  assert.equal(providerPlan(env, h(23)).order[0], "gigachat", "ночь — GigaChat");
+  assert.deepEqual(providerPlan({}, h(14)).order, [], "без прокси — пустой план");
+});
+
+test("generatePostData: при недоступном прокси фолбэк на правила", async () => {
+  const { generatePostData } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
+  const env = { LLM_PROXY_URL: "https://render.test" };
+  globalThis.fetch = async () => new Response("boom", { status: 502 });
+  const text = "МВД посоветовало использовать виртуальную карту. За год похищено 15,8 млрд рублей.";
+  const data = await generatePostData(text, env, {});
+  assert.ok(data.caption && data.caption.includes("TrustNode"), "фолбэк на правила с footer");
+  delete globalThis.fetch;
+});
+
 test("webhook: обычный текст генерит карточку и превью на одобрение (без GitHub)", async () => {
   const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
   const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");

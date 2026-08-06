@@ -126,9 +126,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, json.dumps({"error": str(e)}).encode("utf-8"))
 
     def _handle_llm(self):
-        """Прокси к GigaChat: Worker не может сам ходить в GigaChat (CA Сбера),
-        поэтому текст поста генерится здесь, в Python-контуре с сертификатом НУЦ."""
-        if not os.environ.get("LLM_API_KEY"):
+        """Прокси к LLM: Worker не может сам ходить в GigaChat (CA Сбера),
+        поэтому текст поста генерится здесь, в Python-контуре с сертификатом НУЦ.
+        provider: "gigachat" | "gemini" — выбирает модель; по умолчанию LLM_PROVIDER env."""
+        if not (os.environ.get("LLM_API_KEY") or os.environ.get("GIGACHAT_API_KEY") or os.environ.get("GEMINI_API_KEY")):
             self._send(503, json.dumps({"error": "LLM_API_KEY не задан"}).encode("utf-8"))
             return
         try:
@@ -139,7 +140,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(400, json.dumps({"error": "пустой text"}).encode("utf-8"))
                 return
             prev = payload.get("prev_post")
-            result = extract_post_data(text, prev)
+            provider = str(payload.get("provider") or "").strip() or None
+            result = extract_post_data(text, prev, provider)
             self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"))
         except KeyError as e:
             self._send(503, json.dumps({"error": f"нет секрета: {e}"}).encode("utf-8"))

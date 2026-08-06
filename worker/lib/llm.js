@@ -1,8 +1,11 @@
 // Генерация текста поста прямо в Worker: без GitHub.
-// 1) Если заданы секреты LLM_API_KEY + LLM_API_BASE — зовём любой
-//    OpenAI-совместимый API (Gemini/DeepSeek и т.п.).
-// 2) Иначе — детерминированный генератор по правилам (работает всегда).
-// Возвращает { headline, caption, cards, tier, source }.
+// Провайдеры выбираются ротацией по времени суток МСК:
+//   утро (06-12) — GigaChat, день (12-17) — совместный пост (оба LLM),
+//   вечер (17-22) — Gemini, ночь (22-06) — любой доступный.
+// Если LLM_PROXY_URL не задан — детерминированный генератор по правилам.
+// Возвращает { headline, headline_lines, caption, cards, tier, source }.
+
+import { mskNow } from "./config.js";
 
 const RUSTORE = "https://www.rustore.ru/catalog/app/com.frauddetector.app";
 const SITE = "https://trustnodelab.github.io";
@@ -95,14 +98,15 @@ export function generateByRules(text, meta = {}) {
 // ---------- вызов LLM ----------
 
 // Прокси через Render-сервис: GigaChat из Worker напрямую нельзя (CA Сбера).
-// Render-сервис держит LLM_PROVIDER=gigachat + LLM_API_KEY и ходит в GigaChat сам.
-async function callProxyLlm(env, text, prevPost = null) {
+// Render-сервис держит ключи GigaChat/Gemini и ходит в них сам. provider:
+// "gigachat" | "gemini".
+async function callProxyLlm(env, text, prevPost = null, provider = "gigachat") {
   const base = (env.LLM_PROXY_URL || "").replace(/\/+$/, "");
   if (!base) throw new Error("LLM_PROXY_URL не задан");
   const res = await fetch(`${base}/llm`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, prev_post: prevPost }),
+    body: JSON.stringify({ text, prev_post: prevPost, provider }),
     signal: AbortSignal.timeout(115000),
   });
   const raw = await res.text();
@@ -112,7 +116,7 @@ async function callProxyLlm(env, text, prevPost = null) {
   return data;
 }
 
-// Нормализует «богатый» формат GigaChat (extract_prompt.md) под схему воркера:
+// Нормализует «богатый» формат LLM (extract_prompt.md) под схему воркера:
 // { headline, headline_lines, caption, cards, tier, source }.
 function normalizeProxyData(data, text) {
   const rawHeadline = Array.isArray(data.headline) ? data.headline : [data.headline];
@@ -199,11 +203,86 @@ function validateLlm(data, text) {
   return { headline, caption, cards, tier, source: "" };
 }
 
-export async function generatePostData(text, env, meta = {}) {
-  if (env.LLM_PROXY_URL) {
+// Объединяет результаты двух LLM в «совместный пост»: карточки берём из обоих
+// (без дублей по ключу), headline и caption — из более насыщенного ответа.
+function mergeDualPost(a, b) {
+  const score = (d) => (d.caption ? d.caption.length : 0) + (d.cards || []).length * 60;
+  const primary = score(a) >= score(b) ? a : b;
+  const secondary = primary === a ? b : a;
+
+  const seen = new Set();
+  const cards = [];
+  for (const c of [...primary.cards, ...secondary.cards]) {
+    const key = `${c.type}|${c.number}|${c.label}|${(c.items || []).join("/")}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    cards.push(c);
+    if (cards.length >= 4) break;
+  }
+
+  const headlineLines = [...primary.headline_lines];
+  for (const h of secondary.headline_lines) {
+    if (headlineLines.length >= 2) break;
+    if (!headlineLines.includes(h)) headlineLines.push(h);
+  }
+
+  return {
+    headline: headlineLines.join(" ") || primary.headline,
+    headline_lines: headlineLines,
+    caption: primary.caption,
+    cards: cards.length ? cards : primary.cards,
+    tier: primary.tier,
+    source: primary.source || secondary.source,
+  };
+}
+
+// Утро: GigaChat. День: совместный (оба). Вечер: Gemini. Ночь: любой доступный.
+export function providerPlan(env, msk) {
+  const hasProxy = !!(env.LLM_PROXY_URL || "").trim();
+  if (!hasProxy) return { joint: false, order: [] };
+  const h = msk.hour;
+  if (h >= 6 && h < 12) return { joint: false, order: ["gigachat", "gemini"] };
+  if (h >= 12 && h < 17) return { joint: true, order: ["gigachat", "gemini"] };
+  if (h >= 17 && h < 22) return { joint: false, order: ["gemini", "gigachat"] };
+  return { joint: false, order: ["gigachat", "gemini"] };
+}
+
+async function generateWithProviders(env, text, meta, order, joint) {
+  const src = meta.text || text;
+  const prev = meta.prev_post || null;
+  const errors = [];
+
+  if (joint) {
+    // Совместный пост: пробуем оба LLM, объединяем успешные ответы.
+    const attempts = await Promise.allSettled(
+      order.map((p) => callProxyLlm(env, src, prev, p).then((d) => normalizeProxyData(d, src)))
+    );
+    const ok = attempts.filter((a) => a.status === "fulfilled").map((a) => a.value);
+    if (ok.length >= 2) return mergeDualPost(ok[0], ok[1]);
+    if (ok.length === 1) return ok[0];
+    for (const a of attempts) errors.push(a.reason?.message || "unknown");
+    throw new Error(errors.join(" | "));
+  }
+
+  let lastErr = null;
+  for (const p of order) {
     try {
-      const data = await callProxyLlm(env, meta.text || text, meta.prev_post || null);
-      return normalizeProxyData(data, meta.text || text);
+      const data = await callProxyLlm(env, src, prev, p);
+      return normalizeProxyData(data, src);
+    } catch (e) {
+      lastErr = e;
+      errors.push(`${p}: ${e.message}`);
+    }
+  }
+  throw new Error(errors.join(" | ") || (lastErr && lastErr.message));
+}
+
+export async function generatePostData(text, env, meta = {}) {
+  const plan = providerPlan(env, mskNow());
+  if (plan.order.length) {
+    try {
+      const data = await generateWithProviders(env, meta.text || text, meta, plan.order, plan.joint);
+      return { ...data, llm_provider: plan.joint ? "gigachat+gemini" : plan.order[0] };
     } catch (e) {
       console.log("[llm] LLM-прокси недоступен, использую правила:", e.message);
     }
@@ -211,7 +290,7 @@ export async function generatePostData(text, env, meta = {}) {
   if (env.LLM_API_KEY && env.LLM_API_BASE) {
     try {
       const data = await callLlm(env, meta.text || text);
-      return validateLlm(data, text);
+      return { ...validateLlm(data, text), llm_provider: "gemini-direct" };
     } catch (e) {
       console.log("[llm] LLM недоступен, использую правила:", e.message);
     }
