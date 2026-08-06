@@ -50,7 +50,7 @@ async function renderCardBytes(env, data, meta = {}) {
           source: data.source || meta.source || sourceDomain(meta.link || ""),
           link: meta.link || "",
         }),
-        signal: AbortSignal.timeout(30000),
+        signal: AbortSignal.timeout(90000),
       });
       if (res.ok) {
         const bytes = new Uint8Array(await res.arrayBuffer());
