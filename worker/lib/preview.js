@@ -43,7 +43,7 @@ async function renderCardBytes(env, data, meta = {}) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          headline: data.headline,
+          headline: data.headline_lines && data.headline_lines.length ? data.headline_lines : data.headline,
           caption: data.caption,
           cards: data.cards || [],
           tier: data.tier || "news",

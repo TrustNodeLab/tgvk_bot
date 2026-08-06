@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-HTTP-сервис рендера карточек TrustNode (PIL + Exo2/Jura + реальное небо Москвы).
+HTTP-сервис TrustNode: рендер карточек (PIL + Exo2/Jura + небо Москвы)
+и прокси к GigaChat для генерации текстов постов.
 
-Позволяет Worker'у получать красивые карточки без GitHub: Worker шлёт сюда
-JSON с данными поста, сервис возвращает PNG. Стандартная библиотека — только
-Pillow и requests (см. requirements.txt), поэтому легко деплоится на любой
+Позволяет Worker'у получать красивые карточки и настоящие LLM-тексты без
+GitHub: Worker шлёт сюда JSON с данными поста, сервис возвращает PNG либо
+структурированный JSON от GigaChat. Стандартная библиотека — Pillow, requests,
+certifi и urllib3 (см. requirements.txt), поэтому легко деплоится на любой
 хостинг (Render free, локально и т.п.).
 
 Запуск локально:
@@ -14,6 +16,7 @@ Pillow и requests (см. requirements.txt), поэтому легко депл�
 
 Эндпоинты:
     POST /render  — JSON: {headline, caption, cards, tier, source, link} -> PNG
+    POST /llm     — JSON: {text, prev_post?} -> структурированный JSON GigaChat
     GET  /health  — {"ok": true}
 """
 import json
@@ -26,6 +29,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from card_generator import render_card  # noqa: E402
+from llm import extract_post_data  # noqa: E402
 
 PORT = int(os.environ.get("PORT", "8000"))
 YEAR = datetime.now().year
@@ -64,11 +68,18 @@ def map_data(payload: dict) -> dict:
     if not cards:
         cards = [{"type": "stat", "number": "—", "label": "информация", "desc": str(payload.get("caption", ""))[:200]}]
 
-    headline = str(payload.get("headline") or "Кибербезопасность: главное")
+    headline_raw = payload.get("headline")
+    if isinstance(headline_raw, list):
+        headline_lines = [str(h).strip() for h in headline_raw[:3] if str(h).strip()]
+    else:
+        headline_lines = [str(headline_raw or "Кибербезопасность: главное")]
+    if not headline_lines:
+        headline_lines = ["Кибербезопасность: главное"]
+
     return {
         "tags": [tag],
         "category": category,
-        "headline": [headline],
+        "headline": headline_lines,
         "tier": tier,
         "cards": cards,
         "quote": str(payload.get("quote") or DEFAULT_QUOTE),
@@ -96,6 +107,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send(404, json.dumps({"error": "not found"}).encode("utf-8"))
 
     def do_POST(self):
+        if self.path == "/llm":
+            self._handle_llm()
+            return
         if self.path != "/render":
             self._send(404, json.dumps({"error": "not found"}).encode("utf-8"))
             return
@@ -108,6 +122,27 @@ class Handler(BaseHTTPRequestHandler):
             with open(out, "rb") as f:
                 png = f.read()
             self._send(200, png, "image/png")
+        except Exception as e:  # noqa: BLE001
+            self._send(500, json.dumps({"error": str(e)}).encode("utf-8"))
+
+    def _handle_llm(self):
+        """Прокси к GigaChat: Worker не может сам ходить в GigaChat (CA Сбера),
+        поэтому текст поста генерится здесь, в Python-контуре с сертификатом НУЦ."""
+        if not os.environ.get("LLM_API_KEY"):
+            self._send(503, json.dumps({"error": "LLM_API_KEY не задан"}).encode("utf-8"))
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                self._send(400, json.dumps({"error": "пустой text"}).encode("utf-8"))
+                return
+            prev = payload.get("prev_post")
+            result = extract_post_data(text, prev)
+            self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        except KeyError as e:
+            self._send(503, json.dumps({"error": f"нет секрета: {e}"}).encode("utf-8"))
         except Exception as e:  # noqa: BLE001
             self._send(500, json.dumps({"error": str(e)}).encode("utf-8"))
 

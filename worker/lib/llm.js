@@ -94,6 +94,53 @@ export function generateByRules(text, meta = {}) {
 
 // ---------- вызов LLM ----------
 
+// Прокси через Render-сервис: GigaChat из Worker напрямую нельзя (CA Сбера).
+// Render-сервис держит LLM_PROVIDER=gigachat + LLM_API_KEY и ходит в GigaChat сам.
+async function callProxyLlm(env, text, prevPost = null) {
+  const base = (env.LLM_PROXY_URL || "").replace(/\/+$/, "");
+  if (!base) throw new Error("LLM_PROXY_URL не задан");
+  const res = await fetch(`${base}/llm`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, prev_post: prevPost }),
+    signal: AbortSignal.timeout(115000),
+  });
+  const raw = await res.text();
+  if (!res.ok) throw new Error(`LLM proxy ${res.status}: ${raw.slice(0, 160)}`);
+  const data = JSON.parse(raw);
+  if (data && data.error) throw new Error(`LLM вернул error: ${data.error}`);
+  return data;
+}
+
+// Нормализует «богатый» формат GigaChat (extract_prompt.md) под схему воркера:
+// { headline, headline_lines, caption, cards, tier, source }.
+function normalizeProxyData(data, text) {
+  const rawHeadline = Array.isArray(data.headline) ? data.headline : [data.headline];
+  const headlineLines = rawHeadline
+    .map((h) => String(h || "").trim())
+    .filter(Boolean)
+    .slice(0, 2);
+  const headline =
+    headlineLines.join(" ") || truncateAt(stripLink(String(text || "").replace(/\s+/g, " ")), 90) || "Кибербезопасность: главное";
+  const caption = String(data.caption || "").trim().slice(0, 1100);
+  const cards = Array.isArray(data.cards)
+    ? data.cards
+        .filter((c) => c && typeof c === "object")
+        .slice(0, 4)
+        .map((c) => ({
+          type: ["stat", "list", "compare"].includes(c.type) ? c.type : "stat",
+          number: String(c.number || "").slice(0, 12),
+          label: String(c.label || "").slice(0, 80),
+          desc: String(c.desc || "").slice(0, 160),
+          before: String(c.before || "").slice(0, 160),
+          after: String(c.after || "").slice(0, 160),
+          items: Array.isArray(c.items) ? c.items.map((i) => String(i).slice(0, 140)).slice(0, 4) : [],
+        }))
+    : [];
+  const tier = ["news", "real_threat", "medium", "safe"].includes(data.tier) ? data.tier : "news";
+  return { headline, headline_lines: headlineLines, caption, cards, tier, source: "" };
+}
+
 const LLM_SYSTEM =
   "Ты — редактор канала TrustNode о кибербезопасности. По тексту новости верни " +
   "ТОЛЬКО валидный JSON без пояснений, с полями: " +
@@ -153,6 +200,14 @@ function validateLlm(data, text) {
 }
 
 export async function generatePostData(text, env, meta = {}) {
+  if (env.LLM_PROXY_URL) {
+    try {
+      const data = await callProxyLlm(env, meta.text || text, meta.prev_post || null);
+      return normalizeProxyData(data, meta.text || text);
+    } catch (e) {
+      console.log("[llm] LLM-прокси недоступен, использую правила:", e.message);
+    }
+  }
   if (env.LLM_API_KEY && env.LLM_API_BASE) {
     try {
       const data = await callLlm(env, meta.text || text);

@@ -192,6 +192,8 @@ export async function publishPackage(env, pkg, dry) {
     caption: pkg.caption || "",
     tg_ok: tgOk,
     vk_ok: vkOk,
+    tg_err: tgErr || null,
+    vk_err: vkErr || null,
   });
   return { tgOk, vkOk };
 }
@@ -200,6 +202,8 @@ export async function publishPackage(env, pkg, dry) {
 export async function publishText(env, text, dry, kind, extra = {}) {
   let tgOk = false;
   let vkOk = false;
+  let tgErr = null;
+  let vkErr = null;
   if (dry) {
     console.log(`[dry-run] TG text -> ${env.TELEGRAM_CHANNEL_ID} (${text.length} симв.)`);
     tgOk = true;
@@ -207,7 +211,7 @@ export async function publishText(env, text, dry, kind, extra = {}) {
     try {
       await sendMessage(env, env.TELEGRAM_CHANNEL_ID, text, { parse_mode: "HTML" });
       tgOk = true;
-    } catch (e) { /* vk может пройти */ }
+    } catch (e) { tgErr = e.message; }
   }
   const plain = text.replace(/<[^>]+>/g, "").trim();
   if (dry) {
@@ -221,7 +225,7 @@ export async function publishText(env, text, dry, kind, extra = {}) {
         message: plain,
       });
       vkOk = true;
-    } catch (e) { /* ignore */ }
+    } catch (e) { vkErr = e.message; }
   }
   if (!tgOk && !vkOk) return false;
   await kv.addLog(env, {
@@ -234,6 +238,8 @@ export async function publishText(env, text, dry, kind, extra = {}) {
     caption: text,
     tg_ok: tgOk,
     vk_ok: vkOk,
+    tg_err: tgErr,
+    vk_err: vkErr,
   });
   return true;
 }
