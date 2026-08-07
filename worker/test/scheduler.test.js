@@ -377,6 +377,37 @@ test("publishPackage: target=tg публикует только в TG, не в V
   delete globalThis.fetch;
 });
 
+test("publishPackage: при провале VK карточка уходит в очередь ретраев", async () => {
+  const { publishPackage } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  installFetchMock(500);
+  const env = makeEnv();
+  const tinyPng = Uint8Array.from([137, 80, 78, 71, 1, 2, 3]);
+  await publishPackage(
+    env,
+    { id: "rt", kind: "news", title: "Фото", caption: "Текст", png: tinyPng, png_key: null, link: "", guid: "g2", source: "t" },
+    false,
+    "all"
+  );
+  const retries = await kv.getVkRetry(env);
+  assert.ok(retries.some((r) => r.id === "rt"), "пакет поставлен в очередь ретраев");
+  delete globalThis.fetch;
+});
+
+test("kv.addVkRetry: не дублирует пакет и увеличивает счётчик попыток", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const env = makeEnv();
+  const pkg = { id: "r1", kind: "news", title: "Тест", caption: "Текст", png: "QUJD", link: "" };
+  await kv.addVkRetry(env, pkg);
+  await kv.addVkRetry(env, pkg);
+  let list = await kv.getVkRetry(env);
+  assert.equal(list.length, 1, "один пакет в очереди");
+  assert.equal(list[0].attempts, 1, "счётчик попыток");
+  await kv.removeVkRetry(env, "r1");
+  list = await kv.getVkRetry(env);
+  assert.equal(list.length, 0, "удалён из очереди");
+});
+
 test("providerPlan: ротация провайдеров по времени суток МСК", async () => {
   const { providerPlan } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
   const env = { LLM_PROXY_URL: "https://render.test" };

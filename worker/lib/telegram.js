@@ -98,8 +98,9 @@ export function deleteMessage(env, chatId, messageId) {
 export async function vkUploadWallPhoto(env, bytes) {
   // Путь «сообщение сообщества» (photos.getMessagesUploadServer + saveMessagesPhoto)
   // доступен групповым токенам, в отличие от getWallUploadServer (error 27).
-  // VK upload-сервер транзиентно отклоняет картинку — ретраим, как в GH-контуре.
-  const MAX_ATTEMPTS = 3;
+  // VK upload-сервер транзиентно отклоняет картинку («пустой photo») — ретраим
+  // с экспоненциальным бэкоффом и пере-запросом upload_url, как в GH-контуре.
+  const MAX_ATTEMPTS = 5;
   let lastErr = null;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const upload = await vkCall(env, "photos.getMessagesUploadServer");
@@ -123,7 +124,7 @@ export async function vkUploadWallPhoto(env, bytes) {
     }
     lastErr = `VK: upload-сервер вернул пустой photo (${JSON.stringify(up).slice(0, 200)})`;
     if (attempt < MAX_ATTEMPTS - 1) {
-      await new Promise((r) => setTimeout(r, 1500 * (attempt + 1)));
+      await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
     }
   }
   throw new Error(lastErr);
@@ -196,30 +197,6 @@ export async function publishToTelegram(env, pkg, dry) {
   return { ok: true, target: "tg", message_id: res && res.message_id };
 }
 
-function bytesToBase64(bytes) {
-  let bin = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(bin);
-}
-
-// Сохраняет байты карточки в хранилище (R2 приоритет, иначе KV base64) под
-// ключом `files/cards/<id>.png` и возвращает публичный URL (для VK attachments).
-async function storeCardPublic(env, bytes, key) {
-  const fkey = "files/cards/" + key + ".png";
-  if (env.BOT_R2) {
-    await env.BOT_R2.put(fkey, bytes, { httpMetadata: { contentType: "image/png" } });
-  } else if (env.BOT_KV) {
-    await env.BOT_KV.put(fkey, bytesToBase64(bytes));
-  } else {
-    return null;
-  }
-  const base = (env.BOT_PUBLIC_URL || "").replace(/\/+$/, "");
-  return base ? `${base}/${fkey}` : null;
-}
-
 export async function publishToVk(env, pkg, dry) {
   const message =
     (pkg.caption || "").replace(/<[^>]+>/g, "").trim() || pkg.title || "🛡️ TrustNode";
@@ -227,36 +204,15 @@ export async function publishToVk(env, pkg, dry) {
     console.log(`[dry-run] VK wall.post message=${message.length} симв.`);
     return { ok: true, dry: true, target: "vk" };
   }
-  // Проверенный (GH-контуром) путь для группового токена: постим карточку
-  // как attachment-ссылку на публичный URL PNG (VK сам подтянет превью).
-  // Прямой загрузкой через getMessagesUploadServer VK возвращает «пустой photo».
+  // Единственный рабочий путь для группового токена — messages-upload фото.
+  // Фолбэка на «ссылку» больше нет: VK отвергает его (link_photo_sizing_rule) и
+  // пост уходит без фото. Если фото поднять не удалось — кидаем ошибку, чтобы
+  // пакет ушёл в очередь ретраев (см. scheduler.vkRetryQueue).
   const bytes = await pkgBytes(env, pkg);
-  let attachment = null;
-  if (bytes && bytes.length) {
-    try {
-      attachment = await vkUploadWallPhoto(env, bytes);
-      if (attachment) {
-        console.log(`[vk] карточка фото=${attachment} для «${pkg.title || pkg.id}»`);
-      }
-    } catch (e) {
-      attachment = null;
-      console.log(`[vk] upload фото не удался для «${pkg.title || pkg.id}»: ${e.message}`);
-    }
-    if (!attachment) {
-      const cardKey = (pkg.id || String(Date.now())).replace(/[^a-zA-Z0-9_-]/g, "");
-      try {
-        attachment = await storeCardPublic(env, bytes, cardKey);
-        if (attachment) {
-          console.log(`[vk] фолбэк: карточка по ссылке ${attachment} для «${pkg.title || pkg.id}»`);
-        }
-      } catch (e) {
-        attachment = null;
-        console.log(`[vk] не удалось сохранить карточку для «${pkg.title || pkg.id}»: ${e.message}`);
-      }
-    }
-  } else {
-    console.log(`[vk] wall.post без фото: нет PNG (png/png_key пуст) для «${pkg.title || pkg.id}»`);
+  if (!bytes || !bytes.length) {
+    throw new Error("нет PNG-карточки для VK (png/png_key пуст)");
   }
+  const attachment = await vkUploadWallPhoto(env, bytes);
   const res = await vkPostWall(env, message, attachment);
   return { ok: true, target: "vk", post_id: res && res.post_id, vk_attachment: attachment };
 }

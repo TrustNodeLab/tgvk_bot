@@ -195,6 +195,11 @@ export async function publishPackage(env, pkg, dry, target = "all") {
         vkAttach = (vkr && vkr.vk_attachment) || null;
       } catch (e) {
         vkErr = e.message;
+        // VK-публикация карточки не удалась (upload/размер фото) — ставим в
+        // очередь и пробуем на следующих тиках с фото. TG уже опубликован.
+        if (!dry && pkgHasCard(pkg)) {
+          await kv.addVkRetry(env, pkg);
+        }
       }
     }
     if (!tgOk && !vkOk) {
@@ -220,6 +225,11 @@ export async function publishPackage(env, pkg, dry, target = "all") {
     });
     return { tgOk, vkOk };
   }
+}
+
+// Пакет несёт карточку (PNG), которую можно догрузить в VK при ретрае.
+function pkgHasCard(pkg) {
+  return !!(pkg && (pkg.png || pkg.png_key));
 }
 
 // Публикация текстового поста (фолбэк/аудит без карточки).
@@ -266,6 +276,60 @@ export async function publishText(env, text, dry, kind, extra = {}) {
     vk_err: vkErr,
   });
   return true;
+}
+
+// ---------- ретраи VK-публикации карточек ----------
+
+// На каждом тике пробуем догрузить в VK карточки, которые не ушли с первого
+// раза (upload/размер фото). Успех -> лог + удаление из очереди; неудача ->
+// возврат в очередь с ростом счётчика; превышение лимита -> сдаёмся.
+export async function processVkRetries(env) {
+  const { MAX_VK_RETRY_ATTEMPTS } = await import("./limits.js");
+  const retries = await kv.getVkRetry(env);
+  if (!retries.length) return { processed: 0 };
+  const state = await kv.loadState(env);
+  const dry = !!state.dry_run;
+  let processed = 0;
+  for (const item of retries) {
+    if (item.attempts >= MAX_VK_RETRY_ATTEMPTS) {
+      console.log(`[vk-retry] отказ после ${item.attempts} попыток: ${item.title || item.id}`);
+      await kv.removeVkRetry(env, item.id);
+      processed++;
+      continue;
+    }
+    try {
+      const vkr = await publishToVk(env, item, dry);
+      const ok = !!(vkr && vkr.post_id);
+      await kv.removeVkRetry(env, item.id);
+      await kv.addLog(env, {
+        id: item.id,
+        kind: item.kind || "news",
+        title: item.title || "",
+        guid: item.guid || "",
+        link: item.link || "",
+        tags: item.tags || [],
+        source: item.source || "",
+        published_at: new Date().toISOString(),
+        caption: item.caption || "",
+        tg_ok: false,
+        vk_ok: true,
+        vk_post_id: (vkr && vkr.post_id) || null,
+        vk_attachment: (vkr && vkr.vk_attachment) || null,
+        tg_err: null,
+        vk_err: ok ? null : "нет post_id после успешного upload",
+        target: "vk_retry",
+        retried: item.attempts,
+      });
+      processed++;
+      console.log(`[vk-retry] опубликовано (попытка ${item.attempts}): ${item.title || item.id}`);
+    } catch (e) {
+      console.log(`[vk-retry] попытка ${item.attempts} не удалась для «${item.title || item.id}»: ${e.message}`);
+      await kv.removeVkRetry(env, item.id);
+      await kv.addVkRetry(env, { ...item, attempts: item.attempts });
+      processed++;
+    }
+  }
+  return { processed };
 }
 
 // ---------- черновики ----------
@@ -537,6 +601,13 @@ export async function tick(env) {
     await publishDueStock(env, now);
   } catch (e) {
     console.log("[scheduler] publish error:", e.message);
+  }
+
+  // 6b. ретраи VK-карточек, не ушедших ранее (upload/размер фото)
+  try {
+    await processVkRetries(env);
+  } catch (e) {
+    console.log("[scheduler] vk-retry error:", e.message);
   }
 
   // 7. аудиты

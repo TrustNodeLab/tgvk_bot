@@ -150,6 +150,45 @@ export async function listDrafts(env) {
   return drafts;
 }
 
+// ---------- vk_retry (очередь повторов публикации VK-карточки) ----------
+
+export async function getVkRetry(env) {
+  return (await kvGet(env, "vk_retry", [])) || [];
+}
+
+export async function setVkRetry(env, list) {
+  await kvSet(env, "vk_retry", list);
+}
+
+// Добавляем пакет в очередь, если его там ещё нет.
+export async function addVkRetry(env, pkg) {
+  const list = await getVkRetry(env);
+  if (list.some((p) => p.id === pkg.id)) return;
+  list.push({
+    id: pkg.id,
+    kind: pkg.kind || "news",
+    title: pkg.title || "",
+    caption: pkg.caption || "",
+    png_key: pkg.png_key || null,
+    png: pkg.png || null, // base64-строка или байты
+    link: pkg.link || "",
+    guid: pkg.guid || "",
+    source: pkg.source || "",
+    tags: pkg.tags || [],
+    attempts: Number(pkg.attempts || 0) + 1,
+    queued_at: new Date().toISOString(),
+  });
+  if (list.length > MAX_CANDIDATES_QUEUE) list.splice(0, list.length - MAX_CANDIDATES_QUEUE);
+  await setVkRetry(env, list);
+}
+
+export async function removeVkRetry(env, id) {
+  const list = await getVkRetry(env);
+  const next = list.filter((p) => p.id !== id);
+  await setVkRetry(env, next);
+  return next.length !== list.length;
+}
+
 // ---------- dispatch tracking (для фолбэка при аутэдже GitHub) ----------
 
 export async function markDispatch(env, guid, info) {
