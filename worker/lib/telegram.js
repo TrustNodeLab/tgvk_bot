@@ -196,6 +196,30 @@ export async function resolveTelegramChannel(env) {
   return candidates[0] || String(env.TELEGRAM_CHANNEL_ID || "");
 }
 
+// Сохраняет PNG-карточку в публичное хранилище (R2, иначе base64 в KV) и
+// возвращает публичный URL на неё. По этому URL VK откроет карточку Preview
+// при attachment-ссылке (токену сообщества недоступна загрузка фото на стену).
+async function storeCardPublic(env, key, bytes) {
+  const fullKey = `files/${key}`;
+  if (env.BOT_R2) {
+    await env.BOT_R2.put(fullKey, bytes, { httpMetadata: { contentType: "image/png" } });
+  } else if (env.BOT_KV) {
+    await env.BOT_KV.put(fullKey, bytesToBase64(bytes));
+  } else {
+    throw new Error("VK: нет хранилища для публичной карточки (BOT_R2/BOT_KV)");
+  }
+  const base = (env.BOT_PUBLIC_URL || "").replace(/\/+$/, "");
+  if (!base) throw new Error("VK: BOT_PUBLIC_URL не задан — карточку не постим ссылкой");
+  return `${base}/${fullKey}`;
+}
+
+function bytesToBase64(bytes) {
+  let bin = "";
+  const arr = Array.isArray(bytes) ? bytes : Array.from(bytes || []);
+  for (let i = 0; i < arr.length; i++) bin += String.fromCharCode(arr[i]);
+  return btoa(bin);
+}
+
 // Возвращает { ok:true, channel:"tg"|"vk", note } либо бросает ошибку.
 export async function publishToTelegram(env, pkg, dry) {
   const caption = pkg.caption || "";
@@ -230,24 +254,26 @@ export async function publishToVk(env, pkg, dry) {
     } catch (e) { /* если KV недоступен — публикуем */ }
   }
 
-  // Единственный рабочий путь для группового токена — messages-upload фото.
-  // Фолбэка на «ссылку» больше нет: VK отвергает его (link_photo_sizing_rule) и
-  // пост уходит без фото. Если фото поднять не удалось — кидаем ошибку, чтобы
-  // пакет ушёл в очередь ретраев (см. scheduler.vkRetryQueue).
+  // Токену сообщества недоступна загрузка фото на стену/сообщение с рендером
+  // (getWallUploadServer/uploadWallPhoto — error 27; photos.saveMessagesPhoto
+  // кладёт фото в приватный альбом сообщений, который на стене не виден).
+  // Рабочий путь для группового токена — публичная ссылка на карточку:
+  // храним PNG в R2/KV, постим attachments=<url>, VK сам подтянет превью.
   const bytes = await pkgBytes(env, pkg);
   if (!bytes || !bytes.length) {
     throw new Error("нет PNG-карточки для VK (png/png_key пуст)");
   }
   assertValidImage(bytes);
 
-  console.log(`[vk] загрузка фото для «${pkg.title || pkg.id}»…`);
-  const attachment = await vkUploadWallPhoto(env, bytes);
-  console.log(`[vk] фото загружено: ${attachment}`);
+  const cardKey = `cards/${dedupKey || Date.now()}.png`;
+  const cardUrl = await storeCardPublic(env, cardKey, bytes);
+  console.log(`[vk] карточка по ссылке: ${cardUrl}`);
 
   console.log("[vk] wall.post…");
-  const res = await vkPostWall(env, message, attachment);
+  const res = await vkPostWall(env, message, cardUrl);
   const postId = res && res.post_id;
   console.log(`[vk] wall.post успешен: post=${postId}`);
+  const attachment = cardUrl;
   if (dedupKey && postId) {
     try {
       await env.BOT_KV.put(`vk_posted:${dedupKey}`, JSON.stringify({ post_id: postId, vk_attachment: attachment, at: new Date().toISOString() }));

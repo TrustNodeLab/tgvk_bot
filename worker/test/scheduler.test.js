@@ -421,25 +421,20 @@ test("publishToVk: идемпотентность — повторная пуб�
   const { publishToVk } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/telegram.js");
   const kv = makeKV();
   const env = makeEnv(kv);
-  // мокаем VK API: photos.getMessagesUploadServer + upload + photos.saveMessagesPhoto + wall.post
+  env.BOT_PUBLIC_URL = "https://example.workers.dev";
+  // Новый путь: карточка сохраняется в KV публично, VK постит по ссылке.
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url);
-    if (u.includes("api.vk.com/method/photos.getMessagesUploadServer"))
-      return jsonResp({ response: { upload_url: "https://upload.vk.test/" } });
-    if (u.includes("https://upload.vk.test/"))
-      return jsonResp({ server: 1, photo: "p", hash: "h" });
-    if (u.includes("api.vk.com/method/photos.saveMessagesPhoto"))
-      return jsonResp({ response: [{ id: 77, owner_id: -1 }] });
     if (u.includes("api.vk.com/method/wall.post"))
       return jsonResp({ response: { post_id: 900 } });
     return jsonResp({});
   };
-  const validPng = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 0, 0, 0, 13]);
+  const validPng = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 0, 0, 0, 13, 0, 0, 0, 1]);
   const pkg = { id: "d1", guid: "dup-guid", title: "Тест", caption: "Текст", png: validPng, link: "" };
   const first = await publishToVk(env, pkg, false);
   assert.equal(first.ok, true);
   assert.equal(first.post_id, 900);
-  assert.equal(first.vk_attachment, "photo-1_77");
+  assert.ok(first.vk_attachment && first.vk_attachment.includes("https://example.workers.dev/files/cards/"), "attachment — публичная ссылка на карточку");
   const second = await publishToVk(env, pkg, false);
   assert.equal(second.deduped, true, "повторный вызов возвращает deduped:true");
   assert.equal(second.post_id, 900, "idempotent-ответ содержит post_id из KV");
