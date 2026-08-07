@@ -334,6 +334,49 @@ test("generateByRules: схемы мошенничества дают совет
   assert.ok(data.cards.some((c) => c.items.length >= 2), "в защите несколько пунктов");
 });
 
+test("generateByRules: заголовок берётся с первой строки, а не обрывок с лидом", async () => {
+  const { generateByRules } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
+  const text =
+    "Шадаев исключил создание мессенджера на Госуслугах\n\n" +
+    "Глава Минцифры назвал главной целью этого шага защиту личных данных пользователей. " +
+    "Мессенджер развивался бы на закрытой инфраструктуре.";
+  const data = generateByRules(text, { link: "https://ria.ru/x" });
+  assert.ok(data.headline.includes("Шадаев"), "заголовок из первой строки");
+  assert.ok(!data.headline.includes("Глава Минцифры"), "лид не склеен в заголовок");
+});
+
+test("generatePostData: принудительный провайдер rules не зовёт LLM", async () => {
+  const { generatePostData } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
+  const env = { LLM_PROXY_URL: "https://render.test", LLM_API_KEY: "x", LLM_API_BASE: "https://x.example" };
+  let fetchCalls = 0;
+  globalThis.fetch = async () => { fetchCalls++; return new Response("boom", { status: 502 }); };
+  const data = await generatePostData(
+    "Мошенники звонят россиянам, представляясь сотрудниками банка. Банк советует не называть код из SMS.",
+    env,
+    { provider: "rules" }
+  );
+  assert.equal(fetchCalls, 0, "при rules LLM не вызывается");
+  assert.ok(data.caption && data.caption.includes("TrustNode"), "фолбэк сгенерирован");
+  delete globalThis.fetch;
+});
+
+test("publishPackage: target=tg публикует только в TG, не в VK", async () => {
+  const { publishPackage } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  const calls = installFetchMock(500);
+  const env = makeEnv();
+  const result = await publishPackage(
+    env,
+    { id: "x", kind: "news", title: "Тест", caption: "Текст новости", png: null, png_key: null, link: "", guid: "g", source: "test" },
+    false,
+    "tg"
+  );
+  assert.equal(result.tgOk, true, "TG опубликован");
+  assert.equal(result.vkOk, false, "VK не вызывался");
+  assert.ok(calls.tg.some((c) => c.url.includes("/sendPhoto")), "отправка фото в TG");
+  assert.equal(calls.feeds.filter((u) => u.includes("api.vk.com")).length, 0, "VK API не вызывался");
+  delete globalThis.fetch;
+});
+
 test("providerPlan: ротация провайдеров по времени суток МСК", async () => {
   const { providerPlan } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
   const env = { LLM_PROXY_URL: "https://render.test" };

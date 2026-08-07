@@ -7,10 +7,15 @@ import { renderCard } from "./cardgen.js";
 import { sendPhoto } from "./telegram.js";
 
 // Инлайн-кнопки есть ТОЛЬКО на превью постов на одобрение.
+// Публикация: везде / только VK / только TG.
 export function approveButtons(id) {
   return [
     [
-      { text: "✅ Опубликовать", callback_data: `approve:${id}` },
+      { text: "🌐 Опубликовать везде", callback_data: `approve:${id}:all` },
+      { text: "🔵 В VK", callback_data: `approve:${id}:vk` },
+      { text: "🟢 В TG", callback_data: `approve:${id}:tg` },
+    ],
+    [
       { text: "🔄 Переделать", callback_data: `redo:${id}` },
       { text: "❌ Отменить", callback_data: `cancel:${id}` },
     ],
@@ -75,7 +80,7 @@ export async function sendGeneratedPreview(env, chatId, text, meta = {}) {
     reply_markup: { inline_keyboard: approveButtons(id) },
   });
 
-  await kv.saveDraft(env, {
+  const draft = {
     id,
     kind: "generated",
     status: "pending",
@@ -91,6 +96,8 @@ export async function sendGeneratedPreview(env, chatId, text, meta = {}) {
     admin_chat_id: chatId,
     preview_message_id: sent && sent.message_id,
     created_at: new Date().toISOString(),
-  });
+  };
+  if (meta.provider) draft.provider = meta.provider;
+  await kv.saveDraft(env, draft);
   return data;
 }

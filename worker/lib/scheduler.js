@@ -167,48 +167,59 @@ export async function dispatchToGitHub(env, cand) {
 
 // ---------- публикация ----------
 
-export async function publishPackage(env, pkg, dry) {
-  let tgOk = false;
-  let vkOk = false;
-  let tgErr = null;
-  let vkErr = null;
-  let vkPost = null;
-  let vkAttach = null;
-  try {
-    await publishToTelegram(env, pkg, dry);
-    tgOk = true;
-  } catch (e) {
-    tgErr = e.message;
+export async function publishPackage(env, pkg, dry, target = "all") {
+  if (target === "vk") return publishOne("vk");
+  if (target === "tg") return publishOne("tg");
+  return publishOne("all");
+
+  async function publishOne(mode) {
+    let tgOk = false;
+    let vkOk = false;
+    let tgErr = null;
+    let vkErr = null;
+    let vkPost = null;
+    let vkAttach = null;
+    if (mode !== "vk") {
+      try {
+        await publishToTelegram(env, pkg, dry);
+        tgOk = true;
+      } catch (e) {
+        tgErr = e.message;
+      }
+    }
+    if (mode !== "tg") {
+      try {
+        const vkr = await publishToVk(env, pkg, dry);
+        vkOk = true;
+        vkPost = (vkr && vkr.post_id) || null;
+        vkAttach = (vkr && vkr.vk_attachment) || null;
+      } catch (e) {
+        vkErr = e.message;
+      }
+    }
+    if (!tgOk && !vkOk) {
+      throw new Error(`publish failed tg=[${tgErr}] vk=[${vkErr}]`);
+    }
+    await kv.addLog(env, {
+      id: pkg.id,
+      kind: pkg.kind || "news",
+      title: pkg.title || "",
+      guid: pkg.guid || "",
+      link: pkg.link || "",
+      tags: pkg.tags || [],
+      source: pkg.source || "",
+      published_at: new Date().toISOString(),
+      caption: pkg.caption || "",
+      tg_ok: tgOk,
+      vk_ok: vkOk,
+      vk_post_id: vkPost,
+      vk_attachment: vkAttach,
+      tg_err: tgErr || null,
+      vk_err: vkErr || null,
+      target: mode,
+    });
+    return { tgOk, vkOk };
   }
-  try {
-    const vkr = await publishToVk(env, pkg, dry);
-    vkOk = true;
-    vkPost = (vkr && vkr.post_id) || null;
-    vkAttach = (vkr && vkr.vk_attachment) || null;
-  } catch (e) {
-    vkErr = e.message;
-  }
-  if (!tgOk && !vkOk) {
-    throw new Error(`publish failed tg=[${tgErr}] vk=[${vkErr}]`);
-  }
-  await kv.addLog(env, {
-    id: pkg.id,
-    kind: pkg.kind || "news",
-    title: pkg.title || "",
-    guid: pkg.guid || "",
-    link: pkg.link || "",
-    tags: pkg.tags || [],
-    source: pkg.source || "",
-    published_at: new Date().toISOString(),
-    caption: pkg.caption || "",
-    tg_ok: tgOk,
-    vk_ok: vkOk,
-    vk_post_id: vkPost,
-    vk_attachment: vkAttach,
-    tg_err: tgErr || null,
-    vk_err: vkErr || null,
-  });
-  return { tgOk, vkOk };
 }
 
 // Публикация текстового поста (фолбэк/аудит без карточки).

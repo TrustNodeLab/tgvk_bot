@@ -49,8 +49,13 @@ const HELP_TEXT =
   "/status — статус\n" +
   "/sources — источники и ключевые слова\n" +
   "/schedule — расписание слотов\n" +
-  "/draft &lt;текст&gt; — подготовить карточку вручную\n" +
-  "/publish — опубликовать ближайший пост со склада сейчас\n" +
+  "/draft &lt;текст&gt; — подготовить карточку (провайдер по расписанию)\n" +
+  "<b>Создание поста:</b>\n" +
+  "/gemini &lt;текст&gt; — карточка от Gemini\n" +
+  "/gigachat &lt;текст&gt; — карточка от GigaChat\n" +
+  "/noai &lt;текст&gt; — карточка без ИИ (по правилам)\n" +
+  "<b>Публикация:</b> кнопки под превью — везде / только VK / только TG\n" +
+  "/puball | /pubvk | /pubtg — опубликовать пост со склада (везде / VK / TG)\n" +
   "/skip &lt;guid&gt; — пропустить кандидата\n" +
   "/audit daily|weekly|event — опубликовать аудит сейчас\n" +
   "/stats — статистика публикаций\n" +
@@ -72,7 +77,13 @@ const COMMANDS = [
   { command: "sources", description: "Источники и ключевые слова" },
   { command: "schedule", description: "Расписание постов" },
   { command: "draft", description: "Отправить текст на подготовку карточки" },
-  { command: "publish", description: "Опубликовать сейчас" },
+  { command: "gemini", description: "Создать пост от Gemini" },
+  { command: "gigachat", description: "Создать пост от GigaChat" },
+  { command: "noai", description: "Создать пост без ИИ" },
+  { command: "publish", description: "Опубликовать сейчас (везде)" },
+  { command: "puball", description: "Опубликовать со склада везде" },
+  { command: "pubvk", description: "Опубликовать со склада в VK" },
+  { command: "pubtg", description: "Опубликовать со склада в TG" },
   { command: "skip", description: "Пропустить кандидата" },
   { command: "audit", description: "Опубликовать аудит" },
   { command: "stats", description: "Статистика" },
@@ -92,6 +103,12 @@ const COMMANDS = [
 
 const BTN_STATUS = "📊 Статус";
 const BTN_NEW_POST = "✍️ Сделать пост";
+const BTN_GEMINI = "✨ Пост от Gemini";
+const BTN_GIGACHAT = "🧠 Пост от GigaChat";
+const BTN_NOAI = "📝 Пост без ИИ";
+const BTN_PUB_ALL = "🌐 Опубликовать везде";
+const BTN_PUB_VK = "🔵 Опубликовать в VK";
+const BTN_PUB_TG = "🟢 Опубликовать в TG";
 const BTN_STOCK = "🗄 Склад";
 const BTN_STATS = "📜 Статистика";
 const BTN_SOURCES = "📡 Источники";
@@ -111,6 +128,8 @@ function replyKeyboard(rows) {
 
 const MAIN_KB = replyKeyboard([
   [BTN_STATUS, BTN_NEW_POST],
+  [BTN_GEMINI, BTN_GIGACHAT, BTN_NOAI],
+  [BTN_PUB_ALL, BTN_PUB_VK, BTN_PUB_TG],
   [BTN_STOCK, BTN_STATS],
   [BTN_SOURCES, BTN_SETTINGS],
   [BTN_DRYRUN, BTN_HELP],
@@ -125,6 +144,12 @@ const BTN_CMDS = {
   [BTN_SETTINGS]: "/settings",
   [BTN_HELP]: "/help",
   [BTN_DRYRUN]: "/dryrun",
+  [BTN_GEMINI]: "/gemini",
+  [BTN_GIGACHAT]: "/gigachat",
+  [BTN_NOAI]: "/noai",
+  [BTN_PUB_ALL]: "/puball",
+  [BTN_PUB_VK]: "/pubvk",
+  [BTN_PUB_TG]: "/pubtg",
 };
 
 // ---------- утилиты ----------
@@ -367,7 +392,7 @@ function decodePng(b64) {
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
 
-async function approveDraft(env, draft, dry) {
+async function approveDraft(env, draft, dry, target = "all") {
   await publishPackage(
     env,
     {
@@ -382,7 +407,8 @@ async function approveDraft(env, draft, dry) {
       source: draft.source || "",
       tags: draft.tags || [],
     },
-    dry
+    dry,
+    target
   );
   await kv.deleteDraft(env, draft.id);
   try {
@@ -402,9 +428,10 @@ async function handleCallback(env, cq, state) {
   const msgId = cq.message ? cq.message.message_id : null;
   const qid = cq.id;
   const data = cq.data || "";
-  const sep = data.indexOf(":");
-  const action = sep >= 0 ? data.slice(0, sep) : data;
-  const draftId = sep >= 0 ? data.slice(sep + 1) : "";
+  const segs = data.split(":");
+  const action = segs[0];
+  const draftId = segs[1] || "";
+  const target = segs[2] || "all";
 
   if (!isAdmin(env, chatId)) {
     try { await answerCallbackQuery(env, qid, "Нет доступа"); } catch (e) { /* ignore */ }
@@ -420,8 +447,9 @@ async function handleCallback(env, cq, state) {
       return;
     }
     try {
-      await approveDraft(env, draft, dry);
-      await answerCallbackQuery(env, qid, "✅ Опубликовано в VK и TG");
+      await approveDraft(env, draft, dry, target);
+      const label = target === "vk" ? "в VK" : target === "tg" ? "в TG" : "в VK и TG";
+      await answerCallbackQuery(env, qid, `✅ Опубликовано ${label}`);
     } catch (e) {
       try { await answerCallbackQuery(env, qid, `Ошибка: ${e.message.slice(0, 90)}`); } catch (e2) { /* ignore */ }
       try {
@@ -462,6 +490,7 @@ async function handleCallback(env, cq, state) {
         await sendGeneratedPreview(env, env.TELEGRAM_ADMIN_CHAT_ID, text, {
           link: draft.link || "",
           source: draft.source || "",
+          provider: draft.provider || undefined,
         });
       } catch (e) {
         try {
@@ -723,7 +752,10 @@ async function handleCommand(env, state, chatId, text) {
       break;
     }
 
-    case "/publish": {
+    case "/publish":
+    case "/puball":
+    case "/pubvk":
+    case "/pubtg": {
       const stock = await kv.getStock(env);
       let pkg = null;
       if (args) pkg = stock.find((p) => p.id === args || p.guid === args);
@@ -732,13 +764,43 @@ async function handleCommand(env, state, chatId, text) {
         await sendMessage(env, chatId, args ? "Пост не найден на складе." : "Склад пуст.");
         break;
       }
+      const tgt = cmd === "/pubvk" ? "vk" : cmd === "/pubtg" ? "tg" : "all";
+      const tgtLabel = tgt === "vk" ? "→ VK" : tgt === "tg" ? "→ TG" : "→ VK+TG";
       await kv.removeStock(env, pkg.id);
       try {
-        await publishPackage(env, { ...pkg, scheduled_for: Date.now() }, dry);
-        await sendMessage(env, chatId, `✅ Опубликовано${dry ? " (dry-run)" : ""}: ${escHtml(pkg.title || "")}`);
+        await publishPackage(env, { ...pkg, scheduled_for: Date.now() }, dry, tgt);
+        await sendMessage(env, chatId, `✅ Опубликовано${dry ? " (dry-run)" : ""} ${tgtLabel}: ${escHtml(pkg.title || "")}`);
       } catch (e) {
         await kv.addStock(env, pkg);
         await sendMessage(env, chatId, `⚠️ Ошибка: ${escHtml(e.message)}`);
+      }
+      break;
+    }
+
+    case "/gemini":
+    case "/gigachat":
+    case "/noai": {
+      const prov = cmd === "/gemini" ? "gemini" : cmd === "/gigachat" ? "gigachat" : "rules";
+      if (!args) {
+        await sendMessage(
+          env,
+          chatId,
+          `Формат: ${cmd} &lt;текст новости&gt;\nСоздам карточку без сохранения текста в истории. Провайдер: <b>${prov}</b>.`,
+          { parse_mode: "HTML" }
+        );
+        break;
+      }
+      const label = prov === "gemini" ? "✨ Gemini" : prov === "gigachat" ? "🧠 GigaChat" : "📝 по правилам";
+      try {
+        await sendGeneratedPreview(env, chatId, args, { provider: prov });
+        await sendMessage(
+          env,
+          chatId,
+          `🔨 <b>Карточка готова</b> (${label}). Кнопки под превью: 🌐 везде / 🔵 VK / 🟢 TG, 🔄 переделать, ❌ отменить.`,
+          { parse_mode: "HTML" }
+        );
+      } catch (e) {
+        await sendMessage(env, chatId, `⚠️ Не удалось подготовить: ${escHtml(e.message)}`);
       }
       break;
     }

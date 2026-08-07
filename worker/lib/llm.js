@@ -53,6 +53,24 @@ function stripLink(s) {
   return s.replace(/https?:\/\/\S+/gi, "").replace(/\s+/g, " ").trim();
 }
 
+// --- helpers для качественного заголовка без LLM ---
+
+// Первое содержательное предложение текста (для лида и для заголовка, если нет title).
+function firstSentence(body) {
+  const t = String(body || "").trim();
+  if (!t) return null;
+  const first = sentences(t)[0];
+  if (!first) return null;
+  const cleaned = stripLink(first);
+  return cleaned.length > 15 ? cleaned : null;
+}
+
+// Первая строка достаточно «похожа на заголовок», чтобы использовать целиком.
+function headlineWorthy(line) {
+  const l = String(line || "").trim();
+  return l.length >= 10 && l.length <= 110 && !/^(москва|риа|tass|интерфакс)/i.test(l);
+}
+
 const NUM_RE =
   /(\d[\d\s]*[.,]?\d*)\s*(%|млн|млрд|тыс\.?|₽|руб(?:лей)?|миллион|тысяч|млрд\s*руб|процент|из\s+\d+)/gi;
 
@@ -148,17 +166,27 @@ function extractFacts(sents) {
 
 export function generateByRules(text, meta = {}) {
   const src = String(meta.text || text || "");
-  const cleaned = stripLink(src).trim();
 
-  // Работаем и с заголовком (meta.title / отдельным), и с полным текстом.
+  // Текст обычно приходит как «строка-заголовок \n лид-абзац». Заголовок берём
+  // с первой строки (или явный meta.title), лид — с первой строки-абзаца.
   const titleText = stripLink(String(meta.title || "").trim());
-  const sents = sentences(cleaned || titleText);
+  const rawLines = src.split(/\n+/).map((l) => stripLink(l).trim()).filter(Boolean);
+  const firstLine = rawLines[0] || "";
+  const bodyText = rawLines.slice(1).join(" ").trim();
+  const cleaned = rawLines.join(" ");
 
-  const headline =
-    truncateAt(titleText || stripLink(sents[0]) || "Кибербезопасность: главное", 85);
+  const headline = truncateAt(
+    titleText || (firstLine && headlineWorthy(firstLine) ? firstLine : null) ||
+      firstSentence(bodyText || firstLine) ||
+      "Кибербезопасность: главное",
+    85
+  );
 
-  // Крючок-подзаголовок: первое содержательное предложение (после заголовка).
-  const lead = sents[1] && sents[1].length > 20 ? truncateAt(stripLink(sents[1]), 150) : null;
+  // Крючок-подзаголовок: первое содержательное предложение лид-абзаца.
+  const lead = firstSentence(bodyText || firstLine);
+
+  let sents = sentences(bodyText || firstLine);
+  if (sents.length < 2 && !titleText) sents = sentences(firstLine + " " + bodyText);
 
   const facts = extractFacts(sents);
   const scheme = detectScheme(cleaned || titleText);
@@ -189,21 +217,21 @@ export function generateByRules(text, meta = {}) {
     });
   }
 
-  const lines = [`<b>${sanitizeHtml(headline)}</b>`];
-  if (lead) lines.push(`\n${sanitizeHtml(lead)}`);
+  const captionLines = [`<b>${sanitizeHtml(headline)}</b>`];
+  if (lead) captionLines.push(`\n${sanitizeHtml(lead)}`);
   if (facts.length) {
-    lines.push("");
-    lines.push("🔍 " + (scheme ? "Как работает схема" : "Суть"));
-    for (const f of facts) lines.push("• " + sanitizeHtml(f));
+    captionLines.push("");
+    captionLines.push("🔍 " + (scheme ? "Как работает схема" : "Суть"));
+    for (const f of facts) captionLines.push("• " + sanitizeHtml(f));
   }
   if (scheme) {
-    lines.push("");
-    lines.push("🛡️ Что делать");
-    for (const t of buildAdvice(scheme)) lines.push("• " + sanitizeHtml(t));
+    captionLines.push("");
+    captionLines.push("🛡️ Что делать");
+    for (const t of buildAdvice(scheme)) captionLines.push("• " + sanitizeHtml(t));
   }
-  if (meta.link) lines.push("", `Источник: <a href="${sanitizeHtml(meta.link)}">ссылка</a>`);
-  lines.push("", FOOTER_HTML);
-  const caption = lines.join("\n");
+  if (meta.link) captionLines.push("", `Источник: <a href="${sanitizeHtml(meta.link)}">ссылка</a>`);
+  captionLines.push("", FOOTER_HTML);
+  const caption = captionLines.join("\n");
 
   return { headline, headline_lines: [headline], caption, cards, tier: "news", source: meta.source || "" };
 }
@@ -403,16 +431,31 @@ async function generateWithProviders(env, text, meta, order, joint) {
 }
 
 export async function generatePostData(text, env, meta = {}) {
+  // meta.provider: "gigachat" | "gemini" | "rules" — принудительный провайдер
+  // (кнопки/команды админа). "rules" — без LLM вообще.
+  const forced = meta.provider || "";
+
+  if (forced === "rules") {
+    return generateByRules(text, meta);
+  }
+
   const plan = providerPlan(env, mskNow());
-  if (plan.order.length) {
+  let order = plan.order;
+  let joint = plan.joint;
+  if (forced === "gemini" || forced === "gigachat") {
+    // Принудительно: пробуем только запрошенный провайдер.
+    order = [forced];
+    joint = false;
+  }
+  if (order.length) {
     try {
-      const data = await generateWithProviders(env, meta.text || text, meta, plan.order, plan.joint);
-      return { ...data, llm_provider: plan.joint ? "gigachat+gemini" : plan.order[0] };
+      const data = await generateWithProviders(env, meta.text || text, meta, order, joint);
+      return { ...data, llm_provider: joint ? "gigachat+gemini" : order[0] };
     } catch (e) {
       console.log("[llm] LLM-прокси недоступен, использую правила:", e.message);
     }
   }
-  if (env.LLM_API_KEY && env.LLM_API_BASE) {
+  if (!forced && env.LLM_API_KEY && env.LLM_API_BASE) {
     try {
       const data = await callLlm(env, meta.text || text);
       return { ...validateLlm(data, text), llm_provider: "gemini-direct" };
