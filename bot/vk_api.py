@@ -24,19 +24,13 @@ RETRY_DELAY = 2  # секунды, с прогрессией (2, 4)
 
 
 class VKAPI:
-    def __init__(self, token: str, group_id: int, album_id: int = None,
-                 card_url_base: str = None):
+    def __init__(self, token: str, group_id: int, album_id: int = None):
         self.token = token
         self.group_id = int(group_id)  # положительное число id сообщества
         # Опц. альбом сообщества для постоянного фото (см. README). Если задан,
         # сначала пробуем грузить в альбом, при любой ошибке откатываемся на
         # «сообщение сообщества» — так пост всегда уйдёт с картинкой.
         self.album_id = int(album_id) if album_id else None
-        # Опц. «ссылка-карточка»: если задан публичный базовый URL, где лежат
-        # карточки (например raw.githubusercontent или GitHub Pages), VK постит
-        # ссылку на карточку вместо загрузки фото (групповой токен не может
-        # грузить фото в альбом/на стену — error 27). См. README.
-        self.card_url_base = (card_url_base or "").rstrip("/") or None
         self.session = requests.Session()
 
     def _call(self, method, **params):
@@ -114,16 +108,4 @@ class VKAPI:
             owner_id=-self.group_id,
             from_group=1,
             message=message,
-        )
-
-    def post_card(self, message: str, card_url: str) -> dict:
-        """Пост, где карточка показана ссылкой-карточкой VK: передаём прямую ссылку
-        на PNG во attachments — VK сам подтянет превью изображения. Обход для
-        группового токена, которому запрещена загрузка фото в альбом/на стену."""
-        return self._call(
-            "wall.post",
-            owner_id=-self.group_id,
-            from_group=1,
-            message=message,
-            attachments=card_url,
         )

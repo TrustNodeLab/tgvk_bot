@@ -8,7 +8,6 @@ import re
 import sys
 import json
 import uuid
-import shutil
 import traceback
 from datetime import datetime, timedelta
 
@@ -21,7 +20,6 @@ from markdown import md_to_html, md_to_plain
 import state as st
 
 DATA_DIR = st.DATA_DIR
-CARDS_DIR = os.path.join(DATA_DIR, "cards")  # публичные карточки для link-card режима VK
 
 # Сводка последнего сгенерированного поста (карточки/layout), чтобы следующий пост
 # отличался сеткой и набором типов. Обновляется на каждый собранный черновик,
@@ -126,18 +124,11 @@ def _fit_caption(caption: str, limit: int = TG_CAPTION_LIMIT) -> str:
 
 
 def _vk_publish(vk: VKAPI, image_path: str, message_md: str, card_id: str):
-    """Публикует пост в VK с картинкой. В link-card режиме (VK_CARD_URL_BASE)
-    карточка должна быть доступна по публичному URL: в remote-режиме загружаем её
-    в R2 (cards/<id>.png), иначе копируем в data/cards/ (раньше коммитилось git'ом).
-    Постим ссылку на карточку. Без link-card — обычная загрузка фото с ретраями."""
+    """Публикует пост в VK с картинкой. Карточка всегда идёт GIF-документом
+    (docs.getWallUploadServer → docs.save): VK рендерит GIF на стене токеном
+    сообщества, тогда как messages-фото/PNG-документ картинкой не показываются.
+    card_id оставлен для совместимости вызовов; R2/ссылочный путь больше не нужен."""
     message = md_to_plain(message_md)
-    if getattr(vk, "card_url_base", None):
-        if st.REMOTE:
-            st.upload_card(image_path, card_id)
-        else:
-            os.makedirs(CARDS_DIR, exist_ok=True)
-            shutil.copy2(image_path, os.path.join(CARDS_DIR, f"{card_id}.png"))
-        return vk.post_card(message, f"{vk.card_url_base}/{card_id}.png")
     return vk.post_to_wall(image_path, message)
 
 
@@ -586,8 +577,7 @@ def run():
     vk_group_id = os.environ["VK_GROUP_ID"]
 
     tg = TelegramAPI(bot_token)
-    vk = VKAPI(vk_token, vk_group_id, album_id=os.environ.get("VK_ALBUM_ID"),
-               card_url_base=os.environ.get("VK_CARD_URL_BASE"))
+    vk = VKAPI(vk_token, vk_group_id, album_id=os.environ.get("VK_ALBUM_ID"))
 
     state = st.load_state()
     _last_post_summary.clear()

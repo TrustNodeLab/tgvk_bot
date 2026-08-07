@@ -194,8 +194,9 @@ def local_png(png_path, png_key=None):
 
 
 def upload_card(png_path: str, card_id: str):
-    """Загружает готовую карточку в R2 cards/<id>.png (для VK link-card режима,
-    когда VK_CARD_URL_BASE указывает на публичный URL Worker'а)."""
+    """Больше не используется: VK-публикация идёт через GIF-документ
+    (post_to_wall в vk_api.py), R2-загрузка карточки для link-card не нужна.
+    Оставлена для совместимости вызовов."""
     _upload_png(png_path, f"cards/{card_id}.png")
 
 
