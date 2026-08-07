@@ -321,6 +321,9 @@ async function handleApi(env, request, url) {
         if (b64 === null) return new Response("Not Found", { status: 404 });
         const bin = atob(b64);
         body = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+        // KV не хранит Content-Type: выводим по расширению, чтобы VK по ссылке
+        // распознал фото («link_photo_sizing_rule» ↑1 when octet-stream).
+        if (key.endsWith(".png")) ct = "image/png";
       } else {
         return new Response("No storage configured", { status: 500 });
       }

@@ -10,6 +10,10 @@ crons = ["*/5 * * * *"]
 [vars]
 OWNER = "TrustNodeLab"
 REPO = "tgvk_bot"
+# Публичный базовый URL воркера: нужен для VK-карточки по ссылке
+# (постим attachments=<url>, как в GH-контуре; upload фото групповому
+# токену запрещён -> «пустой photo»).
+BOT_PUBLIC_URL = "https://tgvk-bot-webhook.yellowwhale2008.workers.dev"
 
 # KV: состояние бота (state.json, черновики, история). Создай один раз:
 #   npx wrangler kv namespace create BOT_KV
