@@ -321,6 +321,19 @@ test("generateByRules: из русского текста получается �
   assert.ok(data.cards.some((c) => c.type === "list" && c.items.length >= 2), "тезисы собраны");
 });
 
+test("generateByRules: схемы мошенничества дают совет по защите в fallback", async () => {
+  const { generateByRules } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
+  const text =
+    "Мошенники звонят россиянам, представляясь сотрудниками банка. " +
+    "Лжеоператоры убеждают перевести деньги на «безопасный счёт». " +
+    "Банк советует не называть код из SMS и самим перезванивать по номеру карты.";
+  const data = generateByRules(text, { link: "https://example.com/news" });
+  assert.ok(data.caption.includes("🛡️ Что делать"), "есть блок защиты в caption");
+  assert.ok(data.caption.includes("безопасный счёт"), "совет про безопасный счёт");
+  assert.ok(data.cards.some((c) => c.type === "list" && c.label === "Как защититься"), "карточка защиты");
+  assert.ok(data.cards.some((c) => c.items.length >= 2), "в защите несколько пунктов");
+});
+
 test("providerPlan: ротация провайдеров по времени суток МСК", async () => {
   const { providerPlan } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
   const env = { LLM_PROXY_URL: "https://render.test" };

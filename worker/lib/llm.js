@@ -54,14 +54,94 @@ function stripLink(s) {
 }
 
 const NUM_RE =
-  /\d[\d\s]*[.,]?\d*\s*(?:%|млн|млрд|тыс\.?|₽|руб(?:лей)?|миллион|тысяч|млрд\s*руб)/gi;
+  /(\d[\d\s]*[.,]?\d*)\s*(%|млн|млрд|тыс\.?|₽|руб(?:лей)?|миллион|тысяч|млрд\s*руб|процент|из\s+\d+)/gi;
 
 function findStat(s) {
   const m = String(s).match(NUM_RE);
   if (!m) return null;
-  const raw = m[0].replace(/\s+/g, "");
+  const raw = m[0].replace(/\s+/g, " ");
   if (!/\d/.test(raw)) return null;
-  return raw.slice(0, 12);
+  return raw.slice(0, 14);
+}
+
+// ---------- детекторы схем мошенничества (для советов без LLM) ----------
+
+const SCHEME_DETECTORS = [
+  {
+    key: "call",
+    re: /звон(?:ят|ит|ают)|позвонил|телефонный|телефону|по телефону|оператор|из банка|безопасн[а-я]* счёт|представился|колл-центр/i,
+    hint: "Голосовой разговор",
+    tips: [
+      "Положите трубку и перезвоните в банк по номеру с обратной стороны карты",
+      "Сотрудники банка никогда не просят код из SMS или перевод «на безопасный счёт»",
+    ],
+  },
+  {
+    key: "sms",
+    re: /код (?:из|в )?[сs]мс?|смс|телефонную подтвержден|подтверждени|код подтверждени|вход в аккаунт/i,
+    hint: "Код из SMS",
+    tips: [
+      "Код из SMS — это ключ к вашему аккаунту. Никому его не называйте.",
+      "Банк, госорган и «служба безопасности» никогда не запрашивают код по телефону",
+    ],
+  },
+  {
+    key: "link",
+    re: /ссылк|фишинг|фейк|поддельн|скопирова|сообщени[а-я]*\s+закрыт|перейти по/i,
+    hint: "Фишинг-ссылки",
+    tips: [
+      "Проверяйте адрес сайта перед вводом данных — подделка может отличаться одной буквой",
+      "Не переходите по ссылкам и QR-кодам от незнакомцев и в сомнительных сообщениях",
+    ],
+  },
+  {
+    key: "investment",
+    re: /инвест|крипто|доход|вложени|пассивн|обман.*вклад|реклама.*заработ/i,
+    hint: "Инвестиции/крипто",
+    tips: [
+      "Гарантированный доход «прямо сейчас» — признак мошенничества",
+      "Не выводите средства на «безопасный счёт» и не передавайте доступ к кошельку",
+    ],
+  },
+  {
+    key: "identity",
+    re: /представил|пoлюцейск|следовател|фсб|прокурор|служб[а-я]* безопасност|госуслуг/i,
+    hint: "Фейковый сотрудник",
+    tips: [
+      "Незнакомец «из органов» не имеет права требовать деньги или доступ по телефону",
+      "Перепроверяйте личность звонящего, позвонив по официальному номеру ведомства",
+    ],
+  },
+  {
+    key: "gosuslugi",
+    re: /госуслуг|аккаунт\s+взлома|восстанови* доступ/i,
+    hint: "Аккаунт на Госуслугах",
+    tips: [
+      "Настоящие сотрудники не просят код из SMS или «подтверждение входа» по телефону",
+      "Смените пароль только через официальный портал, не по ссылке из сообщения",
+    ],
+  },
+];
+
+function detectScheme(text) {
+  for (const d of SCHEME_DETECTORS) {
+    const m = d.re.exec(String(text || "").toLowerCase());
+    if (m) return d;
+  }
+  return null;
+}
+
+// Вычленяем «факты» из описания: содержательные предложения-тезисы (кроме первого).
+function extractFacts(sents) {
+  const skipLead = /^((москва|риа|tass|интерфакс|прайм)[, -]*\d+\s*(авг|сент|окт|ноя|дек|янв|фев|мар|апр|мая|июн|июл)\s*,?)?/i;
+  return sents
+    .slice(1)
+    .filter((s) => {
+      const t = s.replace(/^[\s\d.,\-–:]+/, "").trim();
+      return t.length >= 25 && t.length <= 180;
+    })
+    .map((s) => truncateAt(stripLink(s).replace(/^[\s\d.,:–-]+/, "").replace(/[.;,]+$/, ""), 150))
+    .slice(0, 4);
 }
 
 // ---------- генератор по правилам ----------
@@ -69,40 +149,71 @@ function findStat(s) {
 export function generateByRules(text, meta = {}) {
   const src = String(meta.text || text || "");
   const cleaned = stripLink(src).trim();
-  const sents = sentences(cleaned || String(meta.title || ""));
+
+  // Работаем и с заголовком (meta.title / отдельным), и с полным текстом.
+  const titleText = stripLink(String(meta.title || "").trim());
+  const sents = sentences(cleaned || titleText);
 
   const headline =
-    truncateAt(stripLink(sents[0] || meta.title || "Кибербезопасность: главное"), 90);
+    truncateAt(titleText || stripLink(sents[0]) || "Кибербезопасность: главное", 85);
 
-  // тезисы: содержательные предложения, не первое
-  const body = sents
-    .slice(1)
-    .filter((s) => s.length >= 20 && s.length <= 170)
-    .map((s) => truncateAt(stripLink(s).replace(/[.;,]+$/, ""), 150))
-    .slice(0, 3);
+  // Крючок-подзаголовок: первое содержательное предложение (после заголовка).
+  const lead = sents[1] && sents[1].length > 20 ? truncateAt(stripLink(sents[1]), 150) : null;
 
+  const facts = extractFacts(sents);
+  const scheme = detectScheme(cleaned || titleText);
+
+  // Карточки собраны так, чтобы их хватало для визуала без текста.
   const cards = [];
   const statNum = findStat(cleaned || src);
   if (statNum) {
     cards.push({
       type: "stat",
       number: statNum,
-      label: "ключевая цифра новости",
-      desc: headline,
+      label: "ключевая цифра",
+      desc: stripLink(sents[0] || headline),
     });
   }
-  if (body.length) {
-    cards.push({ type: "list", label: "Суть", items: body });
+  if (facts.length >= 1) {
+    cards.push({ type: "list", label: scheme ? "Как это происходит" : "Суть", items: facts });
+  }
+  if (scheme) {
+    cards.push({ type: "list", label: "Как защититься", items: buildAdvice(scheme) });
+  }
+  // последний запасной — если ничего не набрали
+  if (!cards.length) {
+    cards.push({
+      type: "list",
+      label: "Суть",
+      items: sents.slice(0, 3).map((s) => truncateAt(stripLink(s), 150)),
+    });
   }
 
   const lines = [`<b>${sanitizeHtml(headline)}</b>`];
-  if (body.length) lines.push("");
-  for (const b of body) lines.push(sanitizeHtml(b));
-  if (meta.link) lines.push(`Источник: <a href="${sanitizeHtml(meta.link)}">ссылка</a>`);
+  if (lead) lines.push(`\n${sanitizeHtml(lead)}`);
+  if (facts.length) {
+    lines.push("");
+    lines.push("🔍 " + (scheme ? "Как работает схема" : "Суть"));
+    for (const f of facts) lines.push("• " + sanitizeHtml(f));
+  }
+  if (scheme) {
+    lines.push("");
+    lines.push("🛡️ Что делать");
+    for (const t of buildAdvice(scheme)) lines.push("• " + sanitizeHtml(t));
+  }
+  if (meta.link) lines.push("", `Источник: <a href="${sanitizeHtml(meta.link)}">ссылка</a>`);
   lines.push("", FOOTER_HTML);
   const caption = lines.join("\n");
 
-  return { headline, caption, cards, tier: "news", source: meta.source || "" };
+  return { headline, headline_lines: [headline], caption, cards, tier: "news", source: meta.source || "" };
+}
+
+// Советы по защите: из детектора + базовое правило. Без LLM.
+function buildAdvice(scheme) {
+  const tips = scheme ? scheme.tips.slice(0, 2) : [];
+  tips.push("При малейшем сомнении перезвоните сами — официальный номер с обратной стороны карты или сайта");
+  tips.push("Расскажите о схеме близким: мошенники часто давят на доверие и страх");
+  return tips.slice(0, 3);
 }
 
 // ---------- вызов LLM ----------
