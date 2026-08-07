@@ -46,6 +46,22 @@ export async function saveState(env, state) {
   await kvSet(env, "state", state);
 }
 
+// ---------- autopost (отдельный ключ, чтобы тумблер не терялся при перезаписи state) ----------
+
+export async function getAutopost(env) {
+  const v = await kvGet(env, "autopost", null);
+  if (v !== null && v !== undefined) return !!v;
+  // миграция: раньше автопостинг жил в state — фиксируем значение в отдельном ключе
+  const s = await loadState(env);
+  const legacy = !!s.autopost;
+  await kvSet(env, "autopost", legacy);
+  return legacy;
+}
+
+export async function setAutopost(env, on) {
+  await kvSet(env, "autopost", !!on);
+}
+
 export async function rememberGuid(env, state, guid) {
   if (!guid || state.seen_guids.includes(guid)) return;
   state.seen_guids.push(guid);

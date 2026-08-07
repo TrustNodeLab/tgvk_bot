@@ -801,7 +801,7 @@ return jsonResponse(out);
     return jsonResponse({
       state: {
         dry_run: !!state.dry_run,
-        autopost: !!state.autopost,
+        autopost: await kv.getAutopost(env),
         scan_chunk: state.meta?.scan_chunk ?? 0,
       },
       stock: stock.length,
@@ -1099,7 +1099,7 @@ async function handleCommand(env, state, chatId, text) {
       const msg =
         "📊 <b>Статус студии</b>\n\n" +
         `Режим: <b>${dry ? "dry-run" : "боевой"}</b>\n` +
-        `Автопостинг: <b>${state.autopost ? "вкл" : "выкл"}</b>\n` +
+        `Автопостинг: <b>${(await kv.getAutopost(env)) ? "вкл" : "выкл"}</b>\n` +
         `Источников: <b>${config.feeds?.length || 0}</b>, ключевых слов: <b>${config.keywords?.length || 0}</b>\n` +
         `Склад: <b>${stock.length}</b>, кандидатов: <b>${cands.length}</b>, черновиков: <b>${drafts.length}</b>\n` +
         `Опубликовано всего: <b>${log.length}</b>\n` +
@@ -1256,7 +1256,7 @@ async function handleCommand(env, state, chatId, text) {
       const msg =
         "⚙️ <b>Настройки</b>\n\n" +
         `Режим: <b>${dry ? "dry-run" : "боевой"}</b>\n` +
-        `Автопостинг: <b>${state.autopost ? "вкл" : "выкл"}</b>\n` +
+        `Автопостинг: <b>${(await kv.getAutopost(env)) ? "вкл" : "выкл"}</b>\n` +
         `Ключевые слова: +${extra} добавлено, −${removed} убрано\n` +
         `Окна (МСК): ${NEWS_WINDOWS.map((w) => `${minutesToClock(w.start)}–${minutesToClock(w.end)}`).join(", ")}`;
       await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
@@ -1271,9 +1271,11 @@ async function handleCommand(env, state, chatId, text) {
     }
 
     case "/autopost": {
-      state.autopost = args === "on";
+      const on = args ? args === "on" : !(await kv.getAutopost(env));
+      state.autopost = on;
       await kv.saveState(env, state);
-      await sendMessage(env, chatId, `✅ Автопостинг ${state.autopost ? "включён" : "выключен"}`);
+      await kv.setAutopost(env, on);
+      await sendMessage(env, chatId, `✅ Автопостинг ${on ? "включён" : "выключен"}`);
       break;
     }
 

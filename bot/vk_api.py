@@ -1,9 +1,18 @@
-"""Публикация поста с картинкой на стену сообщества VK через VK API (wall.post)."""
+"""Публикация поста с картинкой на стену сообщества VK через VK API (wall.post).
+
+Групповой токен не может грузить фото на стену/в альбом (error 27 на
+photos.save*), а загруженные как «сообщение сообщества» (photos.saveMessagesPhoto)
+фото на стене НЕ рендерятся картинкой (пост выглядит как «только текст»).
+Единственный рабочий путь для картинки на стене токеном сообщества — загрузить
+карточку как GIF-документ через docs.getWallUploadServer + docs.save: VK рендерит
+GIF-документ (doc, type=3) в посте встроенной картинкой.
+"""
 import os
 import sys
 import time
 
 import requests
+from PIL import Image
 
 VK_API_VERSION = "5.199"
 VK_BASE = "https://api.vk.com/method/"
@@ -40,87 +49,57 @@ class VKAPI:
             raise RuntimeError(f"VK API error on {method}: {data['error']}")
         return data["response"]
 
-    def _upload_image(self, upload_url, image_path, field):
-        """POST картинки на upload-сервер VK. Возвращает JSON-ответ сервера
-        (server/photo|photos_list/hash). Если сервер отклонил файл, поля пустые."""
-        with open(image_path, "rb") as f:
-            r = self.session.post(
-                upload_url,
-                files={field: ("photo.png", f, "image/png")},
-                timeout=60,
-            )
-        r.raise_for_status()
-        return r.json()
+    @staticmethod
+    def _png_to_gif(png_path: str, gif_path: str) -> None:
+        """Конвертация карточки PNG → GIF через PIL. VK рендерит GIF-документ в
+        посте встроенной картинкой, а PNG-документ показывает файлом-иконкой.
+        PIL-квантование до 256 цветов (как у проверенного эталона mmsiscsar155.gif)."""
+        img = Image.open(png_path).convert("RGB")
+        img.save(gif_path, format="GIF", save_all=False, optimize=False)
 
-    def _upload_messages_photo(self, image_path):
-        # Групповой токен VK не может звать photos.getWallUploadServer (error 27).
-        # Обходной путь: загружаем фото как «сообщение сообщества» через
-        # photos.getMessagesUploadServer + photos.saveMessagesPhoto — эти методы
-        # доступны групповым токенам (нужны scopes photos/messages/offline).
-        upload_info = self._call("photos.getMessagesUploadServer")
-        result = self._upload_image(upload_info["upload_url"], image_path, "photo")
-        if not result.get("photo"):
-            raise RuntimeError(f"VK: upload-сервер сообщений вернул пустой photo: {result}")
-        saved = self._call(
-            "photos.saveMessagesPhoto",
-            photo=result["photo"],
-            server=result["server"],
-            hash=result["hash"],
-        )
-        photo = saved[0]
-        return f"photo{photo['owner_id']}_{photo['id']}"
-
-    def _upload_album_photo(self, image_path):
-        # Путь «альбом сообщества» (фото там постоянное, не теряется из поста):
-        # photos.getUploadServer(album_id, group_id) + photos.save.
-        # Требует прав photos у токена; для группового токена VK вернёт error 27
-        # на getUploadServer — в этом случае вызывающий код откатывается на путь
-        # «сообщение сообщества» выше.
-        upload_info = self._call(
-            "photos.getUploadServer",
-            album_id=self.album_id,
-            group_id=self.group_id,
-        )
-        result = self._upload_image(upload_info["upload_url"], image_path, "file1")
-        if not result.get("photos_list"):
-            raise RuntimeError(f"VK: album upload-сервер вернул пустой photos_list: {result}")
-        saved = self._call(
-            "photos.save",
-            album_id=self.album_id,
-            group_id=self.group_id,
-            server=result["server"],
-            photos_list=result["photos_list"],
-            hash=result["hash"],
-        )
-        photo = saved[0]
-        return f"photo{photo['owner_id']}_{photo['id']}"
-
-    def _upload_wall_photo(self, image_path) -> str:
+    def _upload_wall_gif(self, image_path: str) -> str:
+        """Главный путь публикации картинки на стену токеном сообщества:
+        PNG → GIF → docs.getWallUploadServer → docs.save → doc{owner}_{id}.
+        Возвращает attachment `doc{owner}_{id}` (VK рендерит его картинкой)."""
         if not os.path.exists(image_path):
             raise FileNotFoundError(image_path)
-        # Задан альбом → сначала грузим в него. Если токен не может (error 27
-        # для группового токена) или альбом сломан — молча откатываемся дальше.
-        if self.album_id:
-            try:
-                return self._upload_album_photo(image_path)
-            except Exception as e:
-                print(f"[vk] album upload failed ({e}); falling back to messages photo",
-                      file=sys.stderr)
-        # Основной путь с ретраями на транзиентные отказы upload-сервера.
+        gif_path = image_path.rsplit(".", 1)[0] + ".gif"
+        try:
+            self._png_to_gif(image_path, gif_path)
+        except Exception as e:
+            raise RuntimeError(f"VK: не удалось сконвертировать карточку в GIF: {e}")
+
         last_err = None
         for attempt in range(MAX_ATTEMPTS):
             try:
-                return self._upload_messages_photo(image_path)
+                upload_info = self._call("docs.getWallUploadServer", group_id=self.group_id)
+                upload_url = upload_info["upload_url"]
+                with open(gif_path, "rb") as f:
+                    r = self.session.post(
+                        upload_url,
+                        files={"file": ("card.gif", f, "image/gif")},
+                        timeout=60,
+                    )
+                r.raise_for_status()
+                ur = r.json()
+                if not ur.get("file"):
+                    raise RuntimeError(f"VK: docs upload вернул пустой file: {ur}")
+                saved = self._call("docs.save", file=ur["file"])
+                saved = saved[0] if isinstance(saved, list) else saved
+                doc = (saved or {}).get("doc") or saved or {}
+                if not doc.get("id"):
+                    raise RuntimeError(f"VK: docs.save вернул без doc: {saved}")
+                return f"doc{doc['owner_id']}_{doc['id']}"
             except Exception as e:
                 last_err = e
                 if attempt < MAX_ATTEMPTS - 1:
                     time.sleep(RETRY_DELAY * (attempt + 1))
         raise RuntimeError(
-            f"VK: не удалось загрузить фото после {MAX_ATTEMPTS} попыток: {last_err}"
+            f"VK: не удалось загрузить GIF после {MAX_ATTEMPTS} попыток: {last_err}"
         )
 
     def post_to_wall(self, image_path: str, message: str) -> dict:
-        attachment = self._upload_wall_photo(image_path)
+        attachment = self._upload_wall_gif(image_path)
         return self._call(
             "wall.post",
             owner_id=-self.group_id,  # отрицательный owner_id = сообщество

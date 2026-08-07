@@ -436,8 +436,7 @@ def handle_menu_button(tg: TelegramAPI, admin_chat_id: str, state: dict, item: s
 
 def handle_autopost_button(tg: TelegramAPI, admin_chat_id: str, state: dict):
     """Нажатие кнопки-тумблера автопостинга (ВКЛ/ВЫКЛ) или пункта меню."""
-    state["autopost"] = not st.autopost_enabled(state)
-    st.save_state(state)
+    st.set_autopost(state, not st.autopost_enabled(state))
     msg_text, kb = autopost_message(state)
     tg.send_message(admin_chat_id, msg_text, reply_markup=kb)
 

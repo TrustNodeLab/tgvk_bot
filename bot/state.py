@@ -99,8 +99,20 @@ MAX_SEEN_GUIDS = 1000
 
 def autopost_enabled(state: dict) -> bool:
     """Автопостинг: при True бот сам публикует найденные новости в VK и TG-канал,
-    без подтверждения админом. Сохраняется в state.json."""
+    без подтверждения админом. Хранится в отдельном KV-ключе autopost, чтобы
+    перезапись state (воркером/ботом) не сбрасывала тумблер."""
+    if REMOTE:
+        v = _kv_get("autopost")
+        if v is not None:
+            return bool(v)
     return bool(state.get("autopost", False))
+
+
+def set_autopost(state: dict, on: bool):
+    state["autopost"] = bool(on)
+    if REMOTE:
+        _kv_put("autopost", bool(on))
+    save_state(state)
 
 
 def remember_guid(state: dict, guid: str):

@@ -442,7 +442,7 @@ async function handleStaleDispatches(env, state, now = new Date()) {
   const cooldownUntil = (state.meta.last_fallback || 0) + FALLBACK_COOLDOWN_MS;
   const dry = !!state.dry_run;
   for (const d of dispatches) {
-    if (d.status === "done") continue;
+    if (d.status === "done" || d.status === "fallback_posted") continue;
     // ручные черновики не фолбэчат: там превью/одобрение ведёт админ
     if (d.kind === "manual") continue;
     if ((d.guid || "").startsWith("m")) continue; // старые ручные диспатчи (до фикса kind)
@@ -510,7 +510,7 @@ async function publishDueStock(env, now = new Date()) {
 // превью прямо в воркере из первого кандидата и шлём админу на одобрение.
 // Не чаще одного: пока есть незакрытый черновик на одобрении, новые не шлём.
 async function autoGeneratePreviews(env, state) {
-  if (!state.autopost) return;
+  if (!(await kv.getAutopost(env))) return;
   if (!env.TELEGRAM_ADMIN_CHAT_ID) return;
   const drafts = await kv.listDrafts(env);
   if (drafts.some((d) => d.kind === "generated" && (!d.status || d.status === "pending"))) return;
