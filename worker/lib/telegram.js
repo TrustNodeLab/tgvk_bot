@@ -49,7 +49,19 @@ export async function vkCall(env, method, params = {}) {
     /* ignore */
   }
   if (data.error) {
-    throw new Error(`VK ${method}: ${data.error.error_code} ${data.error.error_msg}`);
+    const code = data.error.error_code;
+    const msg = data.error.error_msg || "";
+    // Человекочитаемые сообщения для типичных проблем с правами/токеном.
+    if (code === 5) {
+      throw new Error("VK access token недействителен или истёк (error 5)");
+    }
+    if (code === 27) {
+      throw new Error("VK access token не имеет необходимых прав для загрузки фото/публикации (error 27)");
+    }
+    if (code === 9 || code === 6) {
+      throw new Error(`VK rate limit (error ${code}): ${msg}`);
+    }
+    throw new Error(`VK ${method}: ${code} ${msg}`);
   }
   return data.response;
 }
@@ -204,6 +216,20 @@ export async function publishToVk(env, pkg, dry) {
     console.log(`[dry-run] VK wall.post message=${message.length} симв.`);
     return { ok: true, dry: true, target: "vk" };
   }
+
+  // Idempotency: если этот пост (по id/guid) уже успешно ушёл в VK, не постим
+  // повторно. Защита от дублей при timeout/ретрае (см. процессVkRetries).
+  const dedupKey = String(pkg.guid || pkg.id || "");
+  if (dedupKey) {
+    try {
+      const prev = await env.BOT_KV.get(`vk_posted:${dedupKey}`, "json");
+      if (prev && prev.post_id) {
+        console.log(`[vk] уже опубликован post=${prev.post_id}, повторная публикация пропущена: ${pkg.title || pkg.id}`);
+        return { ok: true, target: "vk", post_id: prev.post_id, vk_attachment: prev.vk_attachment, deduped: true };
+      }
+    } catch (e) { /* если KV недоступен — публикуем */ }
+  }
+
   // Единственный рабочий путь для группового токена — messages-upload фото.
   // Фолбэка на «ссылку» больше нет: VK отвергает его (link_photo_sizing_rule) и
   // пост уходит без фото. Если фото поднять не удалось — кидаем ошибку, чтобы
@@ -212,9 +238,38 @@ export async function publishToVk(env, pkg, dry) {
   if (!bytes || !bytes.length) {
     throw new Error("нет PNG-карточки для VK (png/png_key пуст)");
   }
+  assertValidImage(bytes);
+
+  console.log(`[vk] загрузка фото для «${pkg.title || pkg.id}»…`);
   const attachment = await vkUploadWallPhoto(env, bytes);
+  console.log(`[vk] фото загружено: ${attachment}`);
+
+  console.log("[vk] wall.post…");
   const res = await vkPostWall(env, message, attachment);
-  return { ok: true, target: "vk", post_id: res && res.post_id, vk_attachment: attachment };
+  const postId = res && res.post_id;
+  console.log(`[vk] wall.post успешен: post=${postId}`);
+  if (dedupKey && postId) {
+    try {
+      await env.BOT_KV.put(`vk_posted:${dedupKey}`, JSON.stringify({ post_id: postId, vk_attachment: attachment, at: new Date().toISOString() }));
+    } catch (e) { /* ignore */ }
+  }
+  return { ok: true, target: "vk", post_id: postId, vk_attachment: attachment };
+}
+
+// Проверка, что карточка — валидное изображение (PNG или JPEG), по magic-байтам.
+// Путь «нет карточки» и «битая карточка» = отказ публикации, без постов-пустышек.
+export function assertValidImage(bytes) {
+  if (!bytes || bytes.length < 8) {
+    throw new Error("VK: карточка пустая или слишком маленькая, чтобы быть изображением");
+  }
+  const b = bytes;
+  const isPng =
+    b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 && // .PNG
+    b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a;
+  const isJpeg = b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
+  if (!isPng && !isJpeg) {
+    throw new Error("VK: файл не является изображением (ожидался PNG или JPEG)");
+  }
 }
 
 // Читает PNG пакета из R2 (или KV base64), если в пакете только ключ.

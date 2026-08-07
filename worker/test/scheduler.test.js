@@ -408,6 +408,46 @@ test("kv.addVkRetry: не дублирует пакет и увеличивае�
   assert.equal(list.length, 0, "удалён из очереди");
 });
 
+test("assertValidImage: валидный PNG проходит, битый файл — отказ", async () => {
+  const { assertValidImage } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/telegram.js");
+  const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13]);
+  assert.doesNotThrow(() => assertValidImage(png), "PNG с корректным magic-байтом");
+  const text = new Uint8Array([0x74, 0x65, 0x78, 0x74, 0x74, 0x00, 0x00, 0x00]);
+  assert.throws(() => assertValidImage(text), /не является изображением/, "не-картинка отклоняется");
+  assert.throws(() => assertValidImage(new Uint8Array([1, 2, 3])), /слишком маленькая/, "пустая карточка отклоняется");
+});
+
+test("publishToVk: идемпотентность — повторная публикация пропускается (dedup)", async () => {
+  const { publishToVk } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/telegram.js");
+  const kv = makeKV();
+  const env = makeEnv(kv);
+  // мокаем VK API: photos.getMessagesUploadServer + upload + photos.saveMessagesPhoto + wall.post
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes("api.vk.com/method/photos.getMessagesUploadServer"))
+      return jsonResp({ response: { upload_url: "https://upload.vk.test/" } });
+    if (u.includes("https://upload.vk.test/"))
+      return jsonResp({ server: 1, photo: "p", hash: "h" });
+    if (u.includes("api.vk.com/method/photos.saveMessagesPhoto"))
+      return jsonResp({ response: [{ id: 77, owner_id: -1 }] });
+    if (u.includes("api.vk.com/method/wall.post"))
+      return jsonResp({ response: { post_id: 900 } });
+    return jsonResp({});
+  };
+  const validPng = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 0, 0, 0, 13]);
+  const pkg = { id: "d1", guid: "dup-guid", title: "Тест", caption: "Текст", png: validPng, link: "" };
+  const first = await publishToVk(env, pkg, false);
+  assert.equal(first.ok, true);
+  assert.equal(first.post_id, 900);
+  assert.equal(first.vk_attachment, "photo-1_77");
+  const second = await publishToVk(env, pkg, false);
+  assert.equal(second.deduped, true, "повторный вызов возвращает deduped:true");
+  assert.equal(second.post_id, 900, "idempotent-ответ содержит post_id из KV");
+  const stored = await kv.get(`vk_posted:dup-guid`, "json");
+  assert.ok(stored && stored.post_id === 900, "маркер idempotency записан в KV");
+  delete globalThis.fetch;
+});
+
 test("providerPlan: ротация провайдеров по времени суток МСК", async () => {
   const { providerPlan } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
   const env = { LLM_PROXY_URL: "https://render.test" };
