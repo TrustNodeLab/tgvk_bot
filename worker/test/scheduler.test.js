@@ -422,19 +422,36 @@ test("publishToVk: идемпотентность — повторная пуб�
   const kv = makeKV();
   const env = makeEnv(kv);
   env.BOT_PUBLIC_URL = "https://example.workers.dev";
-  // Новый путь: карточка загружается на GitHub (raw), VK постит по ссылке.
+  // Новый путь: PNG → GIF, затем docs.getWallUploadServer + upload + docs.save,
+  // wall.post c attachment=doc{owner}_{id}.
+  let uploads = 0;
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url);
+    if (u.includes("api.vk.com/method/docs.getWallUploadServer"))
+      return jsonResp({ response: { upload_url: "https://pu.vk.com/upload_doc?test=1" } });
+    if (u.includes("api.vk.com/method/docs.save"))
+      return jsonResp({ response: [{ type: "doc", doc: { id: 111, owner_id: -1 } }] });
+    if (u.includes("pu.vk.com"))
+      return jsonResp({ file: "1|2|3|png|card.gif" });
     if (u.includes("api.vk.com/method/wall.post"))
       return jsonResp({ response: { post_id: 900 } });
     return jsonResp({});
   };
-  const validPng = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 0, 0, 0, 13, 0, 0, 0, 1]);
-  const pkg = { id: "d1", guid: "dup-guid", title: "Тест", caption: "Текст", png: validPng, link: "" };
+  // Реальный минимальный валидный PNG 1x1 (RGBA, filter None, zlib-deflate).
+  const realPng = Uint8Array.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89,
+    0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54,
+    0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4,
+    0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+  ]);
+  const pkg = { id: "d1", guid: "dup-guid", title: "Тест", caption: "Текст", png: realPng, link: "" };
   const first = await publishToVk(env, pkg, false);
   assert.equal(first.ok, true);
   assert.equal(first.post_id, 900);
-  assert.ok(first.vk_attachment && first.vk_attachment.includes("raw.githubusercontent.com"), "attachment — raw-URL карточки на GitHub");
+  assert.ok(first.vk_attachment && /^doc-1_111$/.test(first.vk_attachment), "attachment — GIF-документ (doc-owner_id_id)");
   const second = await publishToVk(env, pkg, false);
   assert.equal(second.deduped, true, "повторный вызов возвращает deduped:true");
   assert.equal(second.post_id, 900, "idempotent-ответ содержит post_id из KV");

@@ -22,6 +22,7 @@ import {
   answerCallbackQuery,
   setMyCommands,
   resolveTelegramChannel,
+  vkCall,
 } from "./lib/telegram.js";
 import { fmtTime, escHtml } from "./lib/text.js";
 import { NEWS_WINDOWS, mskNow } from "./lib/config.js";
@@ -254,6 +255,530 @@ async function handleApi(env, request, url) {
     }
   }
 
+  // Диагностика VK: проверяет доступные пути загрузки фото групповому токену и
+  // как VK парсит ссылку-карточку (wall.parseAttachedLink). Без секретов.
+  if (url.pathname === "/vk-diag" && request.method === "GET") {
+    if (!(await apiAuthorized(env, request))) return new Response("Forbidden", { status: 403 });
+    try {
+      const out = { group_id: env.VK_GROUP_ID || null, album_id: env.VK_ALBUM_ID || null, steps: [] };
+      if (!env.VK_TOKEN) return jsonResponse({ ...out, error: "VK_TOKEN не задан" });
+      const snap = (n, resp) => `${n}: ${typeof resp === "string" ? resp.slice(0, 220) : JSON.stringify(resp).slice(0, 220)}`;
+      const png1x1 = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 13, 73, 68, 65, 84, 120, 218, 99, 96, 96, 96, 0, 0, 0, 5, 0, 1, 86, 143, 103, 42, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130]);
+
+      // -1. Какие права реально у токена (groups.getTokenPermissions) и кому он
+      // принадлежит — объясняет error 27 на read-методах.
+      try {
+        const perms = await vkCall(env, "groups.getTokenPermissions");
+        const names = (perms.permissions || []).map((p) => `${p.name}=${p.setting}`);
+        const mask = perms.mask != null ? perms.mask : null;
+        out.steps.push({ step: -1, ok: true, note: snap("getTokenPermissions", `mask=${mask} perms=${JSON.stringify(names)}`) });
+      } catch (e) {
+        out.steps.push({ step: -1, ok: false, note: "groups.getTokenPermissions " + e.message });
+      }
+
+      // 0. photos.getAlbums — доступен ли альбомный путь.
+      try {
+        const albums = await vkCall(env, "photos.getAlbums", { owner_id: -env.VK_GROUP_ID, need_system: 1 });
+        out.steps.push({ step: 0, ok: true, note: snap("getAlbums", `count=${(albums.items || []).length}`) });
+      } catch (e) {
+        out.steps.push({ step: 0, ok: false, note: "photos.getAlbums " + e.message });
+      }
+
+      // 0c. docs.getWallUploadServer — загрузка документа-картинки на стену.
+      // Изображение как doc (type 3) рендерится в посте картинкой. Это отдельный
+      // от photos механизм; требует docs-scope (у нас есть) и group_id.
+      try {
+        const dws = await vkCall(env, "docs.getWallUploadServer", { group_id: env.VK_GROUP_ID });
+        out.steps.push({ step: 0, ok: true, note: snap("docs.getWallUploadServer", `upload_url=${(dws.upload_url||"").slice(0,70)}...`) });
+        if (dws.upload_url) {
+          const cardUrl2 = env.OWNER && env.REPO
+            ? `https://raw.githubusercontent.com/${env.OWNER}/${env.REPO}/main/data/cards/mmsiscsar155.png`
+            : null;
+          const real2 = cardUrl2 ? await (await fetch(cardUrl2)).arrayBuffer() : null;
+          const img = real2 && real2.byteLength > 100 ? new Uint8Array(real2) : png1x1;
+          const fd2 = new FormData();
+          fd2.append("file", new Blob([img], { type: "image/png" }), "card.png");
+          // pu.vk.com может отдавать HTML-капчу/WAF — шлём браузерный UA и
+          // читаем строку целиком, затем парсим JSON (не переиспользуем body).
+          let bodyText = "";
+          try {
+            const resp = await fetch(dws.upload_url, {
+              method: "POST",
+              body: fd2,
+              headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36", Accept: "*/*" },
+            });
+            bodyText = await resp.text();
+          } catch (e3) {
+            bodyText = "fetch ERR " + e3.message;
+          }
+          let ur = { _html: bodyText.slice(0, 120) };
+          try { ur = JSON.parse(bodyText); } catch (e) { /* оставляем _html */ }
+          out.steps[out.steps.length - 1].note += " | raw=" + JSON.stringify(ur).slice(0, 200);
+          if (ur.file) {
+            try {
+              const saved = await vkCall(env, "docs.save", { file: ur.file });
+              const d = (saved && saved[0]) || saved;
+              out.steps[out.steps.length - 1].note += ` | docs.save raw=${JSON.stringify(saved).slice(0,160)}`;
+              if (d && d.id) out.steps[out.steps.length - 1].note += ` | ok => doc${d.owner_id}_${d.id} type=${d.type} ext=${d.ext}`;
+            } catch (e2) {
+              out.steps[out.steps.length - 1].note += " | docs.save ERR " + e2.message;
+            }
+          }
+        }
+      } catch (e) {
+        out.steps.push({ step: 0, ok: false, note: "docs.getWallUploadServer " + e.message });
+      }
+
+      // 0e. (только ?test_post=5) прикрепить doc-картинку к wall.post — проверить,
+      // что VK рендерит документ-изображение в посте как фото. docId из ?doc=.
+      if (url.searchParams.get("test_post") === "5" && env.VK_GROUP_ID) {
+        const docId = url.searchParams.get("doc") || "";
+        try {
+          const p5 = await vkCall(env, "wall.post", {
+            owner_id: -env.VK_GROUP_ID,
+            from_group: 1,
+            message: `Тест doc-фото: ${docId}`,
+            attachments: `doc-${env.VK_GROUP_ID}_${docId}`,
+          });
+          out.steps.push({ step: 0, ok: true, note: snap("wall.post doc", `post=${p5.post_id} attach=doc-${env.VK_GROUP_ID}_${docId}`) });
+        } catch (e) {
+          out.steps.push({ step: 0, ok: false, note: "wall.post doc " + e.message });
+        }
+      }
+
+      // 0e.2. (только ?test_post=6) прикрепить messages-фото (реальную карточку,
+      // photo-<gid>_<pid>) к wall.post и проверить, рендерит ли VK его как фото.
+      if (url.searchParams.get("test_post") === "6" && env.VK_GROUP_ID) {
+        const pid = url.searchParams.get("photo") || "";
+        try {
+          const p6 = await vkCall(env, "wall.post", {
+            owner_id: -env.VK_GROUP_ID,
+            from_group: 1,
+            message: "Тест messages-фото (реальная карточка)",
+            attachments: `photo-${env.VK_GROUP_ID}_${pid}`,
+          });
+          out.steps.push({ step: 0, ok: true, note: snap("wall.post mphoto", `post=${p6.post_id} attach=photo-${env.VK_GROUP_ID}_${pid}`) });
+        } catch (e) {
+          out.steps.push({ step: 0, ok: false, note: "wall.post mphoto " + e.message });
+        }
+      }
+
+      // 0f. photos.copy() (копирует messages-фото в публичный альбом сообщества)
+      try {
+        const cp = await vkCall(env, "photos.copy", {
+          owner_id: -env.VK_GROUP_ID,
+          photo_id: url.searchParams.get("photo") || "",
+          access_key: url.searchParams.get("ak") || "",
+        });
+        out.steps.push({ step: 0, ok: true, note: snap("photos.copy", `copy=${JSON.stringify(cp)}`) });
+      } catch (e) {
+        out.steps.push({ step: 0, ok: false, note: "photos.copy " + e.message });
+      }
+
+      // 0d. docs.getMessagesUploadServer — тоже вариант загрузки doc-картинки.
+      try {
+        const dms = await vkCall(env, "docs.getMessagesUploadServer");
+        out.steps.push({ step: 0, ok: true, note: snap("docs.getMessagesUploadServer", `upload_url=${(dms.upload_url||"").slice(0,70)}...`) });
+      } catch (e) {
+        out.steps.push({ step: 0, ok: false, note: "docs.getMessagesUploadServer " + e.message });
+      }
+
+      // 0a. photos.getWallUploadServer с group_id — единственный «стеновой» путь,
+      // который community-токену положено вызывать именно с group_id.
+      try {
+        const ws = await vkCall(env, "photos.getWallUploadServer", { group_id: env.VK_GROUP_ID });
+        out.steps.push({ step: 0, ok: true, note: snap("getWallUploadServer", `upload_url=${(ws.upload_url||"").slice(0,60)}...`) });
+      } catch (e) {
+        out.steps.push({ step: 0, ok: false, note: "photos.getWallUploadServer " + e.message });
+      }
+
+      // 0b. photos.saveMessagesPhoto путь (рабочий обход для вызыхализupload).
+      try {
+        const cardUrl = env.OWNER && env.REPO
+          ? `https://raw.githubusercontent.com/${env.OWNER}/${env.REPO}/main/data/cards/mmsiscsar155.png`
+          : null;
+        const real = cardUrl ? await (await fetch(cardUrl)).arrayBuffer() : null;
+        const up = await vkCall(env, "photos.getMessagesUploadServer");
+        const fd = new FormData();
+        const pngBytes = real && real.byteLength > 100 ? new Uint8Array(real) : png1x1;
+        fd.append("photo", new Blob([pngBytes], { type: "image/png" }), "photo.png");
+        const r = await fetch(up.upload_url, { method: "POST", body: fd });
+        const upRes = await r.json();
+        const uploadedPhoto =
+          upRes.photo ||
+          (upRes.files && upRes.files.photo && `${upRes.files.photo.sha}_${upRes.files.photo.secret}`) ||
+          "";
+        out.steps.push({ step: 1, ok: !!uploadedPhoto, bytes: pngBytes.length, note: snap("upload", upRes) });
+        if (uploadedPhoto) {
+          try {
+            const saved = await vkCall(env, "photos.saveMessagesPhoto", { photo: uploadedPhoto, server: upRes.server, hash: upRes.hash });
+            const p = saved[0];
+            out.steps[out.steps.length - 1].note = snap("saveMessagesPhoto", `photo${p.owner_id}_${p.id} sizes=${(p.sizes||[]).length}`);
+          } catch (e) {
+            out.steps[out.steps.length - 1].note += " | saveMessagesPhoto " + e.message;
+          }
+        }
+      } catch (e) {
+        out.steps.push({ step: 1, ok: false, note: "messages-upload " + e.message });
+      }
+
+      // 2. wall.parseAttachedLink — как VK видит ссылку-карточку (raw GitHub).
+      if (env.OWNER && env.REPO) {
+        const cardUrl = `https://raw.githubusercontent.com/${env.OWNER}/${env.REPO}/main/data/cards/mmsiscsar155.png`;
+        try {
+          out.steps.push({ step: 2, note: "parseAttachedLink probe: " + cardUrl });
+          const parsed = await vkCall(env, "wall.parseAttachedLink", { links: cardUrl });
+          const l = parsed.links && parsed.links[0];
+          out.steps[out.steps.length - 1].ok = !!l;
+          out.steps[out.steps.length - 1].has_photo = !!(l && l.photo);
+          out.steps[out.steps.length - 1].note = snap("parseAttachedLink", l ? { url: l.url, title: (l.title||"").slice(0,40), has_photo: !!l.photo } : parsed);
+        } catch (e) {
+          out.steps.push({ step: 2, ok: false, note: "wall.parseAttachedLink " + e.message });
+        }
+      }
+
+// 3. (только ?test_post=1) живьём постим HTML-превью на стену и возвращаем
+      // post_id — проверить, что VK поднял og:image-превью (не link_photo_sizing_rule).
+      out.steps.push({ step: 3, note: `gate test_post=${url.searchParams.get("test_post")} owner=${env.OWNER} repo=${env.REPO} gid=${env.VK_GROUP_ID}` });
+      if (url.searchParams.get("test_post") === "1" && env.OWNER && env.REPO && env.VK_GROUP_ID) {
+        const githubHtml = `https://${env.OWNER}.github.io/${env.REPO}/data/cards/mmsiscsar155.html`;
+        // Контроль: заведомо рабочий внешний пост с og:image (vs наша Pages-страница).
+        const external = "https://habr.com/ru/articles/";
+        for (const [label, link] of [
+          ["html-страница (og:image)", githubHtml],
+          ["внешняя статья (og:image)", external],
+        ]) {
+          try {
+            const p = await vkCall(env, "wall.post", {
+              owner_id: -env.VK_GROUP_ID,
+              from_group: 1,
+              message: `Тест превью: ${label}`,
+              attachments: link,
+            });
+            out.steps.push({ step: 3, ok: true, note: snap("wall.post", `${label}: post=${p.post_id} ${link}`) });
+          } catch (e) {
+            out.steps.push({ step: 3, ok: false, note: `wall.post (${label}): ` + e.message });
+          }
+        }
+      }
+
+      // 4. (только ?test_post=3) загрузить СВЕЖЕЕ messages-фото и сразу прикрепить
+  // его id к wall.post — проверить, рендерится ли фото при свежем id (не из кэша).
+      out.steps.push({ step: 4, note: `gate test_post=${url.searchParams.get("test_post")}` });
+      if (url.searchParams.get("test_post") === "3" && env.VK_GROUP_ID) {
+        const cardUrl = env.OWNER && env.REPO
+          ? `https://raw.githubusercontent.com/${env.OWNER}/${env.REPO}/main/data/cards/mmsiscsar155.png`
+          : null;
+        const real = cardUrl ? await (await fetch(cardUrl)).arrayBuffer() : new Uint8Array([137, 80, 78, 71]);
+        const up = await vkCall(env, "photos.getMessagesUploadServer");
+        const fd = new FormData();
+        fd.append("photo", new Blob([new Uint8Array(real)], { type: "image/png" }), "card.png");
+        const upRes = await (await fetch(up.upload_url, { method: "POST", body: fd })).json();
+        if (!upRes.photo) {
+          out.steps.push({ step: 4, ok: false, note: "messages upload empty " + JSON.stringify(upRes) });
+        } else {
+          const saved = await vkCall(env, "photos.saveMessagesPhoto", { photo: upRes.photo, server: upRes.server, hash: upRes.hash });
+          const ph = saved[0];
+          const freshId = `photo${ph.owner_id}_${ph.id}`;
+          out.steps.push({ step: 4, ok: true, note: snap("fresh message-photo", `id=${freshId} sizes=${(ph.sizes||[]).length}`) });
+          // сразу постим с этим же (преднатав) photo-id
+          const p = await vkCall(env, "wall.post", {
+            owner_id: -env.VK_GROUP_ID, from_group: 1,
+            message: `Свежее messages-фото: ${freshId}`,
+            attachments: freshId,
+          });
+          p.post_id && out.steps.push({ step: 4, ok: true, note: snap("wall.post fresh", `post=${p.post_id} attach=${freshId}`) });
+        }
+      }
+
+      // 7. (только ?test_post=7) перенос в публичный альбом
+      if (url.searchParams.get("test_post") === "7" && env.VK_GROUP_ID) {
+        const gid = env.VK_GROUP_ID;
+        // 7a. создать (или пере) публичный альбом
+        try {
+          const alb = await vkCall(env, "photos.createAlbum", {
+            title: "Card-album", group_id: gid, privacy_view: "all", privacy_comment: "all",
+          });
+          out.steps.push({ step: 7, ok: true, note: snap("createAlbum", `album_id=${alb.id} title=${alb.title}`) });
+        } catch (e) {
+          out.steps.push({ step: 7, ok: false, note: "photos.createAlbum " + e.message });
+        }
+        // 7b. загрузить свежее messages-фото
+        try {
+          const cardUrl = env.OWNER && env.REPO
+            ? `https://raw.githubusercontent.com/${env.OWNER}/${env.REPO}/main/data/cards/mmsiscsar155.png`
+            : null;
+          const real = cardUrl ? await (await fetch(cardUrl)).arrayBuffer() : new Uint8Array([137, 80, 78, 71]);
+          const up = await vkCall(env, "photos.getMessagesUploadServer");
+          const fd = new FormData();
+          fd.append("photo", new Blob([new Uint8Array(real)], { type: "image/png" }), "card.png");
+          const upRes = await (await fetch(up.upload_url, { method: "POST", body: fd })).json();
+          const saved = await vkCall(env, "photos.saveMessagesPhoto", { photo: upRes.photo, server: upRes.server, hash: upRes.hash });
+          const ph = saved[0];
+          const phId = ph.id, phOwner = ph.owner_id;
+          out.steps.push({ step: 7, ok: true, note: snap("saveMessagesPhoto#7", `photo${phOwner}_${phId} sizes=${(ph.sizes||[]).length}`) });
+          // 7c. перенести в публичный альбом
+          try {
+            const moved = await vkCall(env, "photos.move", {
+              owner_id: phOwner, photo_id: phId, target_album_id: 0, group_id: gid,
+            });
+            out.steps.push({ step: 7, ok: true, note: snap("photos.move", JSON.stringify(moved)) });
+            const p = await vkCall(env, "wall.post", {
+              owner_id: -gid, from_group: 1,
+              message: "Тест move-фото",
+              attachments: `photo${phOwner}_${phId}`,
+            });
+            out.steps.push({ step: 7, ok: true, note: snap("wall.post moved", `post=${p.post_id} attach=photo${phOwner}_${phId}`) });
+          } catch (e) {
+            out.steps.push({ step: 7, ok: false, note: "photos.move " + e.message });
+          }
+        } catch (e) {
+          out.steps.push({ step: 7, ok: false, note: "7-upload " + e.message });
+        }
+      }
+
+      // 13. (только ?test_post=13) прикрепить ПРЯМУЮ ссылку на PNG (github.io)
+      // 15. (только ?test_post=15) saveMessagesPhoto c access_key + album: постить
+      //      photo-owner_id_id_accessKey и photo-owner_id_albumId_id. VK при закрытом
+      //      фото требует access_key в attachment, иначе рендерит пусто.
+      // как attachment — VK сам подтянет фото из ссылки. Без HTML-страницы.
+      if (url.searchParams.get("test_post") === "13" && env.OWNER && env.REPO && env.VK_GROUP_ID) {
+        const pngUrl = `https://${env.OWNER}.github.io/${env.REPO}/data/cards/mmsiscsar155.png`;
+        try {
+          const p = await vkCall(env, "wall.post", {
+            owner_id: -env.VK_GROUP_ID, from_group: 1,
+            message: "Тест прямой PNG-ссылки",
+            attachments: pngUrl,
+          });
+          out.steps.push({ step: 13, ok: true, note: snap("wall.post png-link", `post=${p.post_id} ${pngUrl}`) });
+        } catch (e) {
+          out.steps.push({ step: 13, ok: false, note: "wall.post png-link " + e.message });
+        }
+      }
+
+      // 14. (только ?test_post=14) ссылка В ТЕКСТЕ сообщения (не attachment) —
+      // VK сам парсит и строит превью из ссылки в message.
+      if (url.searchParams.get("test_post") === "14" && env.OWNER && env.REPO && env.VK_GROUP_ID) {
+        const pngUrl = `https://${env.OWNER}.github.io/${env.REPO}/data/cards/mmsiscsar155.png`;
+        try {
+          const p = await vkCall(env, "wall.post", {
+            owner_id: -env.VK_GROUP_ID, from_group: 1,
+            message: "Тест PNG-ссылки в тексте " + pngUrl,
+          });
+          out.steps.push({ step: 14, ok: true, note: snap("wall.post text-link", `post=${p.post_id} ${pngUrl}`) });
+        } catch (e) {
+          out.steps.push({ step: 14, ok: false, note: "wall.post text-link " + e.message });
+        }
+      }
+      // 15. (только ?test_post=15) полный saveMessagesPhoto + постим с access_key.
+      if (url.searchParams.get("test_post") === "15" && env.OWNER && env.REPO && env.VK_GROUP_ID) {
+        const cardUrl = `https://raw.githubusercontent.com/${env.OWNER}/${env.REPO}/main/data/cards/mmsiscsar155.png`;
+        try {
+          const real = await (await fetch(cardUrl)).arrayBuffer();
+          const up = await vkCall(env, "photos.getMessagesUploadServer");
+          const fd = new FormData();
+          fd.append("photo", new Blob([new Uint8Array(real)], { type: "image/png" }), "card.png");
+          const upRes = await (await fetch(up.upload_url, { method: "POST", body: fd })).json();
+          const saved = await vkCall(env, "photos.saveMessagesPhoto", { photo: upRes.photo, server: upRes.server, hash: upRes.hash });
+          const ph = saved[0];
+          const ak = ph.access_key || "";
+          const aid = ph.album_id || 0;
+          out.steps.push({ step: 15, ok: true, note: snap("save#15", `photo=${ph.id} owner=${ph.owner_id} album=${aid} ak=${ak} sizes=${(ph.sizes||[]).length}`) });
+          // постим с access_key (и альбомом) — разные формы
+          const forms = [
+            `photo${ph.owner_id}_${ph.id}`,
+            ak ? `photo${ph.owner_id}_${ph.id}_${ak}` : null,
+          ].filter(Boolean);
+          for (const attach of forms) {
+            try {
+              const p = await vkCall(env, "wall.post", {
+                owner_id: -env.VK_GROUP_ID, from_group: 1,
+                message: "Тест access_key",
+                attachments: attach,
+              });
+              out.steps.push({ step: 15, ok: true, note: snap("wall.post#15", `post=${p.post_id} attach=${attach}`) });
+            } catch (e) {
+              out.steps.push({ step: 15, ok: false, note: "wall.post#15 " + attach + " :: " + e.message });
+            }
+          }
+        } catch (e) {
+          out.steps.push({ step: 15, ok: false, note: "15 " + e.message });
+        }
+      }
+      // 16. (только ?test_post=16) фото через аватар сообщества:
+      //      photos.getOwnerPhotoUploadServer + photos.saveOwnerPhoto — картинка
+      //      становится публичным фото группы (owner_id=-gid), затем wall.post.
+      if (url.searchParams.get("test_post") === "16" && env.OWNER && env.REPO && env.VK_GROUP_ID) {
+        const cardUrl = `https://raw.githubusercontent.com/${env.OWNER}/${env.REPO}/main/data/cards/mmsiscsar155.png`;
+        try {
+          const real = await (await fetch(cardUrl)).arrayBuffer();
+          const ups = await vkCall(env, "photos.getOwnerPhotoUploadServer", {});
+          const fd = new FormData();
+          fd.append("photo", new Blob([new Uint8Array(real)], { type: "image/png" }), "card.png");
+          const upRes = await (await fetch(ups.upload_url, { method: "POST", body: fd })).json();
+          out.steps.push({ step: 16, ok: true, note: snap("ownerPhoto upload", upRes) });
+          const saved = await vkCall(env, "photos.saveOwnerPhoto", {
+            photo: upRes.photo || "", server: upRes.server || "", hash: upRes.hash || "",
+          });
+          const ph = saved.photo || saved;
+          out.steps.push({ step: 16, ok: true, note: snap("saveOwnerPhoto", `id=${ph.id} owner=${ph.owner_id} ak=${ph.access_key||""}`) });
+          const attach = `photo${ph.owner_id}_${ph.id}` + (ph.access_key ? `_${ph.access_key}` : "");
+          const p = await vkCall(env, "wall.post", {
+            owner_id: -env.VK_GROUP_ID, from_group: 1,
+            message: "Тест фото-аватар",
+            attachments: attach,
+          });
+          out.steps.push({ step: 16, ok: true, note: snap("wall.post#16", `post=${p.post_id} attach=${attach}`) });
+        } catch (e) {
+          out.steps.push({ step: 16, ok: false, note: "16 " + e.message });
+        }
+      }
+      // 17. (только ?test_post=17) товар в market с фото:
+      //      photos.getMarketUploadServer + saveMarketPhoto + market.add + wall.post
+      //      с attachments=market-owner_id_itemId — рендерится большой карточкой.
+      if (url.searchParams.get("test_post") === "17" && env.OWNER && env.REPO && env.VK_GROUP_ID) {
+        const gid = env.VK_GROUP_ID;
+        try {
+          const cardUrl = `https://raw.githubusercontent.com/${env.OWNER}/${env.REPO}/main/data/cards/mmsiscsar155.png`;
+          const real = await (await fetch(cardUrl)).arrayBuffer();
+          // категории market
+          let catId = "0";
+          try {
+            const cats = await vkCall(env, "market.getCategories", { count: 1, extended: 1 });
+            const c = cats.categories && cats.categories[0];
+            catId = String((c && (c.id || c.category && c.category.id)) || 0);
+            out.steps.push({ step: 17, ok: true, note: snap("market.getCategories", `first=${catId}`) });
+          } catch (e) { out.steps.push({ step: 17, ok: false, note: "market.getCategories " + e.message }); }
+          // загрузка фото товара
+          const ups = await vkCall(env, "photos.getMarketUploadServer", { group_id: gid, main_photo: 1 });
+          const fd = new FormData();
+          fd.append("file", new Blob([new Uint8Array(real)], { type: "image/png" }), "card.png");
+          const upRes = await (await fetch(ups.upload_url, { method: "POST", body: fd })).json();
+          out.steps.push({ step: 17, ok: true, note: snap("market upload", upRes) });
+          const saved = await vkCall(env, "photos.saveMarketPhoto", {
+            group_id: gid, photo: upRes.photo, server: upRes.server, hash: upRes.hash,
+          });
+          const mp = saved[0];
+          out.steps.push({ step: 17, ok: true, note: snap("saveMarketPhoto", `id=${mp.id} owner=${mp.owner_id}`) });
+          // создаём товар
+          const item = await vkCall(env, "market.add", {
+            owner_id: -gid, name: "TrustNode Card", description: "Тестовая карточка",
+            category_id: catId, price: 100, main_photo_id: mp.id,
+          });
+          out.steps.push({ step: 17, ok: true, note: snap("market.add", `item=${item.id}`) });
+          const p = await vkCall(env, "wall.post", {
+            owner_id: -gid, from_group: 1,
+            message: "Тест market-фото",
+            attachments: `market-${gid}_${item.id}`,
+          });
+          out.steps.push({ step: 17, ok: true, note: snap("wall.post#17", `post=${p.post_id} attach=market-${gid}_${item.id}`) });
+        } catch (e) {
+          out.steps.push({ step: 17, ok: false, note: "17 " + e.message });
+        }
+      }
+      // 18. (только ?test_post=18) GIF-документ: VK рендерит doc типа 3 (gif)
+      //      в посте ВСТРОЕННОЙ картинкой (в отличие от png/jpg-doc=файл).
+      if (url.searchParams.get("test_post") === "18" && env.OWNER && env.REPO && env.VK_GROUP_ID) {
+        const gifUrl = `https://raw.githubusercontent.com/${env.OWNER}/${env.REPO}/main/data/cards/mmsiscsar155.gif`;
+        try {
+          const gifBytes = new Uint8Array(await (await fetch(gifUrl)).arrayBuffer());
+          const dws = await vkCall(env, "docs.getWallUploadServer", { group_id: env.VK_GROUP_ID });
+          const fd = new FormData();
+          fd.append("file", new Blob([gifBytes], { type: "image/gif" }), "card.gif");
+          let bodyText = "";
+          const resp = await fetch(dws.upload_url, {
+            method: "POST", body: fd,
+            headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36", Accept: "*/*" },
+          });
+          bodyText = await resp.text();
+          let ur = { _html: bodyText.slice(0, 120) };
+          try { ur = JSON.parse(bodyText); } catch (e) {}
+          out.steps.push({ step: 18, ok: !!ur.file, note: snap("gif upload", ur) });
+          if (ur.file) {
+            const saved = await vkCall(env, "docs.save", { file: ur.file });
+            const raw = JSON.stringify(saved);
+            let d = null;
+            try {
+              const arr = Array.isArray(saved) ? saved : [saved];
+              const wrap = arr[0];
+              d = (wrap && (wrap.doc || wrap)) || null;
+            } catch (e) {}
+            out.steps.push({ step: 18, ok: !!d, note: snap("docs.save gif", d ? `doc${d.owner_id}_${d.id} type=${d.type} ext=${d.ext}` : "RAW=" + raw.slice(0, 220)) });
+            const p = await vkCall(env, "wall.post", {
+              owner_id: -env.VK_GROUP_ID, from_group: 1,
+              message: "Тест GIF-документа",
+              attachments: `doc${d.owner_id}_${d.id}`,
+            });
+            out.steps.push({ step: 18, ok: true, note: snap("wall.post#18", `post=${p.post_id} attach=doc${d.owner_id}_${d.id}`) });
+          }
+        } catch (e) {
+          out.steps.push({ step: 18, ok: false, note: "18 " + e.message });
+        }
+      }
+      // 19. (только ?test_post=19) полный end-to-end: реальный publishToVk
+      //      (PNG→GIF → docs.getWallUploadServer → docs.save → wall.post).
+      if (url.searchParams.get("test_post") === "19") {
+        const { publishToVk } = await import("./lib/telegram.js");
+        const cardUrl = env.OWNER && env.REPO
+          ? `https://raw.githubusercontent.com/${env.OWNER}/${env.REPO}/main/data/cards/mmsiscsar155.png`
+          : null;
+        try {
+          const real = cardUrl ? await (await fetch(cardUrl)).arrayBuffer() : null;
+          if (!real) throw new Error("нет тестовой PNG-карточки");
+          const pkg = {
+            id: "diag19-" + Date.now(),
+            guid: "diag19-" + Date.now(),
+            title: "TrustNode",
+            caption: "Тест end-to-end GIF-документа",
+            png: new Uint8Array(real),
+            png_key: null,
+            link: "",
+          };
+          const res = await publishToVk(env, pkg, false);
+          out.steps.push({ step: 19, ok: true, note: snap("publishToVk e2e", `post=${res.post_id} attach=${res.vk_attachment}`) });
+        } catch (e) {
+          out.steps.push({ step: 19, ok: false, note: "19 " + e.message });
+        }
+      }
+      // 20. (только ?test_post=20) загружаем GIF из ПНГ-конвертера через docs и
+      //      смотрим, какой type/ext VK определит для него (сравнение с PIL-GIF).
+      if (url.searchParams.get("test_post") === "20" && env.OWNER && env.REPO && env.VK_GROUP_ID) {
+        const { pngToGif } = await import("./lib/cardgen.js");
+        const cardUrl = `https://raw.githubusercontent.com/${env.OWNER}/${env.REPO}/main/data/cards/mmsiscsar155.png`;
+        try {
+          const png = new Uint8Array(await (await fetch(cardUrl)).arrayBuffer());
+          const gifBytes = await pngToGif(png);
+          out.steps.push({ step: 20, ok: true, note: `pngToGif: ${png.length} -> ${gifBytes.length} байт, magic=${gifBytes[0]}${gifBytes[1]}${gifBytes[2]}${gifBytes[3]}${gifBytes[4]}${gifBytes[5]}` });
+          const dws = await vkCall(env, "docs.getWallUploadServer", { group_id: env.VK_GROUP_ID });
+          const fd = new FormData();
+          fd.append("file", new Blob([gifBytes], { type: "image/gif" }), "card.gif");
+          let bodyText = "";
+          try {
+            const resp = await fetch(dws.upload_url, {
+              method: "POST", body: fd,
+              headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36", Accept: "*/*" },
+            });
+            bodyText = await resp.text();
+          } catch (e) { bodyText = "fetch ERR " + e.message; }
+          let ur = { _html: bodyText.slice(0, 200) };
+          try { ur = JSON.parse(bodyText); } catch (e) {}
+          out.steps.push({ step: 20, ok: !!ur.file, note: snap("conv gif upload", ur) });
+          if (ur.file) {
+            const saved = await vkCall(env, "docs.save", { file: ur.file });
+            const wrap = Array.isArray(saved) ? saved[0] : saved;
+            const d = (wrap && (wrap.doc || wrap)) || null;
+            out.steps.push({ step: 20, ok: !!d, note: snap("conv docs.save", d ? `doc${d.owner_id}_${d.id} type=${d.type} ext=${d.ext} size=${d.size}` : "RAW=" + JSON.stringify(saved).slice(0, 200)) });
+          }
+        } catch (e) {
+          out.steps.push({ step: 20, ok: false, note: "20 " + e.message });
+        }
+      }
+return jsonResponse(out);
+    } catch (e) {
+      return jsonResponse({ error: e.message }, 500);
+    }
+  }
+
   // Ручной полный тик (диагностика/тесты, аналог /rescan для REST).
   if (url.pathname === "/tick" && request.method === "POST") {
     if (!(await apiAuthorized(env, request))) return new Response("Forbidden", { status: 403 });
@@ -315,7 +840,7 @@ async function handleApi(env, request, url) {
       await env.BOT_KV.put("telegram_channel_id", String(out.resolved));
     }
     if (env.BOT_KV) await env.BOT_KV.put("diag:channel", JSON.stringify(out));
-    return jsonResponse(out);
+return jsonResponse(out);
   }
 
   // PNG-файлы (карточки): R2 приоритет, иначе base64 в KV.

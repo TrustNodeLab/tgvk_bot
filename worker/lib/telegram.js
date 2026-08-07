@@ -5,6 +5,8 @@ const TG_API = "https://api.telegram.org/bot";
 const VK_API = "https://api.vk.com/method/";
 const VK_VERSION = "5.199";
 
+import { pngToGif } from "./cardgen.js";
+
 // ---------- низкоуровневые вызовы ----------
 
 export async function tgCall(env, method, params = {}, files = null) {
@@ -151,6 +153,92 @@ export async function vkPostWall(env, message, attachment) {
   });
 }
 
+// Загрузка изображения как GIF-документа на стену сообщества и возврат attachment
+// `doc{owner_id}_{id}`. VK рендерит GIF-документ (doc, type=3) в посте встроенной
+// картинкой, тогда как PNG/JPEG-документ показывает файлом-иконкой. Групповому
+// токену недоступны photos.save* (error 27), поэтому docs-путь — единственный
+// рабочий способ показать картинку в посте токеном сообщества.
+export async function vkUploadWallGif(env, gifBytes) {
+  const MAX_ATTEMPTS = 4;
+  let lastErr = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const dws = await vkCall(env, "docs.getWallUploadServer", { group_id: env.VK_GROUP_ID });
+    if (!dws || !dws.upload_url) {
+      lastErr = "VK: docs.getWallUploadServer не вернул upload_url";
+      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+      continue;
+    }
+    const fd = new FormData();
+    fd.append("file", new Blob([gifBytes], { type: "image/gif" }), "card.gif");
+    let bodyText = "";
+    try {
+      const resp = await fetch(dws.upload_url, {
+        method: "POST",
+        body: fd,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+          Accept: "*/*",
+        },
+      });
+      bodyText = await resp.text();
+    } catch (e) {
+      bodyText = "";
+      lastErr = `VK: gif upload fetch error: ${e.message}`;
+      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+      continue;
+    }
+    let ur = null;
+    try { ur = JSON.parse(bodyText); } catch (e) { ur = null; }
+    if (!ur || !ur.file) {
+      lastErr = `VK: gif upload вернул без file (${bodyText.slice(0, 120)})`;
+      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+      continue;
+    }
+    const saved = await vkCall(env, "docs.save", { file: ur.file });
+    const wrap = Array.isArray(saved) ? saved[0] : saved;
+    const doc = (wrap && (wrap.doc || wrap)) || null;
+    if (!doc || !doc.id) {
+      lastErr = `VK: docs.save вернул без doc (${JSON.stringify(saved).slice(0, 200)})`;
+      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+      continue;
+    }
+    return `doc${doc.owner_id}_${doc.id}`;
+  }
+  throw new Error(lastErr || "VK: gif upload не удался");
+}
+
+// Загрузка фото в альбом сообщества (photos.getUploadServer+photos.save) и
+// возврат attachment `photo{owner_id}_{id}`. Это VK-нативное фото: VK сам
+// хранит его в публичном альбоме сообщества, поэтому wall.post его покажет.
+// Требует album_id и прав photos; для группового токена возможно error 27.
+export async function vkUploadAlbumPhoto(env, bytes, albumId) {
+  const upload = await vkCall(env, "photos.getUploadServer", {
+    album_id: albumId,
+    group_id: env.VK_GROUP_ID,
+  });
+  const fd = new FormData();
+  fd.append("file1", new Blob([bytes], { type: "image/png" }), "photo.png");
+  let up;
+  try {
+    const r = await fetch(upload.upload_url, { method: "POST", body: fd });
+    up = await r.json();
+  } catch (e) {
+    throw new Error(`VK: album upload exception: ${e.message}`);
+  }
+  if (!up || !up.photos_list) {
+    throw new Error(`VK: album upload-сервер вернул пустой photos_list (${JSON.stringify(up).slice(0, 200)})`);
+  }
+  const saved = await vkCall(env, "photos.save", {
+    album_id: albumId,
+    group_id: env.VK_GROUP_ID,
+    server: up.server,
+    photos_list: up.photos_list,
+    hash: up.hash,
+  });
+  const p = saved[0];
+  return `photo${p.owner_id}_${p.id}`;
+}
+
 // ---------- публикация готового пакета ----------
 
 // Возвращает Uint8Array/ArrayBuffer PNG-карточки пакета. png в черновиках/складе
@@ -256,6 +344,80 @@ async function uploadCardToGithub(env, key, bytes) {
   return `https://raw.githubusercontent.com/${OWNER}/${REPO}/main/${path}`;
 }
 
+// ---------- HTML-страницa превью для VK (meta og:image) ----------
+
+// HTML с og:image: VK строит превью по ссылке из meta-тегов страницы, а не из
+// сырого PNG-файла (сырой PNG даёт link_photo_sizing_rule). Экранируем атрибуты.
+function buildCardHtml({ ogImage, title, description }) {
+  const esc = (s) =>
+    (s || "").replace(/[<>&"]/g, (m) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" }[m]));
+  const safeTitle = esc(title).slice(0, 120) || "TrustNode";
+  const safeDesc = esc(description).slice(0, 160);
+  const safeImg = esc(ogImage);
+  return `<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${safeTitle}</title>
+<meta property="og:title" content="${safeTitle}">
+<meta property="og:description" content="${safeDesc || "TrustNode — сигналы и аналитика."}">
+<meta property="og:type" content="article">
+<meta property="og:image" content="${safeImg}">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+</head>
+<body>
+<img src="${safeImg}" alt="${safeTitle}" style="max-width:100%;height:auto;">
+</body>
+</html>`;
+}
+
+// Загружает HTML-страницу data/cards/<name>.html на GitHub (ветка main) через
+// Contents API и возвращает публичный Pages-URL вида
+// https://<owner>.github.io/<repo>/data/cards/<name>.html. NULL при неудаче.
+async function uploadCardHtmlToGithub(env, name, html) {
+  const { GITHUB_TOKEN, OWNER, REPO } = env;
+  if (!GITHUB_TOKEN || !OWNER || !REPO) return null;
+  const path = `data/cards/${name}.html`;
+  const api = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${path}`;
+  const headers = {
+    Authorization: `Bearer ${GITHUB_TOKEN}`,
+    Accept: "application/vnd.github+json",
+    "User-Agent": "tgvk-bot-webhook",
+  };
+  let sha = null;
+  try {
+    const ex = await fetch(api, { headers });
+    if (ex.ok) {
+      const j = await ex.json();
+      if (j && j.sha) sha = j.sha;
+    }
+  } catch (e) { /* нет файла — создаём */ }
+try {
+    const res = await fetch(api, {
+      method: "PUT",
+      headers,
+body: JSON.stringify({ message: `card ${name}.html`, content: bytesToBase64(html), ...(sha ? { sha } : {}) }),
+    });
+    if (!res.ok) {
+      console.log(`[vk] GitHub html upload ${path} failed: ${res.status}`);
+      return null;
+    }
+  } catch (e) {
+    console.log(`[vk] GitHub html upload ${path} exception: ${e.message}`);
+    return null;
+  }
+  return `https://${OWNER}.github.io/${REPO}/${path}`;
+}
+
+// Хелпер: кладёт HTML карточки рядом с PNG (страница превью для VK).
+async function ensureCardHtml(env, name, pngUrl, description, title) {
+  const html = buildCardHtml({ ogImage: pngUrl, title, description });
+  const htmlUrl = await uploadCardHtmlToGithub(env, name, html);
+  return htmlUrl || null;
+}
+
 function bytesToBase64(bytes) {
   let bin = "";
   const arr = Array.isArray(bytes) ? bytes : Array.from(bytes || []);
@@ -297,26 +459,30 @@ export async function publishToVk(env, pkg, dry) {
     } catch (e) { /* если KV недоступен — публикуем */ }
   }
 
-  // Токену сообщества недоступна загрузка фото на стену/сообщение с рендером
-  // (getWallUploadServer/uploadWallPhoto — error 27; photos.saveMessagesPhoto
-  // кладёт фото в приватный альбом сообщений, который на стене не виден).
-  // Рабочий путь для группового токена — публичная ссылка на карточку:
-  // храним PNG в R2/KV, постим attachments=<url>, VK сам подтянет превью.
+  // Фото в пост VK для community-токена напрямую не загрузить (error 27 на
+  // photos.getWallUploadServer / saveWallPhoto / альбом; saveMessagesPhoto кладёт
+  // фото в приватный messages-альбом → на стене не рендерится). Рабочий путь,
+  // доказанный тестами на этой группе: конвертируем PNG-карточку в индексированный
+  // GIF и загружаем его как ДОКУМЕНТ (docs.getWallUploadServer → docs.save).
+  // VK рендерит GIF-документ (doc, type=3) в посте ВСТРОЕННОЙ картинкой.
   const bytes = await pkgBytes(env, pkg);
   if (!bytes || !bytes.length) {
     throw new Error("нет PNG-карточки для VK (png/png_key пуст)");
   }
   assertValidImage(bytes);
 
-  const cardKey = `cards/${dedupKey || Date.now()}.png`;
-  const cardUrl = await storeCardPublic(env, cardKey, bytes);
-  console.log(`[vk] карточка по ссылке: ${cardUrl}`);
+  console.log("[vk] PNG → GIF…");
+  const gifBytes = await pngToGif(bytes);
+  console.log(`[vk] GIF готов: ${gifBytes.length} байт`);
+
+  console.log("[vk] docs.getWallUploadServer + upload + docs.save…");
+  const attachment = await vkUploadWallGif(env, gifBytes);
+  console.log(`[vk] doc прикреплён: ${attachment}`);
 
   console.log("[vk] wall.post…");
-  const res = await vkPostWall(env, message, cardUrl);
+  const res = await vkPostWall(env, message, attachment);
   const postId = res && res.post_id;
   console.log(`[vk] wall.post успешен: post=${postId}`);
-  const attachment = cardUrl;
   if (dedupKey && postId) {
     try {
       await env.BOT_KV.put(`vk_posted:${dedupKey}`, JSON.stringify({ post_id: postId, vk_attachment: attachment, at: new Date().toISOString() }));
