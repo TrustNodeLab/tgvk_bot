@@ -70,6 +70,35 @@ export function escHtml(s) {
     .replace(/>/g, "&gt;");
 }
 
+// Преобразует markdown-разметку моделей в безопасный HTML для Telegram:
+//   **жирный** -> <b>, *курсив* -> <i>, [текст](url) -> <a href>,
+//   `код` -> <code>. Сначала экранирует спецсимволы HTML, чтобы TG не падал,
+//   затем одиночные «сиротские» звёздочки убирает.
+export function markdownToHtml(src) {
+  if (!src) return "";
+  let s = String(src)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, (m, t, u) => `<a href="${u}">${t}</a>`);
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<b>$1</b>");
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<i>$2</i>");
+  s = s.replace(/`([^`]+)`/g, "<code>$1</code>");
+  s = s.replace(/\*/g, "");
+  return s;
+}
+
+// Убирает markdown-символы без преобразования (для заголовков/тезисов карточки).
+export function stripMarkdown(src) {
+  return String(src ?? "")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/\*\*/g, "")
+    .replace(/\*/g, "")
+    .replace(/`/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 // Форматирование timestamp для сводок.
 export function fmtTime(iso, withYear = false) {
   if (!iso) return "—";

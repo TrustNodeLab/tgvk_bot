@@ -18,6 +18,13 @@ import { buildDailyAudit, buildWeeklyAudit, buildEventFallback } from "./audits.
 
 const CHUNK_COUNT = 2; // скан делится на 2 части (лимит подзапросов free-плана)
 
+// png в черновике хранится base64 (KV умеет только строки) — превращаем в байты.
+function decodePng(b64) {
+  if (!b64) return null;
+  const bin = atob(b64);
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
 // ---------- время и слоты ----------
 
 function mskToUtcMs(dow, minuteOfDay, now = new Date()) {
@@ -269,7 +276,7 @@ async function autoDeferDrafts(env, state, now = new Date()) {
       title: d.title || "",
       caption: d.caption || "",
       png_key: d.png_key || null,
-      png: d.png || null,
+      png: d.png ? (typeof d.png === "string" ? decodePng(d.png) : d.png) : null,
       link: d.link || "",
       guid: d.guid || "",
       source: d.source || "",

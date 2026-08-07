@@ -261,6 +261,37 @@ async function handleApi(env, request, url) {
     });
   }
 
+  // Диагностика канала TG: резолвим текущий TELEGRAM_CHANNEL_ID через getChat
+  // и пишем результат в KV (diag:channel). Помогает найти правильный chat_id.
+  if (url.pathname === "/diag-channel" && request.method === "GET") {
+    if (!(await apiAuthorized(env, request))) return new Response("Forbidden", { status: 403 });
+    const candidates = [];
+    if (env.TELEGRAM_CHANNEL_ID) candidates.push(String(env.TELEGRAM_CHANNEL_ID).trim());
+    candidates.push("@TrustNode_team");
+    const out = { ts: Date.now(), candidates: [] };
+    for (const c of candidates) {
+      const row = { id: c };
+      try {
+        const info = await tgCall(env, "getChat", { chat_id: c });
+        row.ok = true;
+        row.id = info.id;
+        row.title = info.title || "";
+        row.username = info.username || "";
+        row.type = info.type || "";
+      } catch (e) {
+        row.ok = false;
+        row.error = e.message;
+      }
+      out.candidates.push(row);
+      if (row.ok) out.resolved = row.id;
+    }
+    if (env.BOT_KV && out.resolved) {
+      await env.BOT_KV.put("telegram_channel_id", String(out.resolved));
+    }
+    if (env.BOT_KV) await env.BOT_KV.put("diag:channel", JSON.stringify(out));
+    return jsonResponse(out);
+  }
+
   // PNG-файлы (карточки): R2 приоритет, иначе base64 в KV.
   if (url.pathname.startsWith("/files/")) {
     const key = "files/" + url.pathname.slice("/files/".length);

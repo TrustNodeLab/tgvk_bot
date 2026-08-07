@@ -129,11 +129,54 @@ export async function vkPostWall(env, message, attachment) {
 
 // ---------- публикация готового пакета ----------
 
+// Возвращает Uint8Array/ArrayBuffer PNG-карточки пакета. png в черновиках/складе
+// может быть base64-строкой (KV умеет только строки) ИЛИ уже байтами — приводим
+// к байтам; если байтов нигде нет — читаем из R2/KV по png_key.
+async function pkgBytes(env, pkg) {
+  const png = pkg && pkg.png;
+  if (png) {
+    if (typeof png === "string") {
+      const bin = atob(png);
+      return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+    }
+    return png;
+  }
+  return readPng(env, pkg && pkg.png_key);
+}
+
+// Резолвит chat_id канала: просим Telegram подтвердить чат по текущему
+// TELEGRAM_CHANNEL_ID, а при фейле пробуем публичный канал TrustNode_team.
+// Кэшируем подтверждённый chat_id в KV. Так «chat not found» не роняет посты.
+async function resolveTelegramChannel(env) {
+  const candidates = [];
+  if (env.TELEGRAM_CHANNEL_ID) candidates.push(String(env.TELEGRAM_CHANNEL_ID).trim());
+  if (env.TELEGRAM_PUBLIC_CHANNEL) candidates.push(String(env.TELEGRAM_PUBLIC_CHANNEL).trim());
+  candidates.push("@TrustNode_team");
+
+  if (env.BOT_KV) {
+    const cached = await env.BOT_KV.get("telegram_channel_id");
+    if (cached) return cached;
+  }
+  for (const c of candidates) {
+    if (!c) continue;
+    try {
+      const info = await tgCall(env, "getChat", { chat_id: c });
+      const resolved = String(info && (info.id !== undefined ? info.id : c));
+      if (env.BOT_KV) await env.BOT_KV.put("telegram_channel_id", resolved);
+      return resolved;
+    } catch (e) {
+      /* пробуем следующий кандидат */
+    }
+  }
+  // fallback: оставляем настройку как есть
+  return candidates[0] || String(env.TELEGRAM_CHANNEL_ID || "");
+}
+
 // Возвращает { ok:true, channel:"tg"|"vk", note } либо бросает ошибку.
 export async function publishToTelegram(env, pkg, dry) {
   const caption = pkg.caption || "";
-  const bytes = pkg.png ? pkg.png : await readPng(env, pkg.png_key);
-  const chatId = env.TELEGRAM_CHANNEL_ID;
+  const bytes = await pkgBytes(env, pkg);
+  const chatId = await resolveTelegramChannel(env);
   if (dry) {
     console.log(`[dry-run] TG sendPhoto -> ${chatId}, len=${bytes?.length || 0}, caption=${caption.length} симв.`);
     return { ok: true, dry: true, target: "tg" };
@@ -149,10 +192,12 @@ export async function publishToVk(env, pkg, dry) {
     console.log(`[dry-run] VK wall.post message=${message.length} симв.`);
     return { ok: true, dry: true, target: "vk" };
   }
-  const bytes = pkg.png ? pkg.png : await readPng(env, pkg.png_key);
+  const bytes = await pkgBytes(env, pkg);
   let attachment = null;
   if (bytes && bytes.length) {
     attachment = await vkUploadWallPhoto(env, bytes);
+  } else {
+    console.log(`[vk] wall.post без фото: нет PNG (png/png_key пуст) для «${pkg.title || pkg.id}»`);
   }
   const res = await vkPostWall(env, message, attachment);
   return { ok: true, target: "vk", post_id: res && res.post_id };

@@ -6,6 +6,7 @@
 // Возвращает { headline, headline_lines, caption, cards, tier, source }.
 
 import { mskNow } from "./config.js";
+import { markdownToHtml, stripMarkdown, fitCaption } from "./text.js";
 
 const RUSTORE = "https://www.rustore.ru/catalog/app/com.frauddetector.app";
 const SITE = "https://trustnodelab.github.io";
@@ -25,6 +26,15 @@ export function sanitizeHtml(text) {
 }
 
 // ---------- утилиты ----------
+
+// Финальный caption: markdown -> HTML, лимит TG 1024, футер всегда целиком.
+function finalizeCaption(body) {
+  const b = markdownToHtml(String(body || "")).trim();
+  if (!b) return FOOTER_HTML;
+  const budget = 1024 - FOOTER_HTML.length - 2;
+  const bodyFit = b.length <= budget ? b : truncateAt(b, budget);
+  return bodyFit + "\n\n" + FOOTER_HTML;
+}
 
 function sentences(text) {
   const t = String(text || "").replace(/\s+/g, " ").trim();
@@ -121,12 +131,14 @@ async function callProxyLlm(env, text, prevPost = null, provider = "gigachat") {
 function normalizeProxyData(data, text) {
   const rawHeadline = Array.isArray(data.headline) ? data.headline : [data.headline];
   const headlineLines = rawHeadline
-    .map((h) => String(h || "").trim())
+    .map((h) => stripMarkdown(h))
     .filter(Boolean)
     .slice(0, 2);
   const headline =
     headlineLines.join(" ") || truncateAt(stripLink(String(text || "").replace(/\s+/g, " ")), 90) || "Кибербезопасность: главное";
-  const caption = String(data.caption || "").trim().slice(0, 1100);
+  let caption = markdownToHtml(String(data.caption || "")).trim();
+  if (caption) caption += "\n\n" + FOOTER_HTML;
+  caption = fitCaption(caption, 1024);
   const cards = Array.isArray(data.cards)
     ? data.cards
         .filter((c) => c && typeof c === "object")
@@ -134,11 +146,11 @@ function normalizeProxyData(data, text) {
         .map((c) => ({
           type: ["stat", "list", "compare"].includes(c.type) ? c.type : "stat",
           number: String(c.number || "").slice(0, 12),
-          label: String(c.label || "").slice(0, 80),
-          desc: String(c.desc || "").slice(0, 160),
-          before: String(c.before || "").slice(0, 160),
-          after: String(c.after || "").slice(0, 160),
-          items: Array.isArray(c.items) ? c.items.map((i) => String(i).slice(0, 140)).slice(0, 4) : [],
+          label: stripMarkdown(c.label).slice(0, 80),
+          desc: markdownToHtml(String(c.desc || "")).slice(0, 160),
+          before: markdownToHtml(String(c.before || "")).slice(0, 160),
+          after: markdownToHtml(String(c.after || "")).slice(0, 160),
+          items: Array.isArray(c.items) ? c.items.map((i) => stripMarkdown(i).slice(0, 140)).slice(0, 4) : [],
         }))
     : [];
   const tier = ["news", "real_threat", "medium", "safe"].includes(data.tier) ? data.tier : "news";
@@ -181,12 +193,14 @@ async function callLlm(env, text) {
 }
 
 function validateLlm(data, text) {
-  const headline = String(data.headline || "").trim().slice(0, 120) || "Кибербезопасность: главное";
-  let caption = String(data.caption || "").trim().slice(0, 1100);
+  const headline = stripMarkdown(String(data.headline || "")).slice(0, 120) || "Кибербезопасность: главное";
+  let caption = markdownToHtml(String(data.caption || "")).trim();
   if (!caption) {
     const body = [data.headline, ...((data.cards || []).map((c) => c.label || "")).filter(Boolean)];
-    caption = body.join("\n\n");
+    caption = markdownToHtml(body.join("\n\n")).trim();
   }
+  if (caption) caption += "\n\n" + FOOTER_HTML;
+  caption = fitCaption(caption, 1024);
   const cards = Array.isArray(data.cards)
     ? data.cards
         .filter((c) => c && typeof c === "object")
@@ -194,9 +208,9 @@ function validateLlm(data, text) {
         .map((c) => ({
           type: ["stat", "list", "compare"].includes(c.type) ? c.type : "stat",
           number: String(c.number || "").slice(0, 12),
-          label: String(c.label || "").slice(0, 80),
-          desc: String(c.desc || "").slice(0, 160),
-          items: Array.isArray(c.items) ? c.items.map((i) => String(i).slice(0, 140)).slice(0, 4) : [],
+          label: stripMarkdown(c.label).slice(0, 80),
+          desc: markdownToHtml(String(c.desc || "")).slice(0, 160),
+          items: Array.isArray(c.items) ? c.items.map((i) => stripMarkdown(i).slice(0, 140)).slice(0, 4) : [],
         }))
     : [];
   const tier = ["news", "real_threat", "medium", "safe"].includes(data.tier) ? data.tier : "news";
