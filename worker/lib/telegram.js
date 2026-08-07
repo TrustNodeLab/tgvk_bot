@@ -233,29 +233,32 @@ export async function publishToVk(env, pkg, dry) {
   const bytes = await pkgBytes(env, pkg);
   let attachment = null;
   if (bytes && bytes.length) {
-    const cardKey = (pkg.id || String(Date.now())).replace(/[^a-zA-Z0-9_-]/g, "");
     try {
-      attachment = await storeCardPublic(env, bytes, cardKey);
+      attachment = await vkUploadWallPhoto(env, bytes);
       if (attachment) {
-        console.log(`[vk] карточка по ссылке ${attachment} для «${pkg.title || pkg.id}»`);
+        console.log(`[vk] карточка фото=${attachment} для «${pkg.title || pkg.id}»`);
       }
     } catch (e) {
       attachment = null;
-      console.log(`[vk] не удалось сохранить карточку для «${pkg.title || pkg.id}»: ${e.message}`);
+      console.log(`[vk] upload фото не удался для «${pkg.title || pkg.id}»: ${e.message}`);
     }
     if (!attachment) {
+      const cardKey = (pkg.id || String(Date.now())).replace(/[^a-zA-Z0-9_-]/g, "");
       try {
-        attachment = await vkUploadWallPhoto(env, bytes);
+        attachment = await storeCardPublic(env, bytes, cardKey);
+        if (attachment) {
+          console.log(`[vk] фолбэк: карточка по ссылке ${attachment} для «${pkg.title || pkg.id}»`);
+        }
       } catch (e) {
         attachment = null;
-        console.log(`[vk] upload фото не удался, пост без картинки для «${pkg.title || pkg.id}»: ${e.message}`);
+        console.log(`[vk] не удалось сохранить карточку для «${pkg.title || pkg.id}»: ${e.message}`);
       }
     }
   } else {
     console.log(`[vk] wall.post без фото: нет PNG (png/png_key пуст) для «${pkg.title || pkg.id}»`);
   }
   const res = await vkPostWall(env, message, attachment);
-  return { ok: true, target: "vk", post_id: res && res.post_id };
+  return { ok: true, target: "vk", post_id: res && res.post_id, vk_attachment: attachment };
 }
 
 // Читает PNG пакета из R2 (или KV base64), если в пакете только ключ.

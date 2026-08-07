@@ -172,6 +172,8 @@ export async function publishPackage(env, pkg, dry) {
   let vkOk = false;
   let tgErr = null;
   let vkErr = null;
+  let vkPost = null;
+  let vkAttach = null;
   try {
     await publishToTelegram(env, pkg, dry);
     tgOk = true;
@@ -179,8 +181,10 @@ export async function publishPackage(env, pkg, dry) {
     tgErr = e.message;
   }
   try {
-    await publishToVk(env, pkg, dry);
+    const vkr = await publishToVk(env, pkg, dry);
     vkOk = true;
+    vkPost = (vkr && vkr.post_id) || null;
+    vkAttach = (vkr && vkr.vk_attachment) || null;
   } catch (e) {
     vkErr = e.message;
   }
@@ -199,6 +203,8 @@ export async function publishPackage(env, pkg, dry) {
     caption: pkg.caption || "",
     tg_ok: tgOk,
     vk_ok: vkOk,
+    vk_post_id: vkPost,
+    vk_attachment: vkAttach,
     tg_err: tgErr || null,
     vk_err: vkErr || null,
   });
