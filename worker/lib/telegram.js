@@ -147,7 +147,7 @@ async function pkgBytes(env, pkg) {
 // Резолвит chat_id канала: просим Telegram подтвердить чат по текущему
 // TELEGRAM_CHANNEL_ID, а при фейле пробуем публичный канал TrustNode_team.
 // Кэшируем подтверждённый chat_id в KV. Так «chat not found» не роняет посты.
-async function resolveTelegramChannel(env) {
+export async function resolveTelegramChannel(env) {
   const candidates = [];
   if (env.TELEGRAM_CHANNEL_ID) candidates.push(String(env.TELEGRAM_CHANNEL_ID).trim());
   if (env.TELEGRAM_PUBLIC_CHANNEL) candidates.push(String(env.TELEGRAM_PUBLIC_CHANNEL).trim());

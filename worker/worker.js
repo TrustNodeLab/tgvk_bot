@@ -21,6 +21,7 @@ import {
   editMessageReplyMarkup,
   answerCallbackQuery,
   setMyCommands,
+  resolveTelegramChannel,
 } from "./lib/telegram.js";
 import { fmtTime, escHtml } from "./lib/text.js";
 import { NEWS_WINDOWS, mskNow } from "./lib/config.js";
@@ -901,6 +902,13 @@ export default {
       await schedulerTick(env);
     } catch (e) {
       console.log("scheduled error:", e.message);
+    }
+    // Диагностика канала: резолвим chat_id и кэшируем в KV на каждом тике,
+    // чтобы всегда знать целевой канал и не терять его при смене секрета.
+    try {
+      await resolveTelegramChannel(env);
+    } catch (e) {
+      console.log("resolve channel error:", e.message);
     }
   },
 };
