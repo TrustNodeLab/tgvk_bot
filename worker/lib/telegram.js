@@ -196,21 +196,64 @@ export async function resolveTelegramChannel(env) {
   return candidates[0] || String(env.TELEGRAM_CHANNEL_ID || "");
 }
 
-// Сохраняет PNG-карточку в публичное хранилище (R2, иначе base64 в KV) и
-// возвращает публичный URL на неё. По этому URL VK откроет карточку Preview
-// при attachment-ссылке (токену сообщества недоступна загрузка фото на стену).
+// Загружает PNG-карточку на GitHub (data/cards/<key>.png) и возвращает публичный
+// URL raw.githubusercontent.com. Приоритет GitHub: VK-краулер достукивается до
+// него, тогда как *.workers.dev закрыт Cloudflare WAF (error 1010) для
+// не-браузерных клиентов — именно поэтому ссылки на worker падают с
+// link_photo_sizing_rule («No photo given»).
 async function storeCardPublic(env, key, bytes) {
+  const ghUrl = await uploadCardToGithub(env, key, bytes);
+  if (ghUrl) return ghUrl;
+
+  // Фолбэк: R2 (или base64 в KV) + BOT_PUBLIC_URL. Работает только если
+  // Cloudflare WAF пропускает бота (отключён Bot Fight Mode / свой домен).
   const fullKey = `files/${key}`;
   if (env.BOT_R2) {
     await env.BOT_R2.put(fullKey, bytes, { httpMetadata: { contentType: "image/png" } });
   } else if (env.BOT_KV) {
     await env.BOT_KV.put(fullKey, bytesToBase64(bytes));
   } else {
-    throw new Error("VK: нет хранилища для публичной карточки (BOT_R2/BOT_KV)");
+    throw new Error("VK: нет хранилища для публичной карточки (BOT_R2/BOT_KV/GitHub)");
   }
   const base = (env.BOT_PUBLIC_URL || "").replace(/\/+$/, "");
   if (!base) throw new Error("VK: BOT_PUBLIC_URL не задан — карточку не постим ссылкой");
   return `${base}/${fullKey}`;
+}
+
+// PUT файла на GitHub через Contents API (ветка main), возвращает raw-URL.
+async function uploadCardToGithub(env, key, bytes) {
+  const { GITHUB_TOKEN, OWNER, REPO } = env;
+  if (!GITHUB_TOKEN || !OWNER || !REPO) return null;
+  const path = `data/${key}`; // data/cards/<id>.png — как в GH-контуре
+  const api = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${path}`;
+  const headers = {
+    Authorization: `Bearer ${GITHUB_TOKEN}`,
+    Accept: "application/vnd.github+json",
+    "User-Agent": "tgvk-bot-webhook",
+  };
+  let sha = null;
+  try {
+    const ex = await fetch(api, { headers });
+    if (ex.ok) {
+      const j = await ex.json();
+      if (j && j.sha) sha = j.sha;
+    }
+  } catch (e) { /* карточки ещё нет — создаём */ }
+  try {
+    const res = await fetch(api, {
+      method: "PUT",
+      headers,
+      body: JSON.stringify({ message: `card ${key}`, content: bytesToBase64(bytes), ...(sha ? { sha } : {}) }),
+    });
+    if (!res.ok) {
+      console.log(`[vk] GitHub upload ${path} failed: ${res.status}`);
+      return null;
+    }
+  } catch (e) {
+    console.log(`[vk] GitHub upload ${path} exception: ${e.message}`);
+    return null;
+  }
+  return `https://raw.githubusercontent.com/${OWNER}/${REPO}/main/${path}`;
 }
 
 function bytesToBase64(bytes) {

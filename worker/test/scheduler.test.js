@@ -422,7 +422,7 @@ test("publishToVk: идемпотентность — повторная пуб�
   const kv = makeKV();
   const env = makeEnv(kv);
   env.BOT_PUBLIC_URL = "https://example.workers.dev";
-  // Новый путь: карточка сохраняется в KV публично, VK постит по ссылке.
+  // Новый путь: карточка загружается на GitHub (raw), VK постит по ссылке.
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url);
     if (u.includes("api.vk.com/method/wall.post"))
@@ -434,7 +434,7 @@ test("publishToVk: идемпотентность — повторная пуб�
   const first = await publishToVk(env, pkg, false);
   assert.equal(first.ok, true);
   assert.equal(first.post_id, 900);
-  assert.ok(first.vk_attachment && first.vk_attachment.includes("https://example.workers.dev/files/cards/"), "attachment — публичная ссылка на карточку");
+  assert.ok(first.vk_attachment && first.vk_attachment.includes("raw.githubusercontent.com"), "attachment — raw-URL карточки на GitHub");
   const second = await publishToVk(env, pkg, false);
   assert.equal(second.deduped, true, "повторный вызов возвращает deduped:true");
   assert.equal(second.post_id, 900, "idempotent-ответ содержит post_id из KV");
