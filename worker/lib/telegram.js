@@ -88,6 +88,29 @@ export function sendPhoto(env, chatId, bytes, caption, opts = {}) {
   return tgCall(env, "sendPhoto", params, files);
 }
 
+export function sendAnimation(env, chatId, bytes, caption, opts = {}) {
+  const files = { animation: new Blob([bytes], { type: "image/gif" }) };
+  const params = { chat_id: chatId };
+  if (caption) params.caption = caption;
+  if (opts.parse_mode) params.parse_mode = opts.parse_mode;
+  if (opts.reply_markup) params.reply_markup = JSON.stringify(opts.reply_markup);
+  return tgCall(env, "sendAnimation", params, files);
+}
+
+// Определяем формат карточки по magic-байтам: GIF89a/GIF87a — анимация, иначе PNG.
+export function isGifBytes(bytes) {
+  if (!bytes || bytes.length < 6) return false;
+  const s = String.fromCharCode(bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5]);
+  return s === "GIF89a" || s === "GIF87a";
+}
+
+// Отправка карточки в чат: GIF — через sendAnimation (проигрывается), PNG — фото.
+export function sendCard(env, chatId, bytes, caption, opts = {}) {
+  return isGifBytes(bytes)
+    ? sendAnimation(env, chatId, bytes, caption, opts)
+    : sendPhoto(env, chatId, bytes, caption, opts);
+}
+
 export function editMessageReplyMarkup(env, chatId, messageId, markup = []) {
   return tgCall(env, "editMessageReplyMarkup", {
     chat_id: chatId,
@@ -455,7 +478,7 @@ export async function publishToTelegram(env, pkg, dry) {
   const caption = fitCaption(pkg.caption || "");
   const bytes = await pkgBytes(env, pkg);
   if (!bytes || !bytes.length) {
-    throw new Error("нет PNG-карточки для TG (png/png_key пуст)");
+    throw new Error("нет карточки для TG (png/png_key пуст)");
   }
   assertValidImage(bytes);
 
@@ -475,10 +498,10 @@ export async function publishToTelegram(env, pkg, dry) {
 
   const chatId = await resolveTelegramChannel(env);
   if (dry) {
-    console.log(`[dry-run] TG sendPhoto -> ${chatId}, len=${bytes?.length || 0}, caption=${caption.length} симв.`);
+    console.log(`[dry-run] TG sendCard(${isGifBytes(bytes) ? "gif" : "png"}) -> ${chatId}, len=${bytes?.length || 0}, caption=${caption.length} симв.`);
     return { ok: true, dry: true, target: "tg" };
   }
-  const res = await sendPhoto(env, chatId, bytes, caption, { parse_mode: "HTML" });
+  const res = await sendCard(env, chatId, bytes, caption, { parse_mode: "HTML" });
   if (dedupKey && res && res.message_id) {
     try {
       await env.BOT_KV.put(`tg_posted:${dedupKey}`, JSON.stringify({ message_id: res.message_id, at: new Date().toISOString() }));
@@ -511,18 +534,25 @@ export async function publishToVk(env, pkg, dry) {
   // Фото в пост VK для community-токена напрямую не загрузить (error 27 на
   // photos.getWallUploadServer / saveWallPhoto / альбом; saveMessagesPhoto кладёт
   // фото в приватный messages-альбом → на стене не рендерится). Рабочий путь,
-  // доказанный тестами на этой группе: конвертируем PNG-карточку в индексированный
-  // GIF и загружаем его как ДОКУМЕНТ (docs.getWallUploadServer → docs.save).
-  // VK рендерит GIF-документ (doc, type=3) в посте ВСТРОЕННОЙ картинкой.
+  // доказанный тестами на этой группе: загружаем карточку как ДОКУМЕНТ
+  // (docs.getWallUploadServer → docs.save). VK рендерит GIF-документ (doc, type=3)
+  // в посте ВСТРОЕННОЙ картинкой. Если карточка уже GIF (анимация неба) — берём
+  // как есть; если PNG — конвертируем в индексированный GIF.
   const bytes = await pkgBytes(env, pkg);
   if (!bytes || !bytes.length) {
-    throw new Error("нет PNG-карточки для VK (png/png_key пуст)");
+    throw new Error("нет карточки для VK (png/png_key пуст)");
   }
   assertValidImage(bytes);
 
-  console.log("[vk] PNG → GIF…");
-  const gifBytes = await pngToGif(bytes);
-  console.log(`[vk] GIF готов: ${gifBytes.length} байт`);
+  let gifBytes;
+  if (isGifBytes(bytes)) {
+    gifBytes = bytes;
+    console.log(`[vk] карточка уже GIF (${gifBytes.length} байт), конверсия не нужна`);
+  } else {
+    console.log("[vk] PNG → GIF…");
+    gifBytes = await pngToGif(bytes);
+    console.log(`[vk] GIF готов: ${gifBytes.length} байт`);
+  }
 
   console.log("[vk] docs.getWallUploadServer + upload + docs.save…");
   const attachment = await vkUploadWallGif(env, gifBytes);
@@ -540,7 +570,7 @@ export async function publishToVk(env, pkg, dry) {
   return { ok: true, target: "vk", post_id: postId, vk_attachment: attachment };
 }
 
-// Проверка, что карточка — валидное изображение (PNG или JPEG), по magic-байтам.
+// Проверка, что карточка — валидное изображение (PNG, JPEG или GIF), по magic-байтам.
 // Путь «нет карточки» и «битая карточка» = отказ публикации, без постов-пустышек.
 export function assertValidImage(bytes) {
   if (!bytes || bytes.length < 8) {
@@ -551,8 +581,11 @@ export function assertValidImage(bytes) {
     b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 && // .PNG
     b[4] === 0x0d && b[5] === 0x0a && b[6] === 0x1a && b[7] === 0x0a;
   const isJpeg = b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff;
-  if (!isPng && !isJpeg) {
-    throw new Error("VK: файл не является изображением (ожидался PNG или JPEG)");
+  const isGif =
+    b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 && // "GIF"
+    (b[3] === 0x38) && (b[4] === 0x37 || b[4] === 0x39) && b[5] === 0x61;
+  if (!isPng && !isJpeg && !isGif) {
+    throw new Error("VK: файл не является изображением (ожидался PNG, JPEG или GIF)");
   }
 }
 

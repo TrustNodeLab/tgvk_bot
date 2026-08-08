@@ -62,6 +62,17 @@ export async function setAutopost(env, on) {
   await kvSet(env, "autopost", !!on);
 }
 
+// ---------- формат карточек (auto|gif|png) ----------
+
+export async function getCardFormat(env) {
+  const v = await kvGet(env, "card_format", "auto");
+  return v === "gif" || v === "png" ? v : "auto";
+}
+
+export async function setCardFormat(env, fmt) {
+  await kvSet(env, "card_format", fmt === "gif" || fmt === "png" ? fmt : "auto");
+}
+
 export async function rememberGuid(env, state, guid) {
   if (!guid || state.seen_guids.includes(guid)) return;
   state.seen_guids.push(guid);

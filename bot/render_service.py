@@ -15,7 +15,8 @@ certifi и urllib3 (см. requirements.txt), поэтому легко депл�
     curl -X POST localhost:8000/render -H "Content-Type: application/json" -d @sample.json -o card.png
 
 Эндпоинты:
-    POST /render  — JSON: {headline, caption, cards, tier, source, link} -> PNG
+    POST /render  — JSON: {headline, caption, cards, tier, source, link,
+                           format?: "png"|"gif", frames?: 12} -> PNG либо анимированный GIF
     POST /llm     — JSON: {text, prev_post?} -> структурированный JSON GigaChat
     GET  /health  — {"ok": true}
 """
@@ -28,7 +29,7 @@ from datetime import datetime, timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from card_generator import render_card  # noqa: E402
+from card_generator import render_card, render_card_gif  # noqa: E402
 from llm import extract_post_data  # noqa: E402
 
 PORT = int(os.environ.get("PORT", "8000"))
@@ -117,11 +118,22 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
             payload = json.loads(self.rfile.read(length).decode("utf-8"))
             data = map_data(payload)
-            out = os.path.join(tempfile.gettempdir(), "trustnode_card.png")
-            render_card(data, out, dt_msk=_msk_now())
-            with open(out, "rb") as f:
-                png = f.read()
-            self._send(200, png, "image/png")
+            fmt = str(payload.get("format") or "png").lower()
+            if fmt not in ("png", "gif"):
+                fmt = "png"
+            if fmt == "gif":
+                frames = int(payload.get("frames") or 12)
+                out = os.path.join(tempfile.gettempdir(), "trustnode_card.gif")
+                render_card_gif(data, out, dt_msk=_msk_now(), frames=frames)
+                with open(out, "rb") as f:
+                    body = f.read()
+                self._send(200, body, "image/gif")
+            else:
+                out = os.path.join(tempfile.gettempdir(), "trustnode_card.png")
+                render_card(data, out, dt_msk=_msk_now())
+                with open(out, "rb") as f:
+                    body = f.read()
+                self._send(200, body, "image/png")
         except Exception as e:  # noqa: BLE001
             self._send(500, json.dumps({"error": str(e)}).encode("utf-8"))
 

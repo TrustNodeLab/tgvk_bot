@@ -69,11 +69,14 @@ def _project(alt, az, w, h):
     return w / 2 + r * math.sin(az_r) * scale, h * 0.42 - r * math.cos(az_r) * scale
 
 
-def _draw_sky(draw, w, h, dt_msk):
+def _draw_sky(draw, w, h, dt_msk, phase=0.0):
     sun_alt = sun_altitude_moscow(dt_msk)
     top_c, bot_c, text_c, star_op, is_light = _sky_theme(sun_alt)
+    # «дыхание» неба: лёгкий сдвиг градиента по синусоиде фазы анимации
+    wave = 0.02 * math.sin(phase * 2 * math.pi)
     for y in range(h):
-        draw.line([(0, y), (w, y)], fill=_lerp_color(top_c, bot_c, y / h))
+        t = min(1.0, max(0.0, y / h + wave))
+        draw.line([(0, y), (w, y)], fill=_lerp_color(top_c, bot_c, t))
     if star_op > 0.01:
         positions = {}
         for name, alt, az, mag, con in stars_moscow(dt_msk):
@@ -83,7 +86,9 @@ def _draw_sky(draw, w, h, dt_msk):
             if -50 < x < w + 50 and -50 < y < h + 50:
                 positions[name] = (x, y)
                 size = max(1.0, (2.2 - mag) * 1.15)
-                b = max(60, min(255, int(255 * star_op)))
+                # мерцание звёзд: у каждой своя фаза от имени, чтобы не мигали синхронно
+                tw = 0.75 + 0.25 * math.sin(phase * 2 * math.pi + (sum(ord(c) for c in name) % 16) * 0.4)
+                b = max(60, min(255, int(255 * star_op * tw)))
                 draw.ellipse([x - size, y - size, x + size, y + size], fill=(b, b, min(255, b + 15)))
         line_col = (max(35, int(90 * star_op)) + 30,) * 3
         for pairs in CONSTELLATION_LINES.values():
@@ -372,11 +377,12 @@ def render_card(data: dict, out_path: str, dt_msk: datetime = None) -> str:
       "site": "trustnodelab.github.io"
     }
     """
-    if dt_msk is None:
-        # По умолчанию — текущее время в МСК (не UTC): иначе небо рисуется на 3 часа
-        # раньше реального и ночью выдаёт голубое небо/сумерки.
-        dt_msk = datetime.utcnow() + timedelta(hours=3)
-
+def _render_frame(data: dict, dt_msk: datetime, phase: float = 0.0) -> Image.Image:
+    """
+    Отрисовка одного кадра карточки. phase (0..1) двигает небо (звёзды мерцают,
+    градиент «дышит»); текст и панели статичны. Возвращает готовый (обрезанный)
+    кадр. Обёртки render_card/render_card_gif собирают из кадров PNG или GIF.
+    """
     tier = data.get("tier", "news")
     if tier not in ALLOWED_TIERS:
         print(f"[warn] неизвестный tier от LLM: {tier!r}, использую 'news'", file=sys.stderr)
@@ -410,7 +416,7 @@ def render_card(data: dict, out_path: str, dt_msk: datetime = None) -> str:
     DRAFT_H = 2000
     img = Image.new("RGB", (W, DRAFT_H), (0, 0, 0))
     d = ImageDraw.Draw(img)
-    text_c, is_light, sun_alt = _draw_sky(d, W, DRAFT_H, dt_msk)
+    text_c, is_light, sun_alt = _draw_sky(d, W, DRAFT_H, dt_msk, phase)
     accent = ACCENT_LIGHT[tier] if is_light else ACCENT_DARK[tier]
     muted = tuple(int(c * 0.55) for c in text_c) if not is_light else tuple(min(255, int(c * 1.9) + 60) for c in text_c)
     panel_fill = (18, 20, 26) if not is_light else (255, 255, 255)
@@ -548,6 +554,50 @@ def render_card(data: dict, out_path: str, dt_msk: datetime = None) -> str:
         lx -= 30
 
     final_h = fy + 22 + 30 + 30
-    img = img.crop((0, 0, W, final_h))
-    img.save(out_path)
+    return img.crop((0, 0, W, final_h))
+
+
+def render_card(data: dict, out_path: str, dt_msk: datetime = None, phase: float = 0.0) -> str:
+    """
+    Отрисовать статичный PNG-кадр карточки и сохранить в out_path.
+
+    data = {
+      "tags": ["...", "...", "..."],
+      "category": "МОШЕННИЧЕСТВО",
+      "headline": ["30 млн ₽", "через чат «поликлиника»"],   # 1-2 строки
+      "tier": "news" | "real_threat" | "medium" | "safe",
+      "cards": [{"number": "...", "label": "...", "desc": "текст описания"}], # 1-6 шт
+      "sequence": true, # опц.: стрелки-коннекторы между карточками (последовательность шагов)
+      "quote": "текст блока-вывода снизу (может быть пустым)",
+      "source": "РИА Новости · 2026",
+      "links": ["t.me/TrustNode_team", "vk.com/trustnode"],
+      "site": "trustnodelab.github.io"
+    }
+    """
+    if dt_msk is None:
+        # По умолчанию — текущее время в МСК (не UTC): иначе небо рисуется на 3 часа
+        # раньше реального и ночью выдаёт голубое небо/сумерки.
+        dt_msk = datetime.utcnow() + timedelta(hours=3)
+    _render_frame(data, dt_msk, phase).save(out_path)
+    return out_path
+
+
+def render_card_gif(data: dict, out_path: str, dt_msk: datetime = None,
+                    frames: int = 12, fps: int = 8) -> str:
+    """
+    Анимированный GIF: N кадров с плавно двигающимся небом (звёзды мерцают,
+    градиент «дышит»), текст/панели статичны. Цикл: frames/fps секунд, loop=0.
+    """
+    if dt_msk is None:
+        dt_msk = datetime.utcnow() + timedelta(hours=3)
+    frames = max(2, min(30, int(frames)))
+    fps = max(1, min(30, int(fps)))
+    imgs = [_render_frame(data, dt_msk, phase=i / frames) for i in range(frames)]
+    imgs[0].save(
+        out_path,
+        save_all=True,
+        append_images=imgs[1:],
+        duration=int(1000 / fps),
+        loop=0,
+    )
     return out_path

@@ -417,6 +417,66 @@ test("assertValidImage: валидный PNG проходит, битый фай
   assert.throws(() => assertValidImage(new Uint8Array([1, 2, 3])), /слишком маленькая/, "пустая карточка отклоняется");
 });
 
+test("isGifBytes: распознаёт GIF89a/GIF87a, отклоняет PNG", async () => {
+  const { isGifBytes } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/telegram.js");
+  assert.equal(isGifBytes(new TextEncoder().encode("GIF89a")), true, "GIF89a — анимация");
+  assert.equal(isGifBytes(new TextEncoder().encode("GIF87a")), true, "GIF87a — анимация");
+  assert.equal(isGifBytes(new TextEncoder().encode("GIF99a")), false, "GIF99a — не анимация");
+  assert.equal(isGifBytes(Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10])), false, "PNG — не анимация");
+  assert.equal(isGifBytes(new TextEncoder().encode("GIF")), false, "короткий хвост — не анимация");
+});
+
+test("assertValidImage: валидный GIF проходит как карточка", async () => {
+  const { assertValidImage } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/telegram.js");
+  const gif = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00]);
+  assert.doesNotThrow(() => assertValidImage(gif), "GIF89a с корректным magic-байтом");
+});
+
+test("publishToVk: карточка уже GIF — конверсия не нужна, грузится как есть", async () => {
+  const { publishToVk } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/telegram.js");
+  const kv = makeKV();
+  const env = makeEnv(kv);
+  let wallCalls = 0;
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes("api.vk.com/method/docs.getWallUploadServer"))
+      return jsonResp({ response: { upload_url: "https://pu.vk.com/upload_doc?test=1" } });
+    if (u.includes("api.vk.com/method/docs.save"))
+      return jsonResp({ response: [{ type: "doc", doc: { id: 333, owner_id: -1 } }] });
+    if (u.includes("pu.vk.com"))
+      return jsonResp({ file: "1|2|3|gif|card.gif" });
+    if (u.includes("api.vk.com/method/wall.post")) {
+      wallCalls++;
+      return jsonResp({ response: { post_id: 902 } });
+    }
+    return jsonResp({});
+  };
+  const gif = Uint8Array.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00]);
+  const pkg = { id: "d3", guid: "gif-pkg", title: "Тест", caption: "Текст", png: gif, link: "" };
+  const res = await publishToVk(env, pkg, false);
+  assert.equal(res.post_id, 902, "публикация успешна");
+  assert.ok(res.vk_attachment && /^doc-1_333$/.test(res.vk_attachment), "GIF-документ прикреплён");
+  assert.equal(wallCalls, 1, "пост ушёл один раз");
+  delete globalThis.fetch;
+});
+
+test("sendCard: GIF шлёт через sendAnimation, PNG — через sendPhoto", async () => {
+  const { sendCard } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/telegram.js");
+  const env = { TELEGRAM_BOT_TOKEN: "123456:TESTTOKEN" };
+  const calls = [];
+  globalThis.fetch = async (url, opts = {}) => {
+    const method = String(url).split("/").pop();
+    calls.push(method);
+    return jsonResp({ ok: true, result: { message_id: 1 } });
+  };
+  const gif = new TextEncoder().encode("GIF89a012345");
+  await sendCard(env, 42, gif, "анимация", {});
+  const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13]);
+  await sendCard(env, 42, png, "фото", {});
+  assert.deepEqual(calls, ["sendAnimation", "sendPhoto"], "GIF → sendAnimation, PNG → sendPhoto");
+  delete globalThis.fetch;
+});
+
 test("publishToVk: PNG в виде JSON-массива байтов из KV декодируется и публикуется", async () => {
   const { publishToVk } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/telegram.js");
   const kv = makeKV();

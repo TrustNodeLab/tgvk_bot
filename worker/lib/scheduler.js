@@ -435,6 +435,7 @@ async function publishDueStock(env, now = new Date()) {
     }
     // Свежая карточка в момент публикации: небо рисуется под реальное время
     // выхода поста (рендер-сервис считает МСК сам), а не под время генерации.
+    // Формат — по настройке card_format (auto/gif/png).
     if (!dry && pkg.kind === "news" && pkg.data) {
       try {
         const fresh = await renderCardBytes(env, pkg.data, {

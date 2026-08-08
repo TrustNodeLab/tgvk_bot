@@ -4,7 +4,7 @@
 import * as kv from "./kv.js";
 import { generatePostData } from "./llm.js";
 import { renderCard } from "./cardgen.js";
-import { sendPhoto } from "./telegram.js";
+import { sendCard } from "./telegram.js";
 
 // Инлайн-кнопки есть ТОЛЬКО на превью постов на одобрение.
 // Публикация: везде / только VK / только TG.
@@ -39,12 +39,35 @@ export function sourceDomain(link) {
   }
 }
 
-// Карточку рисуем на Python-сервисе рендера (PIL + Exo2/Jura + небо Москвы),
-// если задан CARD_RENDER_URL. Иначе — встроенный JS-рендер (фолбэк).
+// Карточку рисуем на Python-сервисе рендера (PIL + Exo2/Jura + небо Москвы).
+// Рендеров может быть несколько (основной + резервный на HF Spaces и т.п.) —
+// перебираем по очереди до первого успеха. format: "png"|"gif" (анимация неба).
+// Если все рендеры недоступны — встроенный JS-рендер (фолбэк, статичный PNG).
 export async function renderCardBytes(env, data, meta = {}) {
-  if (env.CARD_RENDER_URL) {
+  // Приоритет формата: явный meta.format (для конкретного поста) > настройка
+  // card_format в state (auto|gif|png). "auto" = GIF когда есть рендер-сервис,
+  // PNG когда он недоступен (JS-фолбэк не умеет анимацию).
+  let format;
+  if (meta.format === "gif" || meta.format === "png") {
+    format = meta.format;
+  } else {
     try {
-      const res = await fetch(`${String(env.CARD_RENDER_URL).replace(/\/+$/, "")}/render`, {
+      format = await kv.getCardFormat(env);
+    } catch (e) {
+      format = "auto";
+    }
+  }
+  const wantGif = format !== "png"; // "gif" и "auto" запрашивают GIF
+  const urls = [];
+  if (env.CARD_RENDER_URLS) {
+    for (const u of Array.isArray(env.CARD_RENDER_URLS) ? env.CARD_RENDER_URLS : String(env.CARD_RENDER_URLS).split(",")) {
+      if (u && String(u).trim()) urls.push(String(u).trim());
+    }
+  }
+  if (env.CARD_RENDER_URL) urls.push(String(env.CARD_RENDER_URL).trim());
+  for (const base of urls) {
+    try {
+      const res = await fetch(`${base.replace(/\/+$/, "")}/render`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -54,6 +77,8 @@ export async function renderCardBytes(env, data, meta = {}) {
           tier: data.tier || "news",
           source: data.source || meta.source || sourceDomain(meta.link || ""),
           link: meta.link || "",
+          format: wantGif ? "gif" : "png",
+          frames: meta.frames || 12,
         }),
         signal: AbortSignal.timeout(90000),
       });
@@ -62,9 +87,10 @@ export async function renderCardBytes(env, data, meta = {}) {
         if (bytes.length > 100) return bytes;
       }
     } catch (e) {
-      console.log("[preview] render-service недоступен, JS-фолбэк:", e.message);
+      console.log(`[preview] render-service ${base} недоступен, пробую следующий:`, e.message);
     }
   }
+  console.log("[preview] все рендер-сервисы недоступны, JS-фолбэк");
   return renderCard(data);
 }
 
@@ -82,7 +108,7 @@ export async function sendGeneratedPreview(env, chatId, text, meta = {}) {
   const { data, png, b64 } = await buildCardPackage(env, text, meta);
   const id = `m${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
 
-  const sent = await sendPhoto(env, chatId, png, data.caption, {
+  const sent = await sendCard(env, chatId, png, data.caption, {
     parse_mode: "HTML",
     reply_markup: { inline_keyboard: approveButtons(id) },
   });

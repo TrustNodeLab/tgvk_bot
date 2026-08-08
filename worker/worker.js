@@ -70,6 +70,7 @@ const HELP_TEXT =
   "/drafts — черновики на одобрении, /export — выгрузка истории\n" +
   "<b>Настройки:</b>\n" +
   "/settings — настройки, /autopost on|off — автопостинг\n" +
+  "/cardfmt gif|png|auto — формат карточек (GIF-анимация неба / PNG / авто)\n" +
   "/dryrun on|off — симуляция публикации\n" +
   "/blacklist add|del kw|src|guid &lt;значение&gt; — чёрный список\n" +
   "/keyword add|remove &lt;слова&gt; — ключевые слова\n" +
@@ -95,6 +96,7 @@ const COMMANDS = [
   { command: "blacklist", description: "Чёрный список" },
   { command: "keyword", description: "Ключевые слова" },
   { command: "settings", description: "Настройки" },
+  { command: "cardfmt", description: "Формат карточек: gif|png|auto" },
   { command: "dryrun", description: "Dry-run вкл/выкл" },
   { command: "autopost", description: "Автопостинг вкл/выкл" },
   { command: "stock", description: "Склад постов" },
@@ -1261,13 +1263,30 @@ async function handleCommand(env, state, chatId, text) {
     case "/settings": {
       const extra = state.extra_keywords?.length || 0;
       const removed = state.removed_keywords?.length || 0;
+      const fmt = await kv.getCardFormat(env);
+      const fmtLabel = fmt === "gif" ? "GIF (анимация неба)" : fmt === "png" ? "PNG (статик)" : "auto (GIF при наличии рендера)";
       const msg =
         "⚙️ <b>Настройки</b>\n\n" +
         `Режим: <b>${dry ? "dry-run" : "боевой"}</b>\n` +
         `Автопостинг: <b>${(await kv.getAutopost(env)) ? "вкл" : "выкл"}</b>\n` +
+        `Формат карточек: <b>${fmtLabel}</b> (сменить: /cardfmt gif|png|auto)\n` +
         `Ключевые слова: +${extra} добавлено, −${removed} убрано\n` +
         `Окна (МСК): ${NEWS_WINDOWS.map((w) => `${minutesToClock(w.start)}–${minutesToClock(w.end)}`).join(", ")}`;
       await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
+      break;
+    }
+
+    case "/cardfmt": {
+      const next = args && ["gif", "png", "auto"].includes(args.trim().toLowerCase())
+        ? args.trim().toLowerCase()
+        : null;
+      if (!next) {
+        await sendMessage(env, chatId, "Формат: /cardfmt gif | png | auto");
+        break;
+      }
+      await kv.setCardFormat(env, next);
+      const label = next === "gif" ? "GIF (анимация неба)" : next === "png" ? "PNG (статик)" : "auto (GIF при наличии рендера)";
+      await sendMessage(env, chatId, `✅ Формат карточек: <b>${label}</b>`, { parse_mode: "HTML" });
       break;
     }
 
