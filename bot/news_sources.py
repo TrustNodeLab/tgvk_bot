@@ -18,7 +18,7 @@ CONFIG_PATH = os.path.join(HERE, "..", "config", "sources.json")
 HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; TrustNodeBot/1.0)"}
 
 # Посты должны быть про актуальные события — новости старше MAX_AGE_DELTA не берём.
-MAX_AGE_DELTA = timedelta(days=2)
+MAX_AGE_DELTA = timedelta(hours=24)
 
 
 def _load_config() -> dict:

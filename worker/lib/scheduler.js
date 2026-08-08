@@ -6,6 +6,7 @@ import {
   NEWS_WINDOWS, AUDIT_DAILY, AUDIT_WEEKLY, EVENT_MONDAY,
   MSK_OFFSET_MIN, STOCK_TARGET, MAX_IN_FLIGHT, MAX_CANDIDATES_PER_TICK,
   DRAFT_TIMEOUT_MIN, DISPATCH_STALE_MIN, FALLBACK_COOLDOWN_MS, mskNow, plural,
+  MAX_AGE_MS, isStaleItem,
 } from "./config.js";
 import * as kv from "./kv.js";
 import { scanFeeds } from "./feeds.js";
@@ -160,6 +161,7 @@ export async function dispatchToGitHub(env, cand) {
     title: cand.title,
     link: cand.link,
     kind: cand.kind || "news",
+    pub_ts: cand.pub_ts || null,
     status: "dispatched",
   });
   return true;
@@ -290,9 +292,17 @@ export async function processVkRetries(env) {
   const state = await kv.loadState(env);
   const dry = !!state.dry_run;
   let processed = 0;
+  const nowMs = Date.now();
   for (const item of retries) {
     if (item.attempts >= MAX_VK_RETRY_ATTEMPTS) {
       console.log(`[vk-retry] отказ после ${item.attempts} попыток: ${item.title || item.id}`);
+      await kv.removeVkRetry(env, item.id);
+      processed++;
+      continue;
+    }
+    // новость протухла, пока ждала повторной загрузки в VK — не публикуем
+    if (isStaleItem(item, nowMs)) {
+      console.log(`[vk-retry] протухла, удаляю: ${item.title || item.id}`);
       await kv.removeVkRetry(env, item.id);
       processed++;
       continue;
@@ -348,6 +358,11 @@ async function autoDeferDrafts(env, state, now = new Date()) {
     }
     const created = new Date(d.created_at).getTime();
     if (created > deadline) continue;
+    // новость протухла, пока ждала ответа админа — черновик тихо удаляем
+    if (isStaleItem(d, now.getTime())) {
+      await kv.deleteDraft(env, d.id);
+      continue;
+    }
     // админ не ответил за 30 минут -> отложенный пост в ближайший свободный слот
     const slot = await nextFreeSlot(env, now);
     await kv.deleteDraft(env, d.id);
@@ -447,6 +462,12 @@ async function handleStaleDispatches(env, state, now = new Date()) {
     if (d.kind === "manual") continue;
     if ((d.guid || "").startsWith("m")) continue; // старые ручные диспатчи (до фикса kind)
     if (now.getTime() - d.at < staleMs) continue;
+    // новость протухла, пока висела на GitHub (старые диспатчи 2023-го и ранее) —
+    // не публикуем по ней фолбэк, просто гасим запись
+    if (isStaleItem(d, now.getTime())) {
+      await kv.clearDispatch(env, d.guid);
+      continue;
+    }
     if (cooldownUntil > now.getTime()) continue;
     // редкий «аудит-пост» текстом, чтобы что-то вышло при аутэдже GitHub
     const title = d.title || "";
@@ -469,8 +490,14 @@ async function handleStaleDispatches(env, state, now = new Date()) {
 
 async function publishDueStock(env, now = new Date()) {
   const stock = await kv.getStock(env);
-  const due = stock.filter((p) => (p.scheduled_for || 0) <= now.getTime());
+  const nowMs = now.getTime();
+  const due = stock.filter((p) => (p.scheduled_for || 0) <= nowMs);
   for (const pkg of due) {
+    // новость протухла, пока ждала своего слота — выкидываем тихо
+    if (pkg.kind === "news" && isStaleItem(pkg, nowMs)) {
+      await kv.removeStock(env, pkg.id);
+      continue;
+    }
     if (pkg.kind === "news") {
       const msk = mskNow(new Date(pkg.scheduled_for || now.getTime()));
       const win = currentWindow(msk.minuteOfDay);
@@ -547,6 +574,11 @@ export async function tick(env) {
 
   // 2. диспатч кандидатов на подготовку (по мере исчерпания склада)
   try {
+    const nowMs = Date.now();
+    // выкидываем протухшие кандидаты, чтобы они не публиковались позже
+    const candList = await kv.getCandidates(env);
+    const freshCands = candList.filter((c) => !isStaleItem(c, nowMs));
+    if (freshCands.length !== candList.length) await kv.setCandidates(env, freshCands);
     const stock = await kv.getStock(env);
     const inFlight = (await kv.listDispatches(env)).filter(
       (d) =>
@@ -561,6 +593,8 @@ export async function tick(env) {
       const toSend = Math.min(MAX_CANDIDATES_PER_TICK, need, MAX_IN_FLIGHT - inFlight);
       const cands = await kv.takeCandidates(env, toSend);
       for (const c of cands) {
+        // Новость успела протухнуть, пока ждала в очереди — не отдаём на подготовку.
+        if (isStaleItem(c, Date.now())) continue;
         try {
           const ok = await dispatchToGitHub(env, c);
           if (!ok) {

@@ -66,7 +66,11 @@ async function fetchJson(env, path) {
   if (!res.ok) return null;
   const data = await res.json();
   if (!data.content) return null;
-  return JSON.parse(atob(data.content.replace(/\s+/g, "")));
+  // GitHub отдаёт base64 в UTF-8; atob() даёт latin1 и ломает кириллицу,
+  // поэтому декодируем явно через TextDecoder.
+  const bin = atob(data.content.replace(/\s+/g, ""));
+  const bytes = Uint8Array.from(bin, (c) => c.charCodeAt(0));
+  return JSON.parse(new TextDecoder("utf-8").decode(bytes));
 }
 
 export async function loadSources(env) {
@@ -182,6 +186,7 @@ export async function scanFeeds(env, chunkOffset = 0, chunkCount = 2) {
   // Дедуп одинаковых новостей из разных лент в один кластер.
   const clusters = clusterDuplicates(raw);
   for (const cl of clusters) {
+    const bestPd = parsePubDate(cl.best.pub_date);
     const cand = {
       guid: cl.best.guid,
       cluster_id: cl.cluster_id,
@@ -189,7 +194,8 @@ export async function scanFeeds(env, chunkOffset = 0, chunkCount = 2) {
       link: cl.best.link,
       links: cl.items.map((i) => i.link),
       description: cl.best.description,
-      fresh: now - (parsePubDate(cl.best.pub_date)?.getTime() || now) <= FRESH_MS,
+      pub_ts: bestPd ? bestPd.getTime() : null,
+      fresh: bestPd ? now - bestPd.getTime() <= FRESH_MS : false,
       found_at: new Date().toISOString(),
     };
     // Текст подкачиваем только для лучшего источника кластера (экономия подзапросов).

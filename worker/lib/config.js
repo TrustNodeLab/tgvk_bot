@@ -14,9 +14,29 @@ export const AUDIT_DAILY = { start: 21 * 60 + 30, end: 22 * 60, key: "last_daily
 export const AUDIT_WEEKLY = { dow: 0, start: 20 * 60, end: 22 * 60, key: "last_weekly_audit" };
 export const EVENT_MONDAY = { dow: 1, start: 19 * 60, end: 22 * 60, key: "last_event" };
 
-// Свежесть новости для поста: не старше 2 дней, приоритет последним 6 часам.
-export const MAX_AGE_MS = 2 * 24 * 3600 * 1000;
+// Свежесть новости для поста: не старше 24 часов, приоритет последним 6 часам.
+export const MAX_AGE_MS = 24 * 3600 * 1000;
 export const FRESH_MS = 6 * 3600 * 1000;
+
+// Якорь свежести предмета (кандидат/пакет/черновик/диспатч): дата статьи, если
+// известна, иначе момент появления в конвейере. Возвращает epoch ms или null.
+export function itemAgeMs(item) {
+  if (!item) return null;
+  for (const f of ["pub_ts", "found_at", "created_at", "queued_at", "at", "scheduled_for"]) {
+    const v = item[f];
+    if (v === null || v === undefined || v === "") continue;
+    const t = typeof v === "number" ? v : Date.parse(String(v));
+    if (!Number.isNaN(t)) return t;
+  }
+  return null;
+}
+
+// Новость протухла, если с якоря свежести прошло больше MAX_AGE_MS.
+// Отсутствие якоря не считаем протухшим (ручные/служебные посты).
+export function isStaleItem(item, now = Date.now()) {
+  const t = itemAgeMs(item);
+  return t === null ? false : now - t > MAX_AGE_MS;
+}
 
 // Склад и подготовка.
 export const STOCK_TARGET = 8; // сколько готовых постов держим «про запас»

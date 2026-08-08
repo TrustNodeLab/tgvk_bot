@@ -545,3 +545,97 @@ test("webhook: обычный текст генерит карточку и пр
   assert.ok(gen, "черновик создан");
   assert.ok(gen.png, "карточка сохранена в черновике");
 });
+
+test("isStaleItem: протухшая новость определяется по pub_ts/found_at", async () => {
+  const { isStaleItem, itemAgeMs, MAX_AGE_MS } = await import(
+    "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/config.js"
+  );
+  const now = Date.now();
+  assert.equal(itemAgeMs({ pub_ts: now - 1000 }), now - 1000, "ядром свежести служит pub_ts");
+  assert.equal(itemAgeMs({ found_at: new Date(now - 5000).toISOString() }), now - 5000, "fallback на found_at");
+  assert.equal(isStaleItem({ pub_ts: now - MAX_AGE_MS - 1 }, now), true, "старше 24ч — протухла");
+  assert.equal(isStaleItem({ pub_ts: now - MAX_AGE_MS + 1 }, now), false, "моложе 24ч — свежая");
+  assert.equal(isStaleItem({ title: "без якоря" }, now), false, "без якоря — не протухла (ручной пост)");
+});
+
+test("tick: протухшие кандидаты выбрасываются из очереди без диспатча", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { tick } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  installFetchMock(500);
+  const env = makeEnv();
+  // склад пуст -> бот захочет добирать кандидатов; кладём свежего и протухшего
+  await kv.addCandidate(env, { guid: "old1", title: "Старая", link: "http://l", text: "т", found_at: new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString() });
+  await kv.addCandidate(env, { guid: "new1", title: "Свежая", link: "http://l2", text: "т2", found_at: new Date().toISOString() });
+  await tick(env);
+  const cands = await kv.getCandidates(env);
+  assert.ok(!cands.some((c) => c.guid === "old1"), "протухший кандидат удалён");
+  assert.ok(cands.some((c) => c.guid === "new1"), "свежий кандидат остался");
+});
+
+test("tick: протухший пакет со склада не публикуется и удаляется", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { tick } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  installFetchMock(500);
+  const env = makeEnv();
+  await kv.addStock(env, {
+    id: "stale-pkg",
+    kind: "news",
+    title: "Устаревшая новость",
+    caption: "капшн",
+    png_key: "drafts/stale.png",
+    guid: "g-old",
+    scheduled_for: Date.now() - 1000,
+    found_at: new Date(Date.now() - 48 * 3600 * 1000).toISOString(),
+  });
+  await tick(env);
+  const stock = await kv.getStock(env);
+  assert.ok(!stock.some((p) => p.id === "stale-pkg"), "протухший пакет убран со склада");
+});
+
+test("tick: фолбэк не публикует протухший диспатч (2023-го года)", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { tick } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  const calls = installFetchMock(500);
+  const env = makeEnv();
+  // диспатч «завис» с 2023 года — раньше фолбэк публиковал бы по нему текст
+  await kv.markDispatch(env, "guid-2023", {
+    at: new Date("2023-12-01T10:00:00Z").getTime(),
+    title: "Canadian Man Pleads Guilty in Snowflake Extortions",
+    link: "https://example.com/news",
+    kind: "news",
+    status: "dispatched",
+  });
+  await tick(env);
+  const d = await kv.getDispatch(env, "guid-2023");
+  assert.equal(d, null, "протухший диспатч погашен");
+  assert.equal(calls.feeds.filter((u) => u.includes("api.vk.com")).length, 0, "пост не ушёл в VK");
+  assert.equal(calls.tg.length, 0, "фолбэк не отправлен");
+});
+
+test("scanFeeds: кандидат получает pub_ts из даты статьи", async () => {
+  const { scanFeeds } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/feeds.js");
+  const env = makeEnv();
+  const pub = new Date(Date.now() - 2 * 3600 * 1000);
+  const rss = `<?xml version="1.0" encoding="UTF-8"?>
+<rss><channel><item>
+  <title>Новая схема мошенничества через фишинг-рассылку</title>
+  <link>https://ria.ru/x</link>
+  <guid>ria-fresh-1</guid>
+  <description>Новая волна мошенничества</description>
+  <pubDate>${pub.toUTCString()}</pubDate>
+</item></channel></rss>`;
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes("api.github.com")) {
+      const content = Buffer.from(JSON.stringify(CONFIG_JSON)).toString("base64");
+      return jsonResp({ content });
+    }
+    return new Response(rss, { status: 200, headers: { "Content-Type": "application/xml" } });
+  };
+  const fetched = await scanFeeds(env, 0, 2);
+  const cand = fetched[0];
+  assert.ok(cand, "кандидат найден");
+  assert.equal(cand.pub_ts, Math.floor(pub.getTime() / 1000) * 1000, "pub_ts сохранён из pubDate");
+  assert.ok(cand.pub_ts > 0, "pub_ts валидный");
+  delete globalThis.fetch;
+});
