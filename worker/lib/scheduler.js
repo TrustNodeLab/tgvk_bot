@@ -13,7 +13,7 @@ import { buildCardPackage, renderCardBytes, sourceDomain } from "./preview.js";
 import {
   publishToTelegram, publishToVk, sendMessage, vkCall,
 } from "./telegram.js";
-import { fmtTime } from "./text.js";
+import { fmtTime, escHtml } from "./text.js";
 
 const CHUNK_COUNT = 2; // скан делится на 2 части (лимит подзапросов free-плана)
 const TICK_LOCK_TTL_MS = 10 * 60 * 1000; // анти-перекрытие крон: не чаще 1 тика
@@ -23,6 +23,27 @@ function decodePng(b64) {
   if (!b64) return null;
   const bin = atob(b64);
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
+// Уведомление админу в Telegram о результате публикации. Ошибка отправки не
+// роняет публикацию — уведомление некритично.
+async function notifyAdmin(env, text) {
+  if (!env.TELEGRAM_ADMIN_CHAT_ID) return;
+  try {
+    await sendMessage(env, env.TELEGRAM_ADMIN_CHAT_ID, text, { parse_mode: "HTML" });
+  } catch (e) { /* ignore */ }
+}
+
+function vkPostUrl(env, postId) {
+  return postId && env.VK_GROUP_ID ? `https://vk.com/wall-${env.VK_GROUP_ID}_${postId}` : null;
+}
+
+// Статусная строка по результатам публикации в обе платформы.
+function pubStatus(res) {
+  const parts = [];
+  parts.push(res.tgOk ? "🟢 TG ✓" : "TG ✗");
+  parts.push(res.vkOk ? "🔵 VK ✓" : "VK ✗");
+  return parts.join(" · ");
 }
 
 // ---------- время и слоты ----------
@@ -195,7 +216,7 @@ export async function publishPackage(env, pkg, dry, target = "all") {
       vk_err: vkErr || null,
       target: mode,
     });
-    return { tgOk, vkOk };
+    return { tgOk, vkOk, vkPost };
   }
 }
 
@@ -308,6 +329,13 @@ export async function processVkRetries(env) {
       });
       processed++;
       console.log(`[vk-retry] опубликовано в обе платформы (попытка ${item.attempts}): ${item.title || item.id}`);
+      const url = vkPostUrl(env, vkPost);
+      if (!dry) {
+        await notifyAdmin(
+          env,
+          `✅ <b>Догнано</b>: ${item.title || item.id}\n${pubStatus({ tgOk: true, vkOk: true })}${url ? ` · ${url}` : ""}`
+        );
+      }
     } else {
       console.log(`[vk-retry] попытка ${item.attempts} не удалась для «${item.title || item.id}»: ${tgErr || vkErr}`);
       await kv.removeVkRetry(env, item.id);
@@ -430,12 +458,29 @@ async function publishDueStock(env, now = new Date()) {
           guid: pkg.guid || "",
           link: pkg.link || "",
         });
-        if (!ok) await kv.addStock(env, { ...pkg, scheduled_for: now.getTime() + 15 * 60 * 1000 });
+        if (ok) {
+          await notifyAdmin(env, `🎪 <b>Ивент опубликован</b>: ${pkg.title || ""}`);
+        } else {
+          await kv.addStock(env, { ...pkg, scheduled_for: now.getTime() + 15 * 60 * 1000 });
+        }
         continue;
       }
-      await publishPackage(env, pkg, dry);
+      const res = await publishPackage(env, pkg, dry);
+      if (!dry) {
+        // Строгий пул: если ушла только одна платформа — недостающая догоняется
+        // ретраями, пишем об этом админу.
+        const url = vkPostUrl(env, res.vkPost);
+        const line = url ? `${pubStatus(res)} · ${url}` : pubStatus(res);
+        if (res.tgOk && res.vkOk) {
+          await notifyAdmin(env, `✅ <b>Опубликовано</b>: ${pkg.title || ""}\n${line}`);
+        } else if (res.tgOk || res.vkOk) {
+          const missing = res.tgOk ? "VK" : "TG";
+          await notifyAdmin(env, `⏳ <b>Частично опубликовано</b>: ${pkg.title || ""}\n${line}\n🔜 Догоняю ${missing} в ближайшие тики.`);
+        }
+      }
     } catch (e) {
       console.log("[scheduler] publish failed:", e.message);
+      await notifyAdmin(env, `❌ <b>Не удалось опубликовать</b>: ${pkg.title || ""}\n${escHtml(e.message)}`);
       await kv.addStock(env, { ...pkg, scheduled_for: now.getTime() + 15 * 60 * 1000 });
     }
   }

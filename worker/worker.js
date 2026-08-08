@@ -3,9 +3,9 @@
 //  fetch  : REST API (/kv, /files, /health, /debug, /tick) для Python-контура
 //           подготовки (GitHub Actions) + админ-TG-бот (команды и inline-кнопки
 //           одобрения) + пользовательский контур (предложка, поддержка).
-//  scheduled: cron каждые 5 минут -> scheduler.tick (скан+дедуп, диспатч на
-//           подготовку, авто-отложка черновиков, публикация из склада строго
-//           по слотам, аварийный фолбэк при аутэдже GitHub).
+//  scheduled: cron каждые 5 минут -> scheduler.tick (скан+дедуп, автогенерация
+//           карточек и наполнение склада, авто-отложка черновиков, публикация
+//           из склада строго по слотам, догонка недостающей платформы).
 
 import * as kv from "./lib/kv.js";
 import { loadSources } from "./lib/feeds.js";
@@ -13,6 +13,7 @@ import {
   tick as schedulerTick,
   dispatchToGitHub,
   publishPackage,
+  nextFreeSlot,
 } from "./lib/scheduler.js";
 import {
   sendMessage,
@@ -55,29 +56,24 @@ const WELCOME_TEXT =
 
 const HELP_TEXT =
   "📖 <b>Команды студии</b>\n\n" +
-  "/status — статус\n" +
-  "/sources — источники и ключевые слова\n" +
-  "/schedule — расписание слотов\n" +
-  "/draft &lt;текст&gt; — подготовить карточку (провайдер по расписанию)\n" +
-  "<b>Создание поста:</b>\n" +
-  "/gemini &lt;текст&gt; — карточка от Gemini\n" +
-  "/gigachat &lt;текст&gt; — карточка от GigaChat\n" +
-  "/noai &lt;текст&gt; — карточка без ИИ (по правилам)\n" +
-  "<b>Публикация:</b> кнопки под превью — везде / только VK / только TG\n" +
+  "<b>Публикация:</b>\n" +
   "/puball | /pubvk | /pubtg — опубликовать пост со склада (везде / VK / TG)\n" +
+  "/draft &lt;текст&gt; — подготовить карточку (провайдер по расписанию)\n" +
+  "/publish — опубликовать последний пост со склада везде\n" +
   "/skip &lt;guid&gt; — пропустить кандидата\n" +
   "/event — создать ивент (текст + время публикации)\n" +
-  "/stats — статистика публикаций\n" +
-  "/stock — склад готовых постов\n" +
-  "/drafts — черновики на одобрении\n" +
-  "/blacklist [add|del kw|src|guid &lt;значение&gt;] — чёрный список\n" +
+  "<b>Провайдеры карточек:</b>\n" +
+  "/gemini &lt;текст&gt; | /gigachat &lt;текст&gt; | /noai &lt;текст&gt;\n" +
+  "<b>Обзор:</b>\n" +
+  "/status — статус, /stats — статистика, /stock — склад\n" +
+  "/schedule — расписание слотов, /sources — источники и ключевые слова\n" +
+  "/drafts — черновики на одобрении, /export — выгрузка истории\n" +
+  "<b>Настройки:</b>\n" +
+  "/settings — настройки, /autopost on|off — автопостинг\n" +
+  "/dryrun on|off — симуляция публикации\n" +
+  "/blacklist add|del kw|src|guid &lt;значение&gt; — чёрный список\n" +
   "/keyword add|remove &lt;слова&gt; — ключевые слова\n" +
-  "/settings — настройки\n" +
-  "/dryrun on|off — режим симуляции публикации\n" +
-  "/autopost on|off — автопостинг находок\n" +
-  "/export — выгрузка истории\n" +
-  "/rescan — запустить полный тик\n" +
-  "/version — версия";
+  "/rescan — запустить полный тик, /version — версия";
 
 const COMMANDS = [
   { command: "start", description: "Главное меню" },
@@ -138,11 +134,10 @@ function replyKeyboard(rows) {
 
 const MAIN_KB = replyKeyboard([
   [BTN_STATUS, BTN_NEW_POST],
-  [BTN_GEMINI, BTN_GIGACHAT, BTN_NOAI],
+  [BTN_GEMINI, BTN_GIGACHAT],
   [BTN_PUB_ALL, BTN_PUB_VK, BTN_PUB_TG],
   [BTN_STOCK, BTN_STATS],
-  [BTN_SOURCES, BTN_SETTINGS],
-  [BTN_EVENT, BTN_DRYRUN],
+  [BTN_EVENT, BTN_SETTINGS],
   [BTN_HELP],
 ]);
 
@@ -1123,13 +1118,24 @@ async function handleCommand(env, state, chatId, text) {
       const lastLine = last
         ? `${escHtml(last.title || "")} — ${fmtTime(last.published_at)}`
         : "—";
+      const msk = mskNow();
+      const today = log.filter((e) => {
+        const t = new Date(e.published_at);
+        return !Number.isNaN(t.getTime()) && mskNow(t).date === msk.date;
+      }).length;
+      const next = await nextFreeSlot(env);
+      const stockLines = stock.length
+        ? "\n" + stock.slice(0, 5).map((p) => `   • ${escHtml(p.title || p.id)} → ${fmtTime(new Date(p.scheduled_for || Date.now()).toISOString())}`).join("\n") + (stock.length > 5 ? `\n   … и ещё ${stock.length - 5}` : "")
+        : "";
       const msg =
         "📊 <b>Статус студии</b>\n\n" +
         `Режим: <b>${dry ? "dry-run" : "боевой"}</b>\n` +
         `Автопостинг: <b>${(await kv.getAutopost(env)) ? "вкл" : "выкл"}</b>\n` +
         `Источников: <b>${config.feeds?.length || 0}</b>, ключевых слов: <b>${config.keywords?.length || 0}</b>\n` +
         `Склад: <b>${stock.length}</b>, кандидатов: <b>${cands.length}</b>, черновиков: <b>${drafts.length}</b>\n` +
-        `Опубликовано всего: <b>${log.length}</b>\n` +
+        `Опубликовано всего: <b>${log.length}</b>, сегодня: <b>${today}</b>\n` +
+        `Следующий слот: <b>${fmtTime(new Date(next).toISOString())}</b>\n` +
+        (stockLines ? `На складе:${stockLines}` : "") +
         `Последний пост: ${lastLine}\n\n` +
         "🛡️ TrustNode";
       await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
