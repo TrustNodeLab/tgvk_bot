@@ -110,12 +110,7 @@ const COMMANDS = [
 
 const BTN_STATUS = "📊 Статус";
 const BTN_NEW_POST = "✍️ Сделать пост";
-const BTN_GEMINI = "✨ Пост от Gemini";
-const BTN_GIGACHAT = "🧠 Пост от GigaChat";
 const BTN_NOAI = "📝 Пост без ИИ";
-const BTN_PUB_ALL = "🌐 Опубликовать везде";
-const BTN_PUB_VK = "🔵 Опубликовать в VK";
-const BTN_PUB_TG = "🟢 Опубликовать в TG";
 const BTN_STOCK = "🗄 Склад";
 const BTN_STATS = "📜 Статистика";
 const BTN_SOURCES = "📡 Источники";
@@ -136,8 +131,7 @@ function replyKeyboard(rows) {
 
 const MAIN_KB = replyKeyboard([
   [BTN_STATUS, BTN_NEW_POST],
-  [BTN_GEMINI, BTN_GIGACHAT],
-  [BTN_PUB_ALL, BTN_PUB_VK, BTN_PUB_TG],
+  [BTN_NOAI],
   [BTN_STOCK, BTN_STATS],
   [BTN_EVENT, BTN_SETTINGS],
   [BTN_HELP],
@@ -152,12 +146,7 @@ const BTN_CMDS = {
   [BTN_SETTINGS]: "/settings",
   [BTN_HELP]: "/help",
   [BTN_DRYRUN]: "/dryrun",
-  [BTN_GEMINI]: "/gemini",
-  [BTN_GIGACHAT]: "/gigachat",
   [BTN_NOAI]: "/noai",
-  [BTN_PUB_ALL]: "/puball",
-  [BTN_PUB_VK]: "/pubvk",
-  [BTN_PUB_TG]: "/pubtg",
   [BTN_EVENT]: "/event",
 };
 
