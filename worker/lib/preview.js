@@ -91,7 +91,10 @@ export async function renderCardBytes(env, data, meta = {}) {
     }
   }
   console.log("[preview] все рендер-сервисы недоступны, JS-фолбэк");
-  return renderCard(data);
+  return renderCard(data, {
+    format: wantGif ? "gif" : "png",
+    frames: meta.frames || 12,
+  });
 }
 
 // Генерит текст+карточку (данные, PNG, base64) без отправки — переиспользуется

@@ -1,8 +1,12 @@
-// Генератор PNG-карточки поста прямо в Worker (чистый JS, без Canvas/PIL).
+// Генератор карточки поста прямо в Worker (чистый JS, без Canvas/PIL).
 // Текст рисуется растровым шрифтом Exo2 (worker/lib/font.js); PNG кодируется
 // через CompressionStream("deflate") — zlib-поток, ровно то, что ждёт PNG IDAT.
+// Умеет статичный PNG и анимированный GIF (небо над Москвой мерцает: звёзды
+// мигают с индивидуальной фазой, градиент «дышит»). Реализация неба — порт
+// bot/astro.py + _draw_sky из bot/card_generator.py.
 
 import { FONT, FONT_H } from "./font.js";
+import { sunAltitudeMoscow, starsMoscow, CONSTELLATION_LINES } from "./astro.js";
 
 const W = 1080;
 const H = 1350;
@@ -10,11 +14,130 @@ const PAD = 72;
 const SCALE = 3; // базовый масштаб шрифта (16px * 3 = 48px высота строки)
 const LINE_H = FONT_H * SCALE + 16;
 
-const BG = [11, 18, 32]; // #0B1220
+const BG = [11, 18, 32]; // #0B1220 (используется как фон карточки, поверх неба не рисуется)
 const TEXT = [242, 245, 250]; // #F2F5FA
 const ACCENT = [255, 210, 74]; // #FFD24A
 const SUB = [138, 147, 166]; // #8A93A6
 const CARD_BG = [19, 28, 48]; // #131C30
+
+// ---------- небо (порт bot/card_generator.py _draw_sky) ----------
+
+const NIGHT_TOP = [6, 8, 18], NIGHT_BOT = [10, 12, 28];
+const TWI_TOP = [18, 22, 52], TWI_BOT = [60, 45, 90];
+const HORIZON_TOP = [60, 70, 130], HORIZON_BOT = [255, 150, 90];
+const DAY_TOP = [130, 185, 235], DAY_BOT = [225, 240, 252];
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function lerpColor(c1, c2, t) {
+  return [lerp(c1[0], c2[0], t), lerp(c1[1], c2[1], t), lerp(c1[2], c2[2], t)];
+}
+
+// По высоте Солнца подбираем градиент неба, цвет текста и прозрачность звёзд.
+// Возвращает {top, bot, text, starOp, isLight}.
+function skyTheme(sunAlt) {
+  if (sunAlt <= -12) {
+    return { top: NIGHT_TOP, bot: NIGHT_BOT, text: [255, 255, 255], starOp: 1.0, isLight: false };
+  } else if (sunAlt <= -4) {
+    const t = (sunAlt + 12) / 8.0;
+    return {
+      top: lerpColor(NIGHT_TOP, TWI_TOP, t),
+      bot: lerpColor(NIGHT_BOT, TWI_BOT, t),
+      text: [255, 255, 255],
+      starOp: 1.0 - 0.35 * t,
+      isLight: false,
+    };
+  } else if (sunAlt <= 3) {
+    const t = (sunAlt + 4) / 7.0;
+    return {
+      top: lerpColor(TWI_TOP, HORIZON_TOP, t),
+      bot: lerpColor(TWI_BOT, HORIZON_BOT, t),
+      text: [255, 255, 255],
+      starOp: Math.max(0.0, 0.65 - 0.65 * t),
+      isLight: false,
+    };
+  } else if (sunAlt <= 15) {
+    const t = (sunAlt - 3) / 12.0;
+    const isLight = t > 0.5;
+    return {
+      top: lerpColor(HORIZON_TOP, DAY_TOP, t),
+      bot: lerpColor(HORIZON_BOT, DAY_BOT, t),
+      text: isLight ? [17, 17, 17] : [255, 255, 255],
+      starOp: 0.0,
+      isLight,
+    };
+  }
+  return { top: DAY_TOP, bot: DAY_BOT, text: [17, 17, 17], starOp: 0.0, isLight: true };
+}
+
+function project(alt, az, w, h) {
+  const r = 90 - alt;
+  const scale = (h * 0.62) / 90.0;
+  const azR = (az * Math.PI) / 180;
+  return [w / 2 + r * Math.sin(azR) * scale, h * 0.42 - r * Math.cos(azR) * scale];
+}
+
+// Рисует фон карточки: градиент неба под dtMsk и мерцающие звёзды с фазами.
+// phase (0..1) — позиция в цикле анимации; каждый кадр GIF движет небо.
+function drawSky(c, dtMsk, phase) {
+  const sunAlt = sunAltitudeMoscow(dtMsk);
+  const th = skyTheme(sunAlt);
+  const w = c.w, h = c.h;
+  // «дыхание» градиента: лёгкий сдвиг t по синусоиде фазы
+  const wave = 0.02 * Math.sin(phase * 2 * Math.PI);
+  for (let y = 0; y < h; y++) {
+    const t = Math.min(1.0, Math.max(0.0, y / h + wave));
+    const col = lerpColor(th.top, th.bot, t);
+    for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4;
+      c.px[i] = col[0]; c.px[i + 1] = col[1]; c.px[i + 2] = col[2]; c.px[i + 3] = 255;
+    }
+  }
+  if (th.starOp > 0.01) {
+    const positions = {};
+    for (const [name, alt, az, mag] of starsMoscow(dtMsk)) {
+      if (alt <= -2) continue;
+      const [x, y] = project(alt, az, w, h);
+      if (x > -50 && x < w + 50 && y > -50 && y < h + 50) {
+        positions[name] = [x, y];
+        const size = Math.max(1.0, (2.2 - mag) * 1.15);
+        // у каждой звезды своя фаза от имени — не мигают синхронно
+        let h = 0;
+        for (let i = 0; i < name.length; i++) h += name.charCodeAt(i);
+        const tw = 0.75 + 0.25 * Math.sin(phase * 2 * Math.PI + (h % 16) * 0.4);
+        const b = Math.max(60, Math.min(255, Math.round(255 * th.starOp * tw)));
+        const col = [b, b, Math.min(255, b + 15)];
+        const s = Math.ceil(size);
+        for (let dy = -s; dy <= s; dy++) {
+          for (let dx = -s; dx <= s; dx++) {
+            if (dx * dx + dy * dy > s * s) continue;
+            const px = Math.round(x + dx), py = Math.round(y + dy);
+            if (px < 0 || py < 0 || px >= w || py >= h) continue;
+            const i = (py * w + px) * 4;
+            c.px[i] = col[0]; c.px[i + 1] = col[1]; c.px[i + 2] = col[2]; c.px[i + 3] = 255;
+          }
+        }
+      }
+    }
+    // линии созвездий
+    const lineCol = ((Math.max(35, Math.round(90 * th.starOp)) + 30)) | 0;
+    for (const pairs of Object.values(CONSTELLATION_LINES)) {
+      for (const [a, b] of pairs) {
+        if (positions[a] && positions[b]) {
+          const [x1, y1] = positions[a], [x2, y2] = positions[b];
+          const steps = Math.max(Math.abs(x2 - x1), Math.abs(y2 - y1));
+          for (let s = 0; s <= steps; s++) {
+            const x = Math.round(x1 + ((x2 - x1) * s) / steps);
+            const y = Math.round(y1 + ((y2 - y1) * s) / steps);
+            if (x < 0 || y < 0 || x >= w || y >= h) continue;
+            const i = (y * w + x) * 4;
+            c.px[i] = lineCol; c.px[i + 1] = lineCol; c.px[i + 2] = lineCol; c.px[i + 3] = 255;
+          }
+        }
+      }
+    }
+  }
+}
 
 // ---------- растровый холст ----------
 
@@ -191,8 +314,24 @@ function drawFooter(canvas, tier, y) {
 }
 
 // Основная точка входа. data: {headline, cards:[{type,number,label,desc,items,before,after}], tier}
-export async function renderCard(data) {
-  const c = new Canvas(W, H);
+// opts: {format: "png"|"gif", frames: число кадров (gif), dtMsk: Date (UTC-поля = МСК), phase: 0..1}.
+// Возвращает байты PNG или анимированного GIF89a.
+export async function renderCard(data, opts = {}) {
+  const frames = opts.format === "gif" ? Math.max(2, Math.min(30, opts.frames || 12)) : 1;
+  const dtMsk = opts.dtMsk || new Date(Date.now() + 3 * 3600 * 1000); // МСК
+  const canvases = [];
+  for (let f = 0; f < frames; f++) {
+    const c = new Canvas(W, H);
+    drawSky(c, dtMsk, frames === 1 ? (opts.phase || 0) : f / frames);
+    drawContent(c, data);
+    canvases.push(c);
+  }
+  if (frames === 1) return encodePng(canvases[0]);
+  return encodeGif(canvases, 8); // 8 fps
+}
+
+// Рисует статичное содержимое карточки поверх уже нарисованного неба.
+function drawContent(c, data) {
   // верхняя акцентная полоса
   c.fillRect(0, 0, W, 14, ACCENT);
   // водяной знак
@@ -253,7 +392,6 @@ export async function renderCard(data) {
   }
 
   drawFooter(c, data.tier || "news", H - 130);
-  return encodePng(c);
 }
 
 // ---------- PNG → GIF (индексированный) ----------
@@ -539,6 +677,160 @@ export async function pngToGif(pngBytes) {
     parts.push(sub);
   }
   parts.push(Uint8Array.of(0x00)); // terminator
+  parts.push(Uint8Array.of(0x3b)); // trailer
+
+  const total = parts.reduce((s, p) => s + p.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) { out.set(p, off); off += p.length; }
+  return out;
+}
+
+// ---------- анимированный GIF (несколько кадров, общая палитра) ----------
+
+// Квантование объединённой гистограммы всех кадров в <=256 цветов.
+function buildPaletteMulti(rgbaList) {
+  const freq = new Map();
+  for (const rgba of rgbaList) {
+    for (let i = 0; i < rgba.length; i += 4) {
+      const k = (rgba[i] << 16) | (rgba[i + 1] << 8) | rgba[i + 2];
+      freq.set(k, (freq.get(k) || 0) + 1);
+    }
+  }
+  const colors = Array.from(freq.entries()).map(([k, count]) => ({
+    r: (k >> 16) & 0xff,
+    g: (k >> 8) & 0xff,
+    b: k & 0xff,
+    count,
+  }));
+  if (colors.length <= 256) return colors.map((c) => [c.r, c.g, c.b]);
+  const range = (box, ch) => {
+    let lo = 255, hi = 0;
+    for (const c of box) { const v = c[ch]; if (v < lo) lo = v; if (v > hi) hi = v; }
+    return hi - lo;
+  };
+  let boxes = [colors];
+  while (boxes.length < 256) {
+    let bi = -1, bestR = -1;
+    for (let i = 0; i < boxes.length; i++) {
+      const r = Math.max(range(boxes[i], "r"), range(boxes[i], "g"), range(boxes[i], "b"));
+      if (r > bestR) { bestR = r; bi = i; }
+    }
+    if (bestR <= 0) break;
+    const box = boxes[bi];
+    const ch = range(box, "r") >= range(box, "g")
+      ? (range(box, "r") >= range(box, "b") ? "r" : "b")
+      : (range(box, "g") >= range(box, "b") ? "g" : "b");
+    box.sort((a, b) => a[ch] - b[ch]);
+    const cut = Math.floor(box.length / 2);
+    const left = box.slice(0, cut), right = box.slice(cut);
+    if (!left.length || !right.length) break;
+    boxes[bi] = left;
+    boxes.push(right);
+  }
+  return boxes.map((box) => {
+    let sr = 0, sg = 0, sb = 0, n = 0;
+    for (const c of box) { sr += c.r * c.count; sg += c.g * c.count; sb += c.b * c.count; n += c.count; }
+    return [Math.round(sr / n), Math.round(sg / n), Math.round(sb / n)];
+  });
+}
+
+// Каждый кадр -> индексы палитры (общий кэш по RGB внутри кадра).
+function indicesForFrame(rgba, palette, w, h) {
+  const cache = new Map();
+  const indices = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) {
+    const r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
+    const key = (r << 16) | (g << 8) | b;
+    let idx = cache.get(key);
+    if (idx === undefined) {
+      idx = nearestPaletteIdx(null, palette, r, g, b);
+      cache.set(key, idx);
+    }
+    indices[i] = idx;
+  }
+  return indices;
+}
+
+// GCE (Graphic Control Extension) с задержкой кадра: 8 байт.
+function gceBlock(delayCs) {
+  return Uint8Array.of(
+    0x21, 0xf9, // extension introducer + GCE label
+    0x04, // block size
+    0x00, // packed: no transparency
+    delayCs & 0xff, (delayCs >> 8) & 0xff, // delay in centiseconds
+    0x00, // transparent color index
+    0x00, // block terminator
+  );
+}
+
+// Netscape loop extension (бесконечный цикл).
+function netscapeLoop() {
+  return Uint8Array.of(
+    0x21, 0xff, // extension introducer + app label
+    0x0b, // block size = 11
+    0x4e, 0x45, 0x54, 0x53, 0x43, 0x41, 0x50, 0x45, 0x32, 0x2e, 0x30, // "NETSCAPE2.0"
+    0x03, 0x01, 0x00, 0x00, // loop count = 0 (forever)
+    0x00, // terminator
+  );
+}
+
+// Кадры -> анимированный GIF89a. Кадр: {w, h, px (RGBA)}. fps — частота кадров.
+export function encodeGif(canvases, fps = 8) {
+  const w = canvases[0].w, h = canvases[0].h;
+  const rgbaList = canvases.map((c) => c.px);
+  const palette = buildPaletteMulti(rgbaList);
+
+  const nColors = palette.length;
+  const colorBits = nColors > 128 ? 8 : nColors > 64 ? 7 : nColors > 32 ? 6 : nColors > 16 ? 5 : nColors > 8 ? 4 : nColors > 4 ? 3 : 2;
+  const minCodeSize = Math.max(2, colorBits);
+  const tableSize = 1 << colorBits;
+  const colorTable = new Uint8Array(tableSize * 3);
+  for (let i = 0; i < tableSize; i++) {
+    const c = palette[i] || [0, 0, 0];
+    colorTable[i * 3] = c[0];
+    colorTable[i * 3 + 1] = c[1];
+    colorTable[i * 3 + 2] = c[2];
+  }
+
+  const delayCs = Math.max(1, Math.round(100 / fps));
+  const gctSize = colorBits - 1;
+  const header = new Uint8Array([
+    0x47, 0x49, 0x46, 0x38, 0x39, 0x61, // GIF89a
+    w & 0xff, (w >> 8) & 0xff, h & 0xff, (h >> 8) & 0xff,
+    0x80 | (gctSize & 7), // global color table flag + size
+    0x00, // bg color index
+    0x00, // pixel aspect ratio
+  ]);
+
+  const parts = [header, colorTable, netscapeLoop()];
+
+  const encCache = new Map();
+  const lzwFor = (indices) => {
+    const key = indices.length + ":" + Array.from(indices.slice(0, 32)).join(",");
+    const hit = encCache.get(key);
+    if (hit) return hit;
+    const enc = new Uint8Array(lzwEncode(Array.from(indices), minCodeSize));
+    if (encCache.size < 32) encCache.set(key, enc);
+    return enc;
+  };
+
+  for (const c of canvases) {
+    const indices = indicesForFrame(c.px, palette, w, h);
+    const encoded = lzwFor(indices);
+    const imgDesc = new Uint8Array([
+      0x2c, 0x00, 0x00, 0x00, 0x00, w & 0xff, (w >> 8) & 0xff, h & 0xff, (h >> 8) & 0xff, 0x00,
+    ]);
+    parts.push(gceBlock(delayCs), imgDesc, Uint8Array.of(minCodeSize));
+    for (let i = 0; i < encoded.length; i += 255) {
+      const block = encoded.subarray(i, i + 255);
+      const sub = new Uint8Array(block.length + 1);
+      sub[0] = block.length;
+      sub.set(block, 1);
+      parts.push(sub);
+    }
+    parts.push(Uint8Array.of(0x00)); // terminator
+  }
   parts.push(Uint8Array.of(0x3b)); // trailer
 
   const total = parts.reduce((s, p) => s + p.length, 0);

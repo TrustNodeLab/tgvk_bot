@@ -598,12 +598,50 @@ test("webhook: обычный текст генерит карточку и пр
   });
   await worker.fetch(req, env, { waitUntil() {} });
   await new Promise((r) => setTimeout(r, 300));
-  assert.ok(calls.tg.some((c) => c.url.includes("/sendPhoto")), "превью-фото отправлено");
+  assert.ok(
+    calls.tg.some((c) => c.url.includes("/sendPhoto") || c.url.includes("/sendAnimation")),
+    "превью-карточка отправлена (sendPhoto/sendAnimation)"
+  );
   assert.equal(calls.github.length, 0, "GitHub не вызывался");
   const drafts = await kv.listDrafts(env);
   const gen = drafts.find((d) => d.kind === "generated");
   assert.ok(gen, "черновик создан");
   assert.ok(gen.png, "карточка сохранена в черновике");
+});
+
+test("renderCard: JS-фолбэк умеет и PNG, и анимированный GIF (кадры отличаются)", async () => {
+  const { renderCard } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/cardgen.js");
+  const data = {
+    headline: "МВД советует виртуальную карту",
+    tier: "news",
+    cards: [{ type: "list", items: ["Мошенники похитили 15,8 млрд ₽ за год", "Виртуальная карта — безопасная покупка"] }],
+  };
+  const png = await renderCard(data, { format: "png" });
+  assert.ok(png && png.length > 1000, "PNG не пустой");
+  assert.ok(String.fromCharCode(...png.slice(1, 4)) === "PNG", "PNG magic-байты");
+  const gif = await renderCard(data, { format: "gif", frames: 5 });
+  assert.ok(gif && gif.length > 1000, "GIF не пустой");
+  assert.ok(String.fromCharCode(...gif.slice(0, 6)) === "GIF89a", "GIF89a magic-байты");
+  let gce = 0;
+  for (let i = 0; i + 1 < gif.length; i++) if (gif[i] === 0x21 && gif[i + 1] === 0xf9) gce++;
+  assert.equal(gce, 5, "5 кадров в GIF");
+  const a = await renderCard(data, { format: "png", phase: 0 });
+  const b = await renderCard(data, { format: "png", phase: 0.25 });
+  let differ = false;
+  const min = Math.min(a.length, b.length);
+  for (let i = 0; i < min; i++) if (a[i] !== b[i]) { differ = true; break; }
+  assert.ok(differ, "кадры с разной фазой неба отличаются (анимация есть)");
+});
+
+test("renderCardBytes: при недоступных рендерах JS-фолбэк отдаёт GIF по запросу", async () => {
+  const { renderCardBytes } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/preview.js");
+  const env = { CARD_RENDER_URL: undefined, CARD_RENDER_URLS: undefined, BOT_KV: { get: async () => null, put: async () => {} } };
+  const data = { headline: "Тест", tier: "news", caption: "Тест", cards: [], source: "Тест" };
+  const gif = await renderCardBytes(env, data, { format: "gif", frames: 4 });
+  assert.ok(gif && gif.length > 1000, "GIF не пустой");
+  assert.ok(String.fromCharCode(...gif.slice(0, 6)) === "GIF89a", "фолбэк вернул GIF89a");
+  const png = await renderCardBytes(env, data, { format: "png" });
+  assert.ok(String.fromCharCode(...png.slice(1, 4)) === "PNG", "фолбэк вернул PNG");
 });
 
 test("isStaleItem: протухшая новость определяется по pub_ts/found_at", async () => {
