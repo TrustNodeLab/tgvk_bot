@@ -1,21 +1,20 @@
 // Планировщик: каждый крон выполняет полный цикл —
 // скан+дедуп -> диспатч на подготовку -> авто-отложка черновиков ->
-// публикация из «склада» по слотам -> аудиты -> аварийный фолбэк при аутэдже GitHub.
+// публикация из «склада» строго по слотам -> аварийный фолбэк при аутэдже GitHub.
 
 import {
-  NEWS_WINDOWS, AUDIT_DAILY, AUDIT_WEEKLY, EVENT_MONDAY,
+  NEWS_WINDOWS,
   MSK_OFFSET_MIN, STOCK_TARGET, MAX_IN_FLIGHT, MAX_CANDIDATES_PER_TICK,
   DRAFT_TIMEOUT_MIN, DISPATCH_STALE_MIN, FALLBACK_COOLDOWN_MS, mskNow, plural,
   MAX_AGE_MS, isStaleItem,
 } from "./config.js";
 import * as kv from "./kv.js";
 import { scanFeeds } from "./feeds.js";
-import { sendGeneratedPreview, sourceDomain } from "./preview.js";
+import { buildCardPackage, sourceDomain } from "./preview.js";
 import {
   publishToTelegram, publishToVk, sendMessage, vkCall, tgCall,
 } from "./telegram.js";
 import { fullPostText, fitCaption, fmtTime } from "./text.js";
-import { buildDailyAudit, buildWeeklyAudit, buildEventFallback } from "./audits.js";
 
 const CHUNK_COUNT = 2; // скан делится на 2 части (лимит подзапросов free-плана)
 
@@ -28,7 +27,7 @@ function decodePng(b64) {
 
 // ---------- время и слоты ----------
 
-function mskToUtcMs(dow, minuteOfDay, now = new Date()) {
+export function mskToUtcMs(dow, minuteOfDay, now = new Date()) {
   // ближайшее наступление dow (0=пн) в minuteOfDay в МСК -> epoch ms
   const msk = new Date(now.getTime() + MSK_OFFSET_MIN * 60 * 1000);
   const todayDow = (msk.getUTCDay() + 6) % 7;
@@ -51,16 +50,8 @@ function mskToUtcMs(dow, minuteOfDay, now = new Date()) {
   return Date.UTC(y, m, d, Math.floor(utcMinute / 60), utcMinute % 60) - (0);
 }
 
-function randBetween(a, b) {
-  return a + Math.floor(Math.random() * (b - a + 1));
-}
-
 export function currentWindow(minuteOfDay) {
   return NEWS_WINDOWS.find((w) => minuteOfDay >= w.start && minuteOfDay < w.end) || null;
-}
-
-function inWindow(msk, win) {
-  return msk.minuteOfDay >= win.start && msk.minuteOfDay < win.end;
 }
 
 // Сколько новостей уже опубликовано в этом окне сегодня.
@@ -81,43 +72,21 @@ async function countInWindow(env, win, now) {
 }
 
 // Следующий свободный слот для новостного поста (epoch ms).
+// Строгое расписание: каждые 4 часа ровно один пост в начале окна
+// (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 МСК). Без рандома внутри окна.
 export async function nextFreeSlot(env, now = new Date()) {
-  const msk = mskNow(now);
-  const cur = currentWindow(msk.minuteOfDay);
-  if (cur) {
-    const used = await countInWindow(env, cur, now);
-    if (used < cur.cap) return now.getTime(); // публикуем сейчас
-  }
-  // ищем ближайшее будущее окно с местом (сегодня или дальше)
-  let dayOffset = 0;
-  for (let i = 0; i < 7 * 24; i++) {
-    const t = now.getTime() + dayOffset * 86400000;
-    const m2 = mskNow(new Date(t));
+  const nowMs = now.getTime();
+  for (let dayOffset = 0; dayOffset < 8; dayOffset++) {
+    const t = new Date(nowMs + dayOffset * 86400000);
+    const m2 = mskNow(t);
     for (const w of NEWS_WINDOWS) {
-      if (m2.minuteOfDay < w.end) {
-        const used = await countInWindow(env, w, new Date(t));
-        if (used < w.cap) {
-          // Окно ещё открыто сегодня (start может быть в прошлом — тогда
-          // randBetween даст «сейчас», нижняя граница — now+60s).
-          const start = mskToUtcMs(m2.dow, w.start, new Date(t));
-          const end = mskToUtcMs(m2.dow, Math.min(w.end, 23 * 60 + 59), new Date(t));
-          const slot = randBetween(start, end);
-          return Math.max(slot, now.getTime() + 60 * 1000);
-        }
-      }
+      const slot = mskToUtcMs(m2.dow, w.start, new Date(t));
+      if (slot < nowMs) continue; // слот уже прошёл
+      const used = await countInWindow(env, w, new Date(slot));
+      if (used < w.cap) return slot;
     }
-    dayOffset += 1;
   }
-  return now.getTime() + 3600 * 1000;
-}
-
-function auditSlotMs(cfg, now = new Date()) {
-  const msk = mskNow(now);
-  if (cfg === AUDIT_DAILY) {
-    return mskToUtcMs(msk.dow, AUDIT_DAILY.start, now);
-  }
-  // ближайшие выходные/понедельник — окно «сегодня или в следующий раз»
-  return mskToUtcMs(cfg.dow, cfg.start, now);
+  return nowMs + 3600 * 1000;
 }
 
 // ---------- диспатч кандидатов на подготовку (GitHub Actions) ----------
@@ -393,62 +362,6 @@ async function autoDeferDrafts(env, state, now = new Date()) {
   }
 }
 
-// ---------- аудиты ----------
-
-async function publishAuditIfDue(env, state, now = new Date()) {
-  const msk = mskNow(now);
-  const log = await kv.getLog(env);
-
-  // ежедневный
-  if (inWindow(msk, AUDIT_DAILY) && state.meta.last_daily_audit !== msk.date) {
-    await publishAuditKind(env, "daily_audit", state, log, now, msk, AUDIT_DAILY);
-  }
-  // недельный (воскресенье)
-  if (
-    msk.dow === AUDIT_WEEKLY.dow && inWindow(msk, AUDIT_WEEKLY) &&
-    state.meta.last_weekly_audit !== msk.date
-  ) {
-    await publishAuditKind(env, "weekly_audit", state, log, now, msk, AUDIT_WEEKLY);
-  }
-  // понедельничный ивент
-  if (
-    msk.dow === EVENT_MONDAY.dow && inWindow(msk, EVENT_MONDAY) &&
-    state.meta.last_event !== msk.date
-  ) {
-    await publishAuditKind(env, "event", state, log, now, msk, EVENT_MONDAY);
-  }
-}
-
-async function publishAuditKind(env, kind, state, log, now, msk, cfg) {
-  const dry = !!state.dry_run;
-  // если GitHub заранее подготовил пакет аудита — публикуем его (с карточкой)
-  const stock = await kv.getStock(env);
-  const prepped = stock.find((p) => p.kind === kind && (p.scheduled_for || 0) <= now.getTime());
-  let ok = false;
-  if (prepped) {
-    await kv.removeStock(env, prepped.id);
-    try {
-      await publishPackage(env, prepped, dry);
-      ok = true;
-    } catch (e) {
-      // карточка не ушла — пробуем текстовую версию
-    }
-  }
-  if (!ok) {
-    let text;
-    if (kind === "daily_audit") text = buildDailyAudit(log, msk);
-    else if (kind === "weekly_audit") text = buildWeeklyAudit(log, msk);
-    else text = buildEventFallback(log, msk);
-    if (text) ok = await publishText(env, text, dry, kind, { id: `${kind}_${msk.date}` });
-  }
-  if (ok) {
-    if (kind === "daily_audit") state.meta.last_daily_audit = msk.date;
-    if (kind === "weekly_audit") state.meta.last_weekly_audit = msk.date;
-    if (kind === "event") state.meta.last_event = msk.date;
-    await kv.saveState(env, state);
-  }
-}
-
 // ---------- аварийный фолбэк (GitHub лежит) ----------
 
 async function handleStaleDispatches(env, state, now = new Date()) {
@@ -523,6 +436,19 @@ async function publishDueStock(env, now = new Date()) {
     await kv.removeStock(env, pkg.id);
     try {
       const state = await kv.loadState(env);
+      if (pkg.kind === "event") {
+        // ивенты — текстовый пост без карточки (создаются админом в диалоге)
+        const text = (pkg.caption || pkg.title || "").trim();
+        if (!text) continue;
+        const ok = await publishText(env, text, !!state.dry_run, "event", {
+          id: pkg.id,
+          title: pkg.title || "",
+          guid: pkg.guid || "",
+          link: pkg.link || "",
+        });
+        if (!ok) await kv.addStock(env, { ...pkg, scheduled_for: now.getTime() + 15 * 60 * 1000 });
+        continue;
+      }
       await publishPackage(env, pkg, !!state.dry_run);
     } catch (e) {
       console.log("[scheduler] publish failed:", e.message);
@@ -533,29 +459,39 @@ async function publishDueStock(env, now = new Date()) {
 
 // ---------- главный тик ----------
 
-// Когда GitHub лежит (диспатч не проходит), а autopost включён — генерим
-// превью прямо в воркере из первого кандидата и шлём админу на одобрение.
-// Не чаще одного: пока есть незакрытый черновик на одобрении, новые не шлём.
-async function autoGeneratePreviews(env, state) {
-  if (!(await kv.getAutopost(env))) return;
-  if (!env.TELEGRAM_ADMIN_CHAT_ID) return;
-  const drafts = await kv.listDrafts(env);
-  if (drafts.some((d) => d.kind === "generated" && (!d.status || d.status === "pending"))) return;
-  const cands = await kv.getCandidates(env);
-  const cand = cands[0];
-  if (!cand) return;
-  await kv.setCandidates(env, cands.slice(1));
-  try {
-    const data = await sendGeneratedPreview(
-      env,
-      env.TELEGRAM_ADMIN_CHAT_ID,
-      cand.text || cand.title,
-      { link: cand.link || "", source: sourceDomain(cand.link || ""), guid: cand.guid || "" }
-    );
-    console.log("[scheduler] autogen preview:", data.headline);
-  } catch (e) {
-    console.log("[scheduler] autogen error:", e.message);
-    await kv.addCandidate(env, cand);
+// Автопостинг целиком в воркере: генерим карточку из кандидата (LLM/правила)
+// прямо здесь и кладём на склад в следующий свободный слот. Публикация идёт
+// строго по расписанию из publishDueStock. GitHub для автопостинга не нужен.
+async function autoGenerateStock(env, cands) {
+  for (const c of cands) {
+    // Новость успела протухнуть, пока ждала в очереди — не готовим.
+    if (isStaleItem(c, Date.now())) continue;
+    try {
+      const slot = await nextFreeSlot(env);
+      const { data, b64 } = await buildCardPackage(env, c.text || c.title, {
+        link: c.link || "",
+        source: sourceDomain(c.link || ""),
+        guid: c.guid || "",
+      });
+      await kv.addStock(env, {
+        id: `a${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`,
+        kind: "news",
+        title: data.headline,
+        caption: data.caption,
+        png: b64,
+        link: c.link || "",
+        guid: c.guid || "",
+        source: sourceDomain(c.link || ""),
+        tags: [],
+        scheduled_for: slot,
+        created_at: new Date().toISOString(),
+        from_admin: false,
+      });
+      console.log("[scheduler] autogen stock:", data.headline, "slot", new Date(slot).toISOString());
+    } catch (e) {
+      console.log("[scheduler] autogen stock error:", e.message);
+      await kv.addCandidate(env, c);
+    }
   }
 }
 
@@ -572,7 +508,7 @@ export async function tick(env) {
   }
   state.meta.scan_chunk = (offset + 1) % CHUNK_COUNT;
 
-  // 2. диспатч кандидатов на подготовку (по мере исчерпания склада)
+  // 2. пополнение склада: автопостинг в воркере или диспатч на GitHub
   try {
     const nowMs = Date.now();
     // выкидываем протухшие кандидаты, чтобы они не публиковались позже
@@ -592,28 +528,26 @@ export async function tick(env) {
     if (need > 0 && inFlight < MAX_IN_FLIGHT) {
       const toSend = Math.min(MAX_CANDIDATES_PER_TICK, need, MAX_IN_FLIGHT - inFlight);
       const cands = await kv.takeCandidates(env, toSend);
-      for (const c of cands) {
-        // Новость успела протухнуть, пока ждала в очереди — не отдаём на подготовку.
-        if (isStaleItem(c, Date.now())) continue;
-        try {
-          const ok = await dispatchToGitHub(env, c);
-          if (!ok) {
+      if (await kv.getAutopost(env)) {
+        // автопостинг целиком в воркере: карточка -> склад в строгий слот
+        await autoGenerateStock(env, cands);
+      } else {
+        for (const c of cands) {
+          // Новость успела протухнуть, пока ждала в очереди — не отдаём на подготовку.
+          if (isStaleItem(c, Date.now())) continue;
+          try {
+            const ok = await dispatchToGitHub(env, c);
+            if (!ok) {
+              await kv.addCandidate(env, c);
+            }
+          } catch (e) {
             await kv.addCandidate(env, c);
           }
-        } catch (e) {
-          await kv.addCandidate(env, c);
         }
       }
     }
   } catch (e) {
     console.log("[scheduler] dispatch error:", e.message);
-  }
-
-  // 3. аварийная генерация в воркере (GitHub лежит, autopost включён)
-  try {
-    await autoGeneratePreviews(env, state);
-  } catch (e) {
-    console.log("[scheduler] autogen step error:", e.message);
   }
 
   // 4. фолбэк при аутэдже GitHub
@@ -642,13 +576,6 @@ export async function tick(env) {
     await processVkRetries(env);
   } catch (e) {
     console.log("[scheduler] vk-retry error:", e.message);
-  }
-
-  // 7. аудиты
-  try {
-    await publishAuditIfDue(env, state, now);
-  } catch (e) {
-    console.log("[scheduler] audit error:", e.message);
   }
 
   await kv.saveState(env, state);

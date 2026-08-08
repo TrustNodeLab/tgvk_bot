@@ -90,45 +90,45 @@ function jsonResp(body, status = 200) {
 
 // ---------- тесты ----------
 
-test("currentWindow: границы окон (МСК)", async () => {
+test("currentWindow: границы окон (МСК) — 4-часовые окна", async () => {
   const { currentWindow } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
-  assert.equal(currentWindow(6 * 60).start, 6 * 60);
-  assert.equal(currentWindow(11 * 60 + 59).start, 6 * 60);
+  // окна: 00–04, 04–08, 08–12, 12–16, 16–20, 20–24
+  assert.equal(currentWindow(0).start, 0);
+  assert.equal(currentWindow(3 * 60 + 59).start, 0);
+  assert.equal(currentWindow(4 * 60).start, 4 * 60);
+  assert.equal(currentWindow(7 * 60 + 59).start, 4 * 60);
+  assert.equal(currentWindow(8 * 60).start, 8 * 60);
   assert.equal(currentWindow(12 * 60).start, 12 * 60);
-  assert.equal(currentWindow(16 * 60 + 59).start, 12 * 60);
-  assert.equal(currentWindow(17 * 60).start, 17 * 60);
-  assert.equal(currentWindow(21 * 60 + 59).start, 17 * 60);
-  assert.equal(currentWindow(22 * 60), null);
-  assert.equal(currentWindow(5 * 60 + 59), null);
+  assert.equal(currentWindow(16 * 60).start, 16 * 60);
+  assert.equal(currentWindow(20 * 60).start, 20 * 60);
+  assert.equal(currentWindow(23 * 60 + 59).start, 20 * 60);
 });
 
 test("nextFreeSlot: свободное окно сейчас -> публикуем немедленно", async () => {
   const { nextFreeSlot } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
   const env = makeEnv();
-  // 2026-08-07 04:00 UTC = 07:00 МСК (внутри окна 06–12 с вместимостью 2)
-  const now = new Date("2026-08-07T04:00:00Z");
+  // 2026-08-07 05:00 UTC = 08:00 МСК — ровно начало окна 08–12 (вместимость 1)
+  const now = new Date("2026-08-07T05:00:00Z");
   const slot = await nextFreeSlot(env, now);
   assert.equal(slot, now.getTime());
 });
 
-test("nextFreeSlot: окно заполнено -> следующий свободный слот", async () => {
+test("nextFreeSlot: окно заполнено -> следующий свободный слот (ровно начало окна)", async () => {
   const { nextFreeSlot } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
   const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
   const env = makeEnv();
-  const now = new Date("2026-08-07T04:00:00Z"); // 07:00 МСК
-  // заполняем окно 06–12 двумя постами сегодня
-  for (const h of [7, 9]) {
-    await kv.addLog(env, {
-      id: `n${h}`,
-      kind: "news",
-      published_at: new Date("2026-08-07T" + String(h - 3).padStart(2, "0") + ":00:00Z").toISOString(),
-    });
-  }
+  const now = new Date("2026-08-07T04:00:00Z"); // 07:00 МСК — окно 04–08 уже идёт
+  // заполняем окно 04–08 одним постом сегодня (в 07:00 МСК = 04:00 UTC)
+  await kv.addLog(env, {
+    id: "n7",
+    kind: "news",
+    published_at: new Date("2026-08-07T04:00:00Z").toISOString(), // 07:00 МСК
+  });
   const slot = await nextFreeSlot(env, now);
   const msk = (await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/config.js")).mskNow(new Date(slot));
-  // 12–17 МСК в тот же день
+  // следующий слот — ровно начало окна 08:00 МСК того же дня
   assert.equal(msk.date, "2026-08-07");
-  assert.ok(msk.minuteOfDay >= 12 * 60 && msk.minuteOfDay < 17 * 60, `slot min=${msk.minuteOfDay}`);
+  assert.equal(msk.minuteOfDay, 8 * 60, `слот = 08:00 МСК, а не ${msk.minuteOfDay}`);
   assert.ok(slot > now.getTime(), "слот в будущем");
 });
 
@@ -638,4 +638,245 @@ test("scanFeeds: кандидат получает pub_ts из даты стат
   assert.equal(cand.pub_ts, Math.floor(pub.getTime() / 1000) * 1000, "pub_ts сохранён из pubDate");
   assert.ok(cand.pub_ts > 0, "pub_ts валидный");
   delete globalThis.fetch;
+});
+
+test("publishDueStock: ивент публикуется текстом без карточки (kind=event)", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { tick } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  const calls = installFetchMock(500);
+  const env = makeEnv();
+  await kv.addStock(env, {
+    id: "evt1",
+    kind: "event",
+    title: "Вебинар",
+    caption: "Вебинар по цифровой безопасности в 18:00",
+    guid: "",
+    link: "",
+    scheduled_for: Date.now() - 1000,
+    from_admin: true,
+  });
+  await tick(env);
+  const stock = await kv.getStock(env);
+  assert.ok(!stock.some((p) => p.id === "evt1"), "ивент убран со склада");
+  const log = await kv.getLog(env);
+  const ev = log.find((e) => e.kind === "event");
+  assert.ok(ev, "ивент записан в лог");
+  assert.ok(ev.tg_ok, "ивент ушёл в TG");
+  assert.ok(calls.tg.some((c) => c.url.includes("/sendMessage")), "ивент отправлен текстом");
+});
+
+test("webhook: не-админ получает пользовательское меню, а не команды студии", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const calls = installFetchMock(500);
+  const env = makeEnv();
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 20,
+      message: { message_id: 5, chat: { id: 999 }, from: { id: 999, first_name: "Гость" }, text: "/start" },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(calls.tg.length >= 1, "бот ответил не-админу");
+  assert.ok(
+    calls.tg.some((c) => c.url.includes("/sendMessage")),
+    "отправлено сообщение (меню пользователя)"
+  );
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const mode = await kv.getUserMode(env, 999);
+  assert.equal(mode, null, "режим сброшен после /start");
+});
+
+test("webhook: не-админ в режиме suggest отправляет предложку админу на одобрение", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const calls = installFetchMock(500);
+  const env = makeEnv();
+  await kv.setUserMode(env, 999, "suggest");
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 21,
+      message: {
+        message_id: 5,
+        chat: { id: 999 },
+        from: { id: 999, first_name: "Гость" },
+        text: "Хочу разместить рекламу VPN-сервиса",
+      },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  const suggestions = await kv.getSuggestions(env);
+  assert.equal(suggestions.length, 1, "предложка сохранена");
+  assert.equal(suggestions[0].text, "Хочу разместить рекламу VPN-сервиса");
+  assert.equal(suggestions[0].user_chat_id, 999);
+  assert.ok(
+    calls.tg.some((c) => c.url.includes("/sendMessage")),
+    "предложка переслана админу"
+  );
+});
+
+test("webhook: админ одобряет предложку -> публикуется и удаляется", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const calls = installFetchMock(500);
+  const env = makeEnv();
+  await kv.addSuggestion(env, {
+    id: "s1",
+    user_chat_id: 999,
+    username: "@guest",
+    text: "Реклама: надёжный VPN",
+    photo: null,
+    created_at: new Date().toISOString(),
+  });
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 22,
+      callback_query: {
+        id: "q22",
+        from: { id: 1 },
+        message: { message_id: 5, chat: { id: 1 } },
+        data: "sugg:approve:all:s1",
+      },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  const suggestions = await kv.getSuggestions(env);
+  assert.equal(suggestions.length, 0, "предложка обработана и удалена");
+  const log = await kv.getLog(env);
+  const entry = log.find((e) => e.kind === "suggestion");
+  assert.ok(entry, "предложка в логе");
+  assert.ok(entry.tg_ok, "опубликована в TG");
+});
+
+test("webhook: не-админ в режиме support пересылает сообщение админу с картой reply", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const calls = installFetchMock(500);
+  const env = makeEnv();
+  await kv.setUserMode(env, 999, "support");
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 23,
+      message: { message_id: 5, chat: { id: 999 }, from: { id: 999 }, text: "Не приходят уведомления" },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  const mapped = await kv.getSupportFwd(env, 1);
+  assert.equal(mapped, 999, "карта reply: админское сообщение 1 -> юзер 999");
+});
+
+test("webhook: ответ админа реплаем на пересланное сообщение уходит пользователю", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const calls = installFetchMock(500);
+  const env = makeEnv();
+  await kv.setSupportFwd(env, 1, 999);
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 24,
+      message: {
+        message_id: 6,
+        chat: { id: 1 },
+        from: { id: 1 },
+        text: "Проверьте настройки уведомлений",
+        reply_to_message: { message_id: 1, chat: { id: 1 } },
+      },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(
+    calls.tg.some((c) => c.body && c.body.includes("999")),
+    "ответ ушёл пользователю 999"
+  );
+  const mapped = await kv.getSupportFwd(env, 1);
+  assert.equal(mapped, null, "карта reply очищена после ответа");
+});
+
+test("event dialog: админ создаёт ивент в два шага (текст + время)", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  installFetchMock(500);
+  const env = makeEnv();
+  // шаг 1: /event запускает диалог
+  let req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 30,
+      message: { message_id: 5, chat: { id: 1 }, from: { id: 1 }, text: "/event" },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  let dialog = await kv.getEventDialog(env);
+  assert.equal(dialog.step, "text", "диалог начат: ждём текст");
+  // шаг 2: админ шлёт текст
+  req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 31,
+      message: { message_id: 6, chat: { id: 1 }, from: { id: 1 }, text: "Вебинар: защита от фишинга" },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  dialog = await kv.getEventDialog(env);
+  assert.equal(dialog.step, "time", "ждём время");
+  assert.equal(dialog.text, "Вебинар: защита от фишинга");
+  // шаг 3: админ шлёт время
+  req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 32,
+      message: { message_id: 7, chat: { id: 1 }, from: { id: 1 }, text: "18:30" },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  dialog = await kv.getEventDialog(env);
+  assert.equal(dialog, null, "диалог завершён");
+  const stock = await kv.getStock(env);
+  const ev = stock.find((p) => p.kind === "event");
+  assert.ok(ev, "ивент на складе");
+  assert.equal(ev.caption, "Вебинар: защита от фишинга");
+  assert.ok(ev.scheduled_for > Date.now() - 60 * 1000, "время публикации в будущем");
+});
+
+test("tick: autopost вкл -> кандидат готовится в воркере и попадает на склад (без GitHub)", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { tick } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  const calls = installFetchMock(500); // GitHub «лежит»
+  const env = makeEnv();
+  await kv.setAutopost(env, true);
+  await kv.addCandidate(env, {
+    guid: "g-autogen",
+    title: "Автоновость",
+    link: "http://l3",
+    text: "МВД посоветовало россиянам использовать виртуальную карту. За год похищено 15,8 млрд рублей.",
+    found_at: new Date().toISOString(),
+  });
+  await tick(env);
+  const stock = await kv.getStock(env);
+  const pkg = stock.find((p) => p.guid === "g-autogen");
+  assert.ok(pkg, "карточка из кандидата легла на склад");
+  assert.ok(pkg.png, "карточка PNG в пакете");
+  assert.ok(pkg.scheduled_for > Date.now(), "слот в будущем (строгое расписание)");
+  const githubCalls = calls.github.filter((c) => c.url.includes("/dispatches"));
+  assert.equal(githubCalls.length, 0, "GitHub workflow_dispatch не вызывался при autopost");
 });

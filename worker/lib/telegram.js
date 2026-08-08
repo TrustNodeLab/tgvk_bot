@@ -108,6 +108,23 @@ export function deleteMessage(env, chatId, messageId) {
   return tgCall(env, "deleteMessage", { chat_id: chatId, message_id: messageId });
 }
 
+export function forwardMessage(env, chatId, fromChatId, messageId) {
+  return tgCall(env, "forwardMessage", {
+    chat_id: chatId,
+    from_chat_id: fromChatId,
+    message_id: messageId,
+  });
+}
+
+export async function downloadFile(env, fileId) {
+  const f = await tgCall(env, "getFile", { file_id: fileId });
+  const path = f && f.file_path;
+  if (!path) throw new Error("file_path пуст");
+  const res = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${path}`);
+  if (!res.ok) throw new Error(`download file failed: ${res.status}`);
+  return new Uint8Array(await res.arrayBuffer());
+}
+
 // ---------- VK: загрузка фото на стену (для групповых токенов) ----------
 
 export async function vkUploadWallPhoto(env, bytes) {

@@ -68,12 +68,19 @@ async function renderCardBytes(env, data, meta = {}) {
   return renderCard(data);
 }
 
-// Генерит текст+карточку, шлёт превью с кнопками и сохраняет черновик.
-export async function sendGeneratedPreview(env, chatId, text, meta = {}) {
+// Генерит текст+карточку (данные, PNG, base64) без отправки — переиспользуется
+// и превью-потоком, и автопостингом в воркере (склад по слотам).
+export async function buildCardPackage(env, text, meta = {}) {
   const data = await generatePostData(text, env, { ...meta, text });
   const png = await renderCardBytes(env, data, meta);
-  const id = `m${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
   const b64 = bytesToBase64(png);
+  return { data, png, b64 };
+}
+
+// Генерит текст+карточку, шлёт превью с кнопками и сохраняет черновик.
+export async function sendGeneratedPreview(env, chatId, text, meta = {}) {
+  const { data, png, b64 } = await buildCardPackage(env, text, meta);
+  const id = `m${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`;
 
   const sent = await sendPhoto(env, chatId, png, data.caption, {
     parse_mode: "HTML",

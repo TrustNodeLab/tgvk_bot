@@ -235,3 +235,66 @@ export async function listDispatches(env) {
   }
   return items;
 }
+
+// ---------- user_mode (состояние диалога с пользователем) ----------
+
+export async function getUserMode(env, chatId) {
+  return kvGet(env, `user_mode:${chatId}`, null);
+}
+
+export async function setUserMode(env, chatId, mode) {
+  if (mode === null) await kvDel(env, `user_mode:${chatId}`);
+  else await kvSet(env, `user_mode:${chatId}`, mode);
+}
+
+// ---------- suggestions (предложка: сообщения пользователей на одобрение) ----------
+
+export async function getSuggestions(env) {
+  return (await kvGet(env, "suggestions", [])) || [];
+}
+
+export async function setSuggestions(env, list) {
+  await kvSet(env, "suggestions", list);
+}
+
+export async function addSuggestion(env, sug) {
+  const list = await getSuggestions(env);
+  if (list.some((s) => s.id === sug.id)) return;
+  list.push(sug);
+  if (list.length > 50) list.splice(0, list.length - 50);
+  await setSuggestions(env, list);
+}
+
+export async function removeSuggestion(env, id) {
+  const list = await getSuggestions(env);
+  const next = list.filter((s) => s.id !== id);
+  await setSuggestions(env, next);
+  return next.length !== list.length;
+}
+
+// ---------- support_fwd (карта пересланных сообщений для reply-механики) ----------
+// Ключ — id сообщения админа (reply_to_message.message_id), значение — chat_id
+// пользователя, которому принадлежало пересланное сообщение.
+
+export async function getSupportFwd(env, adminMessageId) {
+  return kvGet(env, `support_fwd:${adminMessageId}`, null);
+}
+
+export async function setSupportFwd(env, adminMessageId, userChatId) {
+  await kvSet(env, `support_fwd:${adminMessageId}`, userChatId);
+}
+
+export async function delSupportFwd(env, adminMessageId) {
+  await kvDel(env, `support_fwd:${adminMessageId}`);
+}
+
+// ---------- event_dialog (создание ивента админом пошагово) ----------
+
+export async function getEventDialog(env) {
+  return kvGet(env, "event_dialog", null);
+}
+
+export async function setEventDialog(env, dialog) {
+  if (dialog === null) await kvDel(env, "event_dialog");
+  else await kvSet(env, "event_dialog", dialog);
+}

@@ -2,17 +2,15 @@
 export const MSK_OFFSET_MIN = 3 * 60; // UTC+3
 
 // Окна публикации новостных постов (минуты от полуночи МСК).
+// Строгое расписание: каждые 4 часа ровно один пост, начиная с 00:00 МСК.
 export const NEWS_WINDOWS = [
-  { start: 6 * 60, end: 12 * 60, cap: 2 },
-  { start: 12 * 60, end: 17 * 60, cap: 1 },
-  { start: 17 * 60, end: 22 * 60, cap: 2 },
+  { start: 0, end: 4 * 60, cap: 1 },
+  { start: 4 * 60, end: 8 * 60, cap: 1 },
+  { start: 8 * 60, end: 12 * 60, cap: 1 },
+  { start: 12 * 60, end: 16 * 60, cap: 1 },
+  { start: 16 * 60, end: 20 * 60, cap: 1 },
+  { start: 20 * 60, end: 24 * 60, cap: 1 },
 ];
-
-// Плановый контент: окно, в которое публикуется, и минимальный интервал между
-// повторами (в днях).
-export const AUDIT_DAILY = { start: 21 * 60 + 30, end: 22 * 60, key: "last_daily_audit" };
-export const AUDIT_WEEKLY = { dow: 0, start: 20 * 60, end: 22 * 60, key: "last_weekly_audit" };
-export const EVENT_MONDAY = { dow: 1, start: 19 * 60, end: 22 * 60, key: "last_event" };
 
 // Свежесть новости для поста: не старше 24 часов, приоритет последним 6 часам.
 export const MAX_AGE_MS = 24 * 3600 * 1000;

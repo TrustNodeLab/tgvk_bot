@@ -2,10 +2,10 @@
 //
 //  fetch  : REST API (/kv, /files, /health, /debug, /tick) для Python-контура
 //           подготовки (GitHub Actions) + админ-TG-бот (команды и inline-кнопки
-//           одобрения). Карточки готовит GitHub; Worker публикует и админит.
+//           одобрения) + пользовательский контур (предложка, поддержка).
 //  scheduled: cron каждые 5 минут -> scheduler.tick (скан+дедуп, диспатч на
-//           подготовку, авто-отложка черновиков, публикация из склада, аудиты,
-//           аварийный фолбэк при аутэдже GitHub).
+//           подготовку, авто-отложка черновиков, публикация из склада строго
+//           по слотам, аварийный фолбэк при аутэдже GitHub).
 
 import * as kv from "./lib/kv.js";
 import { loadSources } from "./lib/feeds.js";
@@ -13,7 +13,6 @@ import {
   tick as schedulerTick,
   dispatchToGitHub,
   publishPackage,
-  publishText,
 } from "./lib/scheduler.js";
 import {
   sendMessage,
@@ -26,11 +25,20 @@ import {
 } from "./lib/telegram.js";
 import { fmtTime, escHtml } from "./lib/text.js";
 import { NEWS_WINDOWS, mskNow } from "./lib/config.js";
-import { buildDailyAudit, buildWeeklyAudit, buildEventFallback } from "./lib/audits.js";
 import { sendGeneratedPreview, approveButtons } from "./lib/preview.js";
 import { renderCard } from "./lib/cardgen.js";
+import {
+  handleUserStart,
+  handleUserCallback,
+  handleSuggestion,
+  handleSuggestionCallback,
+  handleSupportMessage,
+  handleAdminSupportReply,
+  startEventDialog,
+  handleEventDialogMessage,
+} from "./lib/support.js";
 
-const VERSION = "2.0.0";
+const VERSION = "2.1.0";
 
 // ---------- тексты ----------
 
@@ -58,7 +66,7 @@ const HELP_TEXT =
   "<b>Публикация:</b> кнопки под превью — везде / только VK / только TG\n" +
   "/puball | /pubvk | /pubtg — опубликовать пост со склада (везде / VK / TG)\n" +
   "/skip &lt;guid&gt; — пропустить кандидата\n" +
-  "/audit daily|weekly|event — опубликовать аудит сейчас\n" +
+  "/event — создать ивент (текст + время публикации)\n" +
   "/stats — статистика публикаций\n" +
   "/stock — склад готовых постов\n" +
   "/drafts — черновики на одобрении\n" +
@@ -86,7 +94,7 @@ const COMMANDS = [
   { command: "pubvk", description: "Опубликовать со склада в VK" },
   { command: "pubtg", description: "Опубликовать со склада в TG" },
   { command: "skip", description: "Пропустить кандидата" },
-  { command: "audit", description: "Опубликовать аудит" },
+  { command: "event", description: "Создать ивент" },
   { command: "stats", description: "Статистика" },
   { command: "blacklist", description: "Чёрный список" },
   { command: "keyword", description: "Ключевые слова" },
@@ -116,6 +124,7 @@ const BTN_SOURCES = "📡 Источники";
 const BTN_SETTINGS = "⚙️ Настройки";
 const BTN_HELP = "📖 Помощь";
 const BTN_DRYRUN = "🧪 Dry-run";
+const BTN_EVENT = "🎪 Ивент";
 
 // Постоянная reply-клавиатура под строкой ввода.
 function replyKeyboard(rows) {
@@ -133,7 +142,8 @@ const MAIN_KB = replyKeyboard([
   [BTN_PUB_ALL, BTN_PUB_VK, BTN_PUB_TG],
   [BTN_STOCK, BTN_STATS],
   [BTN_SOURCES, BTN_SETTINGS],
-  [BTN_DRYRUN, BTN_HELP],
+  [BTN_EVENT, BTN_DRYRUN],
+  [BTN_HELP],
 ]);
 
 // Ответ по нажатию reply-кнопки -> команда (кроме «Сделать пост» — там подсказка).
@@ -151,6 +161,7 @@ const BTN_CMDS = {
   [BTN_PUB_ALL]: "/puball",
   [BTN_PUB_VK]: "/pubvk",
   [BTN_PUB_TG]: "/pubtg",
+  [BTN_EVENT]: "/event",
 };
 
 // ---------- утилиты ----------
@@ -958,6 +969,22 @@ async function handleCallback(env, cq, state) {
   const draftId = segs[1] || "";
   const target = segs[2] || "all";
 
+  // пользовательское меню (не админ)
+  if (action === "user") {
+    await handleUserCallback(env, cq);
+    return;
+  }
+
+  // предложки: только админ может одобрять/отклонять
+  if (action === "sugg") {
+    if (!isAdmin(env, chatId)) {
+      try { await answerCallbackQuery(env, qid, "Нет доступа"); } catch (e) { /* ignore */ }
+      return;
+    }
+    await handleSuggestionCallback(env, cq);
+    return;
+  }
+
   if (!isAdmin(env, chatId)) {
     try { await answerCallbackQuery(env, qid, "Нет доступа"); } catch (e) { /* ignore */ }
     return;
@@ -1121,15 +1148,13 @@ async function handleCommand(env, state, chatId, text) {
 
     case "/schedule": {
       const wins = NEWS_WINDOWS.map(
-        (w) => `• ${minutesToClock(w.start)}–${minutesToClock(w.end)} → до ${w.cap} новостных постов`
+        (w) => `• ${minutesToClock(w.start)}–${minutesToClock(w.end)} → ${w.cap} ${w.cap === 1 ? "пост" : "поста"} в начале окна`
       ).join("\n");
       const msg =
         "🗓 <b>Расписание (МСК)</b>\n\n" +
+        "Строгие слоты — каждые 4 часа ровно один пост:\n" +
         wins +
-        "\n" +
-        `• ~21:30 — ежедневный аудит\n` +
-        `• Вс ~21:00 — недельный аудит\n` +
-        `• Пн ~20:00 — ивент`;
+        "\n\n🎪 Ивенты публикуются в заданное время.";
       await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
       break;
     }
@@ -1155,31 +1180,8 @@ async function handleCommand(env, state, chatId, text) {
       break;
     }
 
-    case "/audit": {
-      const kind = (args || "daily").toLowerCase();
-      const msk = mskNow();
-      const log = await kv.getLog(env);
-      let text = null;
-      let logKind = "daily_audit";
-      if (kind === "weekly") {
-        text = buildWeeklyAudit(log, msk);
-        logKind = "weekly_audit";
-      } else if (kind === "event") {
-        text = buildEventFallback(log, msk);
-        logKind = "event";
-      } else {
-        text = buildDailyAudit(log, msk);
-      }
-      if (!text) {
-        await sendMessage(env, chatId, "Нет данных для аудита.");
-        break;
-      }
-      const ok = await publishText(env, text, dry, logKind, {});
-      await sendMessage(
-        env,
-        chatId,
-        ok ? `✅ Аудит опубликован${dry ? " (dry-run)" : ""}` : "⚠️ Не удалось опубликовать аудит"
-      );
+    case "/event": {
+      await startEventDialog(env, chatId);
       break;
     }
 
@@ -1413,10 +1415,52 @@ async function handleManualText(env, chatId, text, state) {
 
 async function handleMessage(env, msg, state) {
   const chatId = msg.chat ? msg.chat.id : null;
-  if (!chatId || !isAdmin(env, chatId)) {
-    console.log(`[webhook] ignore msg from ${chatId}`);
+  if (!chatId) return;
+
+  // обычные пользователи: меню, предложка, поддержка
+  if (!isAdmin(env, chatId)) {
+    const text = (msg.text || "").trim();
+    if (text === "/start" || text === "/menu") {
+      await handleUserStart(env, chatId);
+      return;
+    }
+    if (text.startsWith("/")) {
+      if (text === "/cancel") {
+        await kv.setUserMode(env, chatId, null);
+        await handleUserStart(env, chatId);
+        return;
+      }
+      await sendMessage(
+        env,
+        chatId,
+        "Я бот TrustNode. Чтобы предложить пост или написать в поддержку, откройте меню: /start"
+      );
+      return;
+    }
+    const mode = await kv.getUserMode(env, chatId);
+    if (mode === "suggest") {
+      await handleSuggestion(env, msg);
+    } else if (mode === "support") {
+      await handleSupportMessage(env, msg);
+    } else {
+      await handleUserStart(env, chatId);
+    }
     return;
   }
+
+  // админ: ивент-диалог имеет приоритет над командами
+  const dialog = await kv.getEventDialog(env);
+  if (dialog && String(dialog.chat_id) === String(chatId)) {
+    const handled = await handleEventDialogMessage(env, msg);
+    if (handled) return;
+  }
+
+  // ответ реплаем на пересланное сообщение поддержки -> пользователю
+  if (msg.reply_to_message) {
+    const handledReply = await handleAdminSupportReply(env, msg);
+    if (handledReply) return;
+  }
+
   const text = (msg.text || "").trim();
   if (!text) return;
   console.log(`[webhook] admin msg: ${text.slice(0, 60)}`);
