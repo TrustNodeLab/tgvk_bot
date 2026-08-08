@@ -41,7 +41,7 @@ export function sourceDomain(link) {
 
 // Карточку рисуем на Python-сервисе рендера (PIL + Exo2/Jura + небо Москвы),
 // если задан CARD_RENDER_URL. Иначе — встроенный JS-рендер (фолбэк).
-async function renderCardBytes(env, data, meta = {}) {
+export async function renderCardBytes(env, data, meta = {}) {
   if (env.CARD_RENDER_URL) {
     try {
       const res = await fetch(`${String(env.CARD_RENDER_URL).replace(/\/+$/, "")}/render`, {

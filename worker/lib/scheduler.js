@@ -1,22 +1,22 @@
 // Планировщик: каждый крон выполняет полный цикл —
 // скан+дедуп -> диспатч на подготовку -> авто-отложка черновиков ->
-// публикация из «склада» строго по слотам -> аварийный фолбэк при аутэдже GitHub.
+// публикация из «склада» строго по слотам -> догонка недостающей платформы.
 
 import {
   NEWS_WINDOWS,
   MSK_OFFSET_MIN, STOCK_TARGET, MAX_IN_FLIGHT, MAX_CANDIDATES_PER_TICK,
-  DRAFT_TIMEOUT_MIN, DISPATCH_STALE_MIN, FALLBACK_COOLDOWN_MS, mskNow, plural,
-  MAX_AGE_MS, isStaleItem,
+  DRAFT_TIMEOUT_MIN, mskNow, isStaleItem,
 } from "./config.js";
 import * as kv from "./kv.js";
 import { scanFeeds } from "./feeds.js";
-import { buildCardPackage, sourceDomain } from "./preview.js";
+import { buildCardPackage, renderCardBytes, sourceDomain } from "./preview.js";
 import {
-  publishToTelegram, publishToVk, sendMessage, vkCall, tgCall,
+  publishToTelegram, publishToVk, sendMessage, vkCall,
 } from "./telegram.js";
-import { fullPostText, fitCaption, fmtTime } from "./text.js";
+import { fmtTime } from "./text.js";
 
 const CHUNK_COUNT = 2; // скан делится на 2 части (лимит подзапросов free-плана)
+const TICK_LOCK_TTL_MS = 10 * 60 * 1000; // анти-перекрытие крон: не чаще 1 тика
 
 // png в черновике хранится base64 (KV умеет только строки) — превращаем в байты.
 function decodePng(b64) {
@@ -166,12 +166,13 @@ export async function publishPackage(env, pkg, dry, target = "all") {
         vkAttach = (vkr && vkr.vk_attachment) || null;
       } catch (e) {
         vkErr = e.message;
-        // VK-публикация карточки не удалась (upload/размер фото) — ставим в
-        // очередь и пробуем на следующих тиках с фото. TG уже опубликован.
-        if (!dry && pkgHasCard(pkg)) {
-          await kv.addVkRetry(env, pkg);
-        }
       }
+    }
+    // Строгий пул VK/TG: авто-пост должен уйти в обе платформы. Если ушла
+    // только одна — недостающую догоняем ретраями на следующих тиках, а в лог
+    // пишем частичный статус (он же — источник правды по количеству постов).
+    if (mode === "all" && tgOk !== vkOk && !dry) {
+      await kv.addVkRetry(env, { ...pkg, attempts: 0 }, { missing: [tgOk ? "vk" : "tg"] });
     }
     if (!tgOk && !vkOk) {
       throw new Error(`publish failed tg=[${tgErr}] vk=[${vkErr}]`);
@@ -198,12 +199,7 @@ export async function publishPackage(env, pkg, dry, target = "all") {
   }
 }
 
-// Пакет несёт карточку (PNG), которую можно догрузить в VK при ретрае.
-function pkgHasCard(pkg) {
-  return !!(pkg && (pkg.png || pkg.png_key));
-}
-
-// Публикация текстового поста (фолбэк/аудит без карточки).
+// Публикация текстового поста (ивенты без карточки).
 export async function publishText(env, text, dry, kind, extra = {}) {
   let tgOk = false;
   let vkOk = false;
@@ -249,11 +245,13 @@ export async function publishText(env, text, dry, kind, extra = {}) {
   return true;
 }
 
-// ---------- ретраи VK-публикации карточек ----------
+// ---------- ретраи: догонка недостающей платформы (строгий пул VK/TG) ----------
 
-// На каждом тике пробуем догрузить в VK карточки, которые не ушли с первого
-// раза (upload/размер фото). Успех -> лог + удаление из очереди; неудача ->
-// возврат в очередь с ростом счётчика; превышение лимита -> сдаёмся.
+// На каждом тике пробуем догрузить в недостающую платформу посты, которые не
+// ушли с первой попытки (missing = ["vk"] | ["tg"]). Когда обе платформы
+// опубликованы — обновляем существующую запись publish_log (одна запись на пост,
+// со статусом обеих). Неудача -> возврат в очередь с ростом счётчика; превышение
+// лимита или выход из окна свежести -> оставляем частичный статус в логе.
 export async function processVkRetries(env) {
   const { MAX_VK_RETRY_ATTEMPTS } = await import("./limits.js");
   const retries = await kv.getVkRetry(env);
@@ -269,42 +267,51 @@ export async function processVkRetries(env) {
       processed++;
       continue;
     }
-    // новость протухла, пока ждала повторной загрузки в VK — не публикуем
+    // новость протухла, пока ждала догонки — не публикуем
     if (isStaleItem(item, nowMs)) {
       console.log(`[vk-retry] протухла, удаляю: ${item.title || item.id}`);
       await kv.removeVkRetry(env, item.id);
       processed++;
       continue;
     }
-    try {
-      const vkr = await publishToVk(env, item, dry);
-      const ok = !!(vkr && vkr.post_id);
+    const missing = item.missing && item.missing.length ? item.missing : ["vk"];
+    let allDone = true;
+    let tgErr = null;
+    let vkErr = null;
+    let vkPost = null;
+    let vkAttach = null;
+    for (const plat of missing) {
+      try {
+        if (plat === "tg") {
+          await publishToTelegram(env, item, dry);
+        } else {
+          const vkr = await publishToVk(env, item, dry);
+          if (!vkr || !vkr.post_id) throw new Error("нет post_id после успешного upload");
+          vkPost = vkr.post_id;
+          vkAttach = vkr.vk_attachment || null;
+        }
+      } catch (e) {
+        allDone = false;
+        if (plat === "tg") tgErr = e.message; else vkErr = e.message;
+        break;
+      }
+    }
+    if (allDone) {
       await kv.removeVkRetry(env, item.id);
-      await kv.addLog(env, {
-        id: item.id,
-        kind: item.kind || "news",
-        title: item.title || "",
-        guid: item.guid || "",
-        link: item.link || "",
-        tags: item.tags || [],
-        source: item.source || "",
-        published_at: new Date().toISOString(),
-        caption: item.caption || "",
-        tg_ok: false,
+      await kv.updateLog(env, item.id, {
+        tg_ok: true,
         vk_ok: true,
-        vk_post_id: (vkr && vkr.post_id) || null,
-        vk_attachment: (vkr && vkr.vk_attachment) || null,
         tg_err: null,
-        vk_err: ok ? null : "нет post_id после успешного upload",
-        target: "vk_retry",
-        retried: item.attempts,
+        vk_err: null,
+        vk_post_id: vkPost,
+        vk_attachment: vkAttach,
       });
       processed++;
-      console.log(`[vk-retry] опубликовано (попытка ${item.attempts}): ${item.title || item.id}`);
-    } catch (e) {
-      console.log(`[vk-retry] попытка ${item.attempts} не удалась для «${item.title || item.id}»: ${e.message}`);
+      console.log(`[vk-retry] опубликовано в обе платформы (попытка ${item.attempts}): ${item.title || item.id}`);
+    } else {
+      console.log(`[vk-retry] попытка ${item.attempts} не удалась для «${item.title || item.id}»: ${tgErr || vkErr}`);
       await kv.removeVkRetry(env, item.id);
-      await kv.addVkRetry(env, { ...item, attempts: item.attempts });
+      await kv.addVkRetry(env, { ...item, attempts: item.attempts, missing });
       processed++;
     }
   }
@@ -362,48 +369,13 @@ async function autoDeferDrafts(env, state, now = new Date()) {
   }
 }
 
-// ---------- аварийный фолбэк (GitHub лежит) ----------
-
-async function handleStaleDispatches(env, state, now = new Date()) {
-  const dispatches = await kv.listDispatches(env);
-  const staleMs = DISPATCH_STALE_MIN * 60 * 1000;
-  const cooldownUntil = (state.meta.last_fallback || 0) + FALLBACK_COOLDOWN_MS;
-  const dry = !!state.dry_run;
-  for (const d of dispatches) {
-    if (d.status === "done" || d.status === "fallback_posted") continue;
-    // ручные черновики не фолбэчат: там превью/одобрение ведёт админ
-    if (d.kind === "manual") continue;
-    if ((d.guid || "").startsWith("m")) continue; // старые ручные диспатчи (до фикса kind)
-    if (now.getTime() - d.at < staleMs) continue;
-    // новость протухла, пока висела на GitHub (старые диспатчи 2023-го и ранее) —
-    // не публикуем по ней фолбэк, просто гасим запись
-    if (isStaleItem(d, now.getTime())) {
-      await kv.clearDispatch(env, d.guid);
-      continue;
-    }
-    if (cooldownUntil > now.getTime()) continue;
-    // редкий «аудит-пост» текстом, чтобы что-то вышло при аутэдже GitHub
-    const title = d.title || "";
-    const link = d.link || "";
-    const text =
-      "⚠️ <b>Срочная сводка</b>\n\n" +
-      `${title}\n\nИсточник: ${link}\n\n` +
-      "🛡️ TrustNode";
-    const ok = await publishText(env, text, dry, "fallback", { guid: d.guid, title, link });
-    if (ok) {
-      state.meta.last_fallback = Date.now();
-      await kv.saveState(env, state);
-      await kv.markDispatch(env, d.guid, { ...d, status: "fallback_posted" });
-    }
-    break; // один фолбэк за крон
-  }
-}
-
 // ---------- публикация из склада по слотам ----------
 
 async function publishDueStock(env, now = new Date()) {
   const stock = await kv.getStock(env);
   const nowMs = now.getTime();
+  const state = await kv.loadState(env);
+  const dry = !!state.dry_run;
   const due = stock.filter((p) => (p.scheduled_for || 0) <= nowMs);
   for (const pkg of due) {
     // новость протухла, пока ждала своего слота — выкидываем тихо
@@ -425,7 +397,7 @@ async function publishDueStock(env, now = new Date()) {
         }
       }
     }
-    // защита от дублей: если этот guid уже публиковался (фолбэк/аудит) — пропускаем
+    // защита от дублей: если этот guid уже публиковался — пропускаем
     if (pkg.guid) {
       const log = await kv.getLog(env);
       if (log.some((e) => e.guid && e.guid === pkg.guid)) {
@@ -433,14 +405,26 @@ async function publishDueStock(env, now = new Date()) {
         continue;
       }
     }
+    // Свежая карточка в момент публикации: небо рисуется под реальное время
+    // выхода поста (рендер-сервис считает МСК сам), а не под время генерации.
+    if (!dry && pkg.kind === "news" && pkg.data) {
+      try {
+        const fresh = await renderCardBytes(env, pkg.data, {
+          link: pkg.link || "",
+          source: pkg.source || "",
+        });
+        if (fresh && fresh.length > 100) pkg.png = fresh;
+      } catch (e) {
+        console.log("[scheduler] re-render card failed, keep old:", e.message);
+      }
+    }
     await kv.removeStock(env, pkg.id);
     try {
-      const state = await kv.loadState(env);
       if (pkg.kind === "event") {
         // ивенты — текстовый пост без карточки (создаются админом в диалоге)
         const text = (pkg.caption || pkg.title || "").trim();
         if (!text) continue;
-        const ok = await publishText(env, text, !!state.dry_run, "event", {
+        const ok = await publishText(env, text, dry, "event", {
           id: pkg.id,
           title: pkg.title || "",
           guid: pkg.guid || "",
@@ -449,7 +433,7 @@ async function publishDueStock(env, now = new Date()) {
         if (!ok) await kv.addStock(env, { ...pkg, scheduled_for: now.getTime() + 15 * 60 * 1000 });
         continue;
       }
-      await publishPackage(env, pkg, !!state.dry_run);
+      await publishPackage(env, pkg, dry);
     } catch (e) {
       console.log("[scheduler] publish failed:", e.message);
       await kv.addStock(env, { ...pkg, scheduled_for: now.getTime() + 15 * 60 * 1000 });
@@ -479,6 +463,14 @@ async function autoGenerateStock(env, cands) {
         title: data.headline,
         caption: data.caption,
         png: b64,
+        data: {
+          headline: data.headline,
+          headline_lines: data.headline_lines || [data.headline],
+          caption: data.caption,
+          cards: data.cards || [],
+          tier: data.tier || "news",
+          source: data.source || sourceDomain(c.link || ""),
+        },
         link: c.link || "",
         guid: c.guid || "",
         source: sourceDomain(c.link || ""),
@@ -497,6 +489,27 @@ async function autoGenerateStock(env, cands) {
 
 export async function tick(env) {
   const now = new Date();
+
+  // Анти-перекрытие крон: Cloudflare не ждёт завершения предыдущего запуска,
+  // если крон раз в 5 минут «не успевает». Два параллельных тика читают одну и
+  // ту же очередь и могут опубликовать один пост дважды — KV-лок не даёт им
+  // бежать одновременно (TTL страхует от зависшего тика).
+  try {
+    if (env.BOT_KV) {
+      const raw = await env.BOT_KV.get("scheduler_lock");
+      let lock = null;
+      try { lock = raw ? JSON.parse(raw) : null; } catch (e) { lock = null; }
+      if (lock && Date.now() - lock.at < TICK_LOCK_TTL_MS) {
+        return "busy";
+      }
+      await env.BOT_KV.put("scheduler_lock", JSON.stringify({ at: Date.now() }), {
+        expirationTtl: Math.floor(TICK_LOCK_TTL_MS / 1000),
+      });
+    }
+  } catch (e) {
+    console.log("[scheduler] lock error:", e.message);
+  }
+
   const state = await kv.loadState(env);
 
   // 1. скан (часть лент) + дедуп + кандидаты в очередь
@@ -550,13 +563,6 @@ export async function tick(env) {
     console.log("[scheduler] dispatch error:", e.message);
   }
 
-  // 4. фолбэк при аутэдже GitHub
-  try {
-    await handleStaleDispatches(env, state, now);
-  } catch (e) {
-    console.log("[scheduler] fallback error:", e.message);
-  }
-
   // 5. авто-отложка черновиков (нет ответа админа 30 мин)
   try {
     await autoDeferDrafts(env, state, now);
@@ -571,12 +577,7 @@ export async function tick(env) {
     console.log("[scheduler] publish error:", e.message);
   }
 
-  // 6b. ретраи VK-карточек, не ушедших ранее (upload/размер фото)
-  try {
-    await processVkRetries(env);
-  } catch (e) {
-    console.log("[scheduler] vk-retry error:", e.message);
-  }
+  // 6b. догонка недостающей платформы (строгий пул VK/TG)
 
   await kv.saveState(env, state);
   return "ok";

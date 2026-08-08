@@ -458,12 +458,32 @@ export async function publishToTelegram(env, pkg, dry) {
     throw new Error("нет PNG-карточки для TG (png/png_key пуст)");
   }
   assertValidImage(bytes);
+
+  // Idempotency: если этот пост (по id/guid) уже успешно ушёл в TG, не шлём
+  // повторно. Защита от дублей при timeout/ретрае (догонка недостающей
+  // платформы в строгом пуле VK/TG).
+  const dedupKey = String(pkg.guid || pkg.id || "");
+  if (dedupKey) {
+    try {
+      const prev = await env.BOT_KV.get(`tg_posted:${dedupKey}`, "json");
+      if (prev && prev.message_id) {
+        console.log(`[tg] уже опубликован message=${prev.message_id}, повторная публикация пропущена: ${pkg.title || pkg.id}`);
+        return { ok: true, target: "tg", message_id: prev.message_id, deduped: true };
+      }
+    } catch (e) { /* если KV недоступен — публикуем */ }
+  }
+
   const chatId = await resolveTelegramChannel(env);
   if (dry) {
     console.log(`[dry-run] TG sendPhoto -> ${chatId}, len=${bytes?.length || 0}, caption=${caption.length} симв.`);
     return { ok: true, dry: true, target: "tg" };
   }
   const res = await sendPhoto(env, chatId, bytes, caption, { parse_mode: "HTML" });
+  if (dedupKey && res && res.message_id) {
+    try {
+      await env.BOT_KV.put(`tg_posted:${dedupKey}`, JSON.stringify({ message_id: res.message_id, at: new Date().toISOString() }));
+    } catch (e) { /* ignore */ }
+  }
   return { ok: true, target: "tg", message_id: res && res.message_id };
 }
 

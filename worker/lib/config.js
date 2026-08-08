@@ -46,10 +46,6 @@ export const MAX_CANDIDATES_PER_TICK = 2; // сколько кандидатов
 // Admin-черновики: без ответа 30 минут -> отложенный слот.
 export const DRAFT_TIMEOUT_MIN = 30;
 
-// Аварийный фолбэк: диспатч «завис» дольше этого времени -> редкий текст-пост.
-export const DISPATCH_STALE_MIN = 12;
-export const FALLBACK_COOLDOWN_MS = 6 * 3600 * 1000; // не чаще 1 раз в 6 часов
-
 // Telegram ограничивает caption фото 1024 символами.
 export const TG_CAPTION_LIMIT = 1024;
 

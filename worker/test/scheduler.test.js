@@ -592,12 +592,13 @@ test("tick: протухший пакет со склада не публику�
   assert.ok(!stock.some((p) => p.id === "stale-pkg"), "протухший пакет убран со склада");
 });
 
-test("tick: фолбэк не публикует протухший диспатч (2023-го года)", async () => {
+test("tick: «зависший» диспатч игнорируется — аварийный фолбэк удалён", async () => {
   const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
   const { tick } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
   const calls = installFetchMock(500);
   const env = makeEnv();
-  // диспатч «завис» с 2023 года — раньше фолбэк публиковал бы по нему текст
+  // диспатч «завис» с 2023 года — раньше фолбэк публиковал бы по нему
+  // «срочную сводку»; теперь автопостинг в воркере, фолбэк не нужен
   await kv.markDispatch(env, "guid-2023", {
     at: new Date("2023-12-01T10:00:00Z").getTime(),
     title: "Canadian Man Pleads Guilty in Snowflake Extortions",
@@ -606,8 +607,6 @@ test("tick: фолбэк не публикует протухший диспат
     status: "dispatched",
   });
   await tick(env);
-  const d = await kv.getDispatch(env, "guid-2023");
-  assert.equal(d, null, "протухший диспатч погашен");
   assert.equal(calls.feeds.filter((u) => u.includes("api.vk.com")).length, 0, "пост не ушёл в VK");
   assert.equal(calls.tg.length, 0, "фолбэк не отправлен");
 });

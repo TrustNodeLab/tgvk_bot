@@ -134,6 +134,20 @@ export async function addLog(env, entry) {
   await kvSet(env, "publish_log", list);
 }
 
+// Обновляет уже существующую запись publish_log по id (догонка недостающей
+// платформы при строгом пуле: пост логируется один раз, но со статусом обеих).
+export async function updateLog(env, id, patch) {
+  if (!id) return;
+  const list = await getLog(env);
+  const i = list.findIndex((e) => e.id === id);
+  if (i === -1) {
+    await addLog(env, { id, ...patch });
+    return;
+  }
+  list[i] = { ...list[i], ...patch };
+  await kvSet(env, "publish_log", list);
+}
+
 // ---------- drafts ----------
 
 export async function loadDraft(env, id) {
@@ -166,7 +180,10 @@ export async function listDrafts(env) {
   return drafts;
 }
 
-// ---------- vk_retry (очередь повторов публикации VK-карточки) ----------
+// ---------- vk_retry (очередь догонки недостающей платформы) ----------
+// Строгий пул VK/TG: если одна из платформ не ушла с первой попытки, пакет
+// встаёт сюда и догоняется на следующих тиках. missing — платформы, которые
+// ещё не опубликованы (["vk"] / ["tg"]). Ключ KV оставлен историческим.
 
 export async function getVkRetry(env) {
   return (await kvGet(env, "vk_retry", [])) || [];
@@ -177,9 +194,10 @@ export async function setVkRetry(env, list) {
 }
 
 // Добавляем пакет в очередь, если его там ещё нет.
-export async function addVkRetry(env, pkg) {
+export async function addVkRetry(env, pkg, extra = {}) {
   const list = await getVkRetry(env);
   if (list.some((p) => p.id === pkg.id)) return;
+  const missing = extra.missing && extra.missing.length ? extra.missing : ["vk"];
   list.push({
     id: pkg.id,
     kind: pkg.kind || "news",
@@ -191,6 +209,7 @@ export async function addVkRetry(env, pkg) {
     guid: pkg.guid || "",
     source: pkg.source || "",
     tags: pkg.tags || [],
+    missing,
     attempts: Number(pkg.attempts || 0) + 1,
     queued_at: new Date().toISOString(),
   });

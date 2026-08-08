@@ -6,7 +6,7 @@ import math
 import textwrap
 import os
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from PIL import Image, ImageDraw, ImageFont
 
 from astro import stars_moscow, sun_altitude_moscow, CONSTELLATION_LINES
@@ -373,7 +373,9 @@ def render_card(data: dict, out_path: str, dt_msk: datetime = None) -> str:
     }
     """
     if dt_msk is None:
-        dt_msk = datetime.utcnow()  # caller решает, приводить ли к MSK
+        # По умолчанию — текущее время в МСК (не UTC): иначе небо рисуется на 3 часа
+        # раньше реального и ночью выдаёт голубое небо/сумерки.
+        dt_msk = datetime.utcnow() + timedelta(hours=3)
 
     tier = data.get("tier", "news")
     if tier not in ALLOWED_TIERS:
