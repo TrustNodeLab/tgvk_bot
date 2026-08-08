@@ -267,8 +267,8 @@ export async function renderCard(data) {
 async function inflateDeflate(compressed) {
   const cs = new DecompressionStream("deflate");
   const writer = cs.writable.getWriter();
-  writer.write(compressed);
-  writer.close();
+  await writer.write(compressed);
+  await writer.close();
   return new Uint8Array(await new Response(cs.readable).arrayBuffer());
 }
 

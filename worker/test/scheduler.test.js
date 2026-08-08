@@ -247,10 +247,10 @@ test("webhook: инлайн-кнопка approve отправляет в кан�
   const env = makeEnv();
   await env.BOT_KV.put("draft:t1", JSON.stringify({
     id: "t1", kind: "news", title: "Тест", caption: "Капшн",
+    png: "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAhklEQVR4nNXOQRHAIBDAwBAh4N9Jq+oQ0Ucnq2DXzLznkLWevSmTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOP8OfHUBEc4FhwzLqggAAAAASUVORK5CYII=",
     png_key: null, link: "", guid: "t1", source: "ria.ru", tags: [],
     admin_chat_id: 1, preview_message_id: 5, status: "pending",
-  }));
-  const req = new Request("https://example.workers.dev/", {
+  }));  const req = new Request("https://example.workers.dev/", {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
     body: JSON.stringify({
@@ -366,7 +366,7 @@ test("publishPackage: target=tg публикует только в TG, не в V
   const env = makeEnv();
   const result = await publishPackage(
     env,
-    { id: "x", kind: "news", title: "Тест", caption: "Текст новости", png: null, png_key: null, link: "", guid: "g", source: "test" },
+    { id: "x", kind: "news", title: "Тест", caption: "Текст новости", png: "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAhklEQVR4nNXOQRHAIBDAwBAh4N9Jq+oQ0Ucnq2DXzLznkLWevSmTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOP8OfHUBEc4FhwzLqggAAAAASUVORK5CYII=", png_key: null, link: "", guid: "g", source: "test" },
     false,
     "tg"
   );
@@ -382,7 +382,7 @@ test("publishPackage: при провале VK карточка уходит в 
   const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
   installFetchMock(500);
   const env = makeEnv();
-  const tinyPng = Uint8Array.from([137, 80, 78, 71, 1, 2, 3]);
+  const tinyPng = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAhklEQVR4nNXOQRHAIBDAwBAh4N9Jq+oQ0Ucnq2DXzLznkLWevSmTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOP8OfHUBEc4FhwzLqggAAAAASUVORK5CYII="), (c) => c.charCodeAt(0));
   await publishPackage(
     env,
     { id: "rt", kind: "news", title: "Фото", caption: "Текст", png: tinyPng, png_key: null, link: "", guid: "g2", source: "t" },
@@ -415,6 +415,42 @@ test("assertValidImage: валидный PNG проходит, битый фай
   const text = new Uint8Array([0x74, 0x65, 0x78, 0x74, 0x74, 0x00, 0x00, 0x00]);
   assert.throws(() => assertValidImage(text), /не является изображением/, "не-картинка отклоняется");
   assert.throws(() => assertValidImage(new Uint8Array([1, 2, 3])), /слишком маленькая/, "пустая карточка отклоняется");
+});
+
+test("publishToVk: PNG в виде JSON-массива байтов из KV декодируется и публикуется", async () => {
+  const { publishToVk } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/telegram.js");
+  const kv = makeKV();
+  const env = makeEnv(kv);
+  globalThis.fetch = async (url, opts = {}) => {
+    const u = String(url);
+    if (u.includes("api.vk.com/method/docs.getWallUploadServer"))
+      return jsonResp({ response: { upload_url: "https://pu.vk.com/upload_doc?test=1" } });
+    if (u.includes("api.vk.com/method/docs.save"))
+      return jsonResp({ response: [{ type: "doc", doc: { id: 222, owner_id: -1 } }] });
+    if (u.includes("pu.vk.com"))
+      return jsonResp({ file: "1|2|3|gif|card.gif" });
+    if (u.includes("api.vk.com/method/wall.post"))
+      return jsonResp({ response: { post_id: 901 } });
+    return jsonResp({});
+  };
+  // Реальный минимальный валидный PNG 1x1 (RGBA, filter None, zlib-deflate).
+  const realPng = Uint8Array.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89,
+    0x00, 0x00, 0x00, 0x0a, 0x49, 0x44, 0x41, 0x54,
+    0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4,
+    0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+  ]);
+  // KV хранит байты как JSON-объект {"0":137,"1":80,...}
+  const asJson = {};
+  realPng.forEach((b, i) => { asJson[String(i)] = b; });
+  const pkg = { id: "d2", guid: "json-png", title: "Тест", caption: "Текст", png: asJson, link: "" };
+  const res = await publishToVk(env, pkg, false);
+  assert.equal(res.post_id, 901, "публикация успешна");
+  assert.ok(res.vk_attachment && /^doc-1_222$/.test(res.vk_attachment), "GIF-документ прикреплён");
+  delete globalThis.fetch;
 });
 
 test("publishToVk: идемпотентность — повторная публикация пропускается (dedup)", async () => {

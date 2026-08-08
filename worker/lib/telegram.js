@@ -6,6 +6,7 @@ const VK_API = "https://api.vk.com/method/";
 const VK_VERSION = "5.199";
 
 import { pngToGif } from "./cardgen.js";
+import { fitCaption } from "./text.js";
 
 // ---------- низкоуровневые вызовы ----------
 
@@ -251,6 +252,13 @@ async function pkgBytes(env, pkg) {
       const bin = atob(png);
       return Uint8Array.from(bin, (c) => c.charCodeAt(0));
     }
+    if (png instanceof Uint8Array || png instanceof ArrayBuffer) return png;
+    if (Array.isArray(png) || typeof png === "object") {
+      // KV хранит только строки: байты карточки сериализуются в JSON-массив
+      // {"0":137,"1":80,...}. Превращаем обратно в байты.
+      const vals = Array.isArray(png) ? png : Object.values(png);
+      return Uint8Array.from(vals, (b) => Number(b) & 0xff);
+    }
     return png;
   }
   return readPng(env, pkg && pkg.png_key);
@@ -427,8 +435,12 @@ function bytesToBase64(bytes) {
 
 // Возвращает { ok:true, channel:"tg"|"vk", note } либо бросает ошибку.
 export async function publishToTelegram(env, pkg, dry) {
-  const caption = pkg.caption || "";
+  const caption = fitCaption(pkg.caption || "");
   const bytes = await pkgBytes(env, pkg);
+  if (!bytes || !bytes.length) {
+    throw new Error("нет PNG-карточки для TG (png/png_key пуст)");
+  }
+  assertValidImage(bytes);
   const chatId = await resolveTelegramChannel(env);
   if (dry) {
     console.log(`[dry-run] TG sendPhoto -> ${chatId}, len=${bytes?.length || 0}, caption=${caption.length} симв.`);
@@ -508,15 +520,25 @@ export function assertValidImage(bytes) {
 }
 
 // Читает PNG пакета из R2 (или KV base64), если в пакете только ключ.
+// Ключи от Python-бота приходят как "drafts/<id>.png", а загрузчик /files/*
+// хранит их под "files/drafts/<id>.png" — пробуем оба варианта.
 async function readPng(env, pngKey) {
   if (!pngKey) return null;
+  for (const key of [pngKey, `files/${pngKey}`]) {
+    const bytes = await readPngKey(env, key);
+    if (bytes) return bytes;
+  }
+  return null;
+}
+
+async function readPngKey(env, key) {
   if (env.BOT_R2) {
-    const obj = await env.BOT_R2.get(pngKey);
+    const obj = await env.BOT_R2.get(key);
     if (!obj) return null;
     return new Uint8Array(await obj.arrayBuffer());
   }
   if (env.BOT_KV) {
-    const b64 = await env.BOT_KV.get(pngKey);
+    const b64 = await env.BOT_KV.get(key);
     if (b64 === null) return null;
     return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
   }
