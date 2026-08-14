@@ -41,6 +41,7 @@ export function makeEnv(kv = makeKV()) {
     VK_GROUP_ID: "1",
     BOT_AUTH: "secret",
     WEBHOOK_SECRET: "secret",
+    LLM_PROXY_URL: "https://render.test",
   };
 }
 
@@ -59,6 +60,13 @@ export function installFetchMock(dispatchStatus = 204) {
     if (u.includes("api.telegram.org")) {
       calls.tg.push({ url: u, body: opts.body });
       return jsonResp({ ok: true, result: { message_id: 1 } });
+    }
+    if (u.includes("render.test/digest")) {
+      return jsonResp({
+        headline: "Мошенничество: главное",
+        bullets: ["Схема обмана при покупке авто. Продавцы просят предоплату.", "Новый фишинг на удалёнке."],
+        advice: ["Не платите предоплату незнакомцам."],
+      });
     }
     if (u.includes("api.github.com")) {
       calls.github.push({ url: u, opts });

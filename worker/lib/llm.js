@@ -302,38 +302,34 @@ async function callProxyDigest(env, items) {
 }
 
 // Текст дайджеста: headline + caption (набор заголовка, bullets с ссылками на
-// источники, блок «Что делать», футер). LLM при доступности, иначе — правила.
+// источники, блок «Что делать», футер). Собирается ТОЛЬКО живым LLM: без него
+// возвращает null, чтобы не постить сырые заголовки (лучше пропустить окно).
 export async function generateDigestText(items, env = {}, meta = {}) {
-  const fallback = digestByRules(items, meta);
-  let headline = fallback.headline;
-  let bulletTexts = fallback.bulletTexts;
-  let advice = fallback.advice;
-
   let llm = null;
   if ((env.LLM_PROXY_URL || "").trim()) {
     try {
       llm = await callProxyDigest(env, items);
     } catch (e) {
-      console.log("[llm] LLM /digest недоступен, использую правила:", e.message);
+      console.log("[llm] LLM /digest недоступен:", e.message);
     }
   }
   if (!llm && env.LLM_API_BASE && env.LLM_API_KEY) {
     try {
       llm = await callLlmDigest(env, items);
     } catch (e) {
-      console.log("[llm] LLM-дайджест недоступен, использую правила:", e.message);
+      console.log("[llm] LLM-дайджест недоступен:", e.message);
     }
   }
-  if (llm) {
-    if (llm.headline) headline = stripSourceTail(llm.headline);
-    if (llm.bullets.length) {
-      bulletTexts = llm.bullets.map((t, i) => ({
-        text: markdownToHtml(stripSourceTail(t)),
-        link: items[i] && items[i].link,
-      }));
-    }
-    if (llm.advice.length) advice = llm.advice.map((t) => markdownToHtml(stripSourceTail(t)));
+  if (!llm || !llm.bullets.length) {
+    console.log("[llm] дайджест без живого LLM не собираю (фолбэк-правила не используются)");
+    return null;
   }
+  const headline = llm.headline ? stripSourceTail(llm.headline) : "";
+  const bulletTexts = llm.bullets.map((t, i) => ({
+    text: markdownToHtml(stripSourceTail(t)),
+    link: items[i] && items[i].link,
+  }));
+  const advice = llm.advice.map((t) => markdownToHtml(stripSourceTail(t)));
 
   const emoji = DIGEST_EMOJI[meta.slug] || "📰";
   const parts = [`${emoji} <b>${sanitizeHtml(headline)}</b>`];

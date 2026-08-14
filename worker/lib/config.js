@@ -78,8 +78,8 @@ export function cleanRssTitle(s) {
     .replace(/\]\]>/g, "")
     .trim();
   t = decodeEntities(t);
-  t = t.replace(/\s+источник\s*:\s*https?:\/\/\S+\s*$/i, "").trim();
-  t = t.replace(/\s*[—–-]\s*источник\s*:\s*https?:\/\/\S+\s*$/i, "").trim();
+  t = t.replace(/\s*(?:[—–-]\s*)?источник\s*:\s*https?:\/\/\S+\s*$/i, "").trim();
+  t = t.replace(/\s*[—–-]+\s*$/g, "").trim();
   return t;
 }
 

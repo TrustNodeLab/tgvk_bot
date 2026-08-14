@@ -537,7 +537,11 @@ async function finalizeDigestPkg(env, items, opts) {
     text: String(c.text || "").replace(/\s+/g, " ").trim().slice(0, 800),
   }));
 
-  const { headline, caption } = await generateDigestText(items, env, { label, slug, date });
+  const digestText = await generateDigestText(items, env, { label, slug, date });
+  // Без живого LLM выпуск не собираем: фолбэк-правила дают сырые заголовки,
+  // это мусор. Окно пропускается, кандидаты не тратятся.
+  if (!digestText) return null;
+  const { headline, caption } = digestText;
 
   const data = {
     headline,
