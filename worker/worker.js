@@ -14,6 +14,7 @@ import {
   dispatchToGitHub,
   publishPackage,
   nextFreeSlot,
+  rebuildDigestPreview,
 } from "./lib/scheduler.js";
 import {
   sendMessage,
@@ -25,7 +26,7 @@ import {
   vkCall,
 } from "./lib/telegram.js";
 import { fmtTime, escHtml } from "./lib/text.js";
-import { NEWS_WINDOWS, mskNow } from "./lib/config.js";
+import { NEWS_WINDOWS, DIGEST_MIN_ITEMS, DIGEST_MAX_ITEMS, mskNow } from "./lib/config.js";
 import { sendGeneratedPreview, approveButtons } from "./lib/preview.js";
 import { renderCard } from "./lib/cardgen.js";
 import {
@@ -39,7 +40,7 @@ import {
   handleEventDialogMessage,
 } from "./lib/support.js";
 
-const VERSION = "2.1.0";
+const VERSION = "2.3.0";
 
 // ---------- тексты ----------
 
@@ -201,10 +202,12 @@ async function sendLong(env, chatId, text, opts = {}) {
 
 async function ensureCommands(env) {
   if (!env.BOT_KV) return;
+  // Версионный флаг: команды переотправляются в Telegram при каждом деплое
+  // (зафиксировали VERSION), а не только один раз в жизни бота.
   const done = await env.BOT_KV.get("commands_set");
-  if (done) return;
+  if (done === VERSION) return;
   await setMyCommands(env, COMMANDS);
-  await env.BOT_KV.put("commands_set", String(Date.now()));
+  await env.BOT_KV.put("commands_set", VERSION);
 }
 
 // ---------- REST API (для GitHub-контура подготовки и диагностики) ----------
@@ -1038,6 +1041,31 @@ async function handleCallback(env, cq, state) {
       return;
     }
 
+    if (draft.kind === "digest") {
+      // дайджест-превью: кандидаты уже потреблены выпуском, GitHub не нужен —
+      // пересобираем текст и обложку из сохранённых новостей локально.
+      const res = await rebuildDigestPreview(env, draft);
+      if (!res.ok) {
+        try {
+          await sendMessage(
+            env,
+            env.TELEGRAM_ADMIN_CHAT_ID,
+            `⚠️ Не удалось пересобрать дайджест: ${escHtml(res.reason || "ошибка")}`
+          );
+        } catch (e2) { /* ignore */ }
+      } else {
+        try {
+          await editMessageReplyMarkup(
+            env,
+            draft.admin_chat_id || env.TELEGRAM_ADMIN_CHAT_ID,
+            draft.preview_message_id,
+            []
+          );
+        } catch (e2) { /* ignore */ }
+      }
+      return;
+    }
+
     const ok = await dispatchToGitHub(env, {
       guid: draft.id,
       auto_found: false,
@@ -1145,13 +1173,15 @@ async function handleCommand(env, state, chatId, text) {
 
     case "/schedule": {
       const wins = NEWS_WINDOWS.map(
-        (w) => `• ${minutesToClock(w.start)}–${minutesToClock(w.end)} → ${w.cap} ${w.cap === 1 ? "пост" : "поста"} в начале окна`
+        (w) => `• <b>${w.label}</b> — ${minutesToClock(w.start)} МСК: сводка ${DIGEST_MIN_ITEMS}–${DIGEST_MAX_ITEMS} свежих новостей`
       ).join("\n");
       const msg =
         "🗓 <b>Расписание (МСК)</b>\n\n" +
-        "Строгие слоты — каждые 4 часа ровно один пост:\n" +
+        "Три дайджеста в день — по одному выпуску в окне:\n" +
         wins +
-        "\n\n🎪 Ивенты публикуются в заданное время.";
+        "\n\n🚨 Автопостинг вкл — выпуски выходят сами.\n" +
+        "🚫 Выкл — сводка приходит админу на одобрение.\n\n" +
+        "🎪 Ивенты публикуются в заданное время.";
       await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
       break;
     }

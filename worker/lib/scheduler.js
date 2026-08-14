@@ -1,17 +1,20 @@
 // Планировщик: каждый крон выполняет полный цикл —
-// скан+дедуп -> диспатч на подготовку -> авто-отложка черновиков ->
-// публикация из «склада» строго по слотам -> догонка недостающей платформы.
+// скан+дедуп -> накопление кандидатов -> сборка дайджестов по окнам
+// (утро/день/вечер: сводка 3-5 новостей) -> авто-отложка черновиков ->
+// публикация из «склада» по слотам -> догонка недостающей платформы.
 
 import {
   NEWS_WINDOWS,
-  MSK_OFFSET_MIN, STOCK_TARGET, MAX_IN_FLIGHT, MAX_CANDIDATES_PER_TICK,
+  DIGEST_MAX_ITEMS,
+  MSK_OFFSET_MIN,
   DRAFT_TIMEOUT_MIN, mskNow, isStaleItem,
 } from "./config.js";
 import * as kv from "./kv.js";
 import { scanFeeds } from "./feeds.js";
-import { buildCardPackage, renderCardBytes, sourceDomain } from "./preview.js";
+import { renderCardBytes, sourceDomain, approveButtons } from "./preview.js";
+import { generateDigestText, digestFreshScore } from "./llm.js";
 import {
-  publishToTelegram, publishToVk, sendMessage, vkCall,
+  publishToTelegram, publishToVk, sendMessage, vkCall, sendCard,
 } from "./telegram.js";
 import { fmtTime, escHtml } from "./text.js";
 
@@ -23,6 +26,16 @@ function decodePng(b64) {
   if (!b64) return null;
   const bin = atob(b64);
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
+// Байты карточки -> base64 для хранения в KV.
+function bytesToBase64(bytes) {
+  let bin = "";
+  const step = 0x8000;
+  for (let i = 0; i < bytes.length; i += step) {
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + step));
+  }
+  return btoa(bin);
 }
 
 // Уведомление админу в Telegram о результате публикации. Ошибка отправки не
@@ -75,26 +88,25 @@ export function currentWindow(minuteOfDay) {
   return NEWS_WINDOWS.find((w) => minuteOfDay >= w.start && minuteOfDay < w.end) || null;
 }
 
-// Сколько новостей уже опубликовано в этом окне сегодня.
+// Сколько новостей/дайджестов уже опубликовано в этом окне сегодня. Дайджест и
+// одиночная новость занимают «вместимость» окна одинаково (cap=1 за окно).
 async function countInWindow(env, win, now) {
   const log = await kv.getLog(env);
   const msk = mskNow(now);
   return log.filter((e) => {
-    if (e.kind && e.kind !== "news") return false;
-    if (e.kind === "news" || !e.kind) {
-      const t = new Date(e.published_at);
-      if (Number.isNaN(t.getTime())) return false;
-      const em = mskNow(t);
-      if (em.date !== msk.date) return false;
-      return em.minuteOfDay >= win.start && em.minuteOfDay < win.end;
-    }
-    return false;
+    const k = e.kind;
+    if (k && k !== "news" && k !== "digest") return false;
+    const t = new Date(e.published_at);
+    if (Number.isNaN(t.getTime())) return false;
+    const em = mskNow(t);
+    if (em.date !== msk.date) return false;
+    return em.minuteOfDay >= win.start && em.minuteOfDay < win.end;
   }).length;
 }
 
-// Следующий свободный слот для новостного поста (epoch ms).
-// Строгое расписание: каждые 4 часа ровно один пост в начале окна
-// (00:00, 04:00, 08:00, 12:00, 16:00, 20:00 МСК). Без рандома внутри окна.
+// Следующий свободный слот для поста (epoch ms).
+// Строгое расписание: один пост в начале окна. Окна — дайджесты 3-5 новостей:
+// 09:00, 13:00, 18:00 МСК. Без рандома внутри окна.
 export async function nextFreeSlot(env, now = new Date()) {
   const nowMs = now.getTime();
   for (let dayOffset = 0; dayOffset < 8; dayOffset++) {
@@ -372,7 +384,7 @@ async function autoDeferDrafts(env, state, now = new Date()) {
     await kv.deleteDraft(env, d.id);
     await kv.addStock(env, {
       id: d.id,
-      kind: "news",
+      kind: d.kind === "digest" ? "digest" : "news",
       title: d.title || "",
       caption: d.caption || "",
       png_key: d.png_key || null,
@@ -381,6 +393,8 @@ async function autoDeferDrafts(env, state, now = new Date()) {
       guid: d.guid || "",
       source: d.source || "",
       tags: d.tags || [],
+      data: d.data || null,
+      items: d.items || [],
       scheduled_for: slot,
       created_at: new Date().toISOString(),
       from_admin: false,
@@ -406,18 +420,23 @@ async function publishDueStock(env, now = new Date()) {
   const dry = !!state.dry_run;
   const due = stock.filter((p) => (p.scheduled_for || 0) <= nowMs);
   for (const pkg of due) {
-    // новость протухла, пока ждала своего слота — выкидываем тихо
-    if (pkg.kind === "news" && isStaleItem(pkg, nowMs)) {
+    // Дайджест собран из свежих новостей прямо в окне (маркер digest_done) —
+    // проверку свежести не применяем, окно не «переполняем» по cap: оно и есть
+    // этот выпуск.
+    if (pkg.kind === "digest") {
+      // пусто
+    } else if (pkg.kind === "news" && isStaleItem(pkg, nowMs)) {
+      // новость протухла, пока ждала своего слота — выкидываем тихо
       await kv.removeStock(env, pkg.id);
       continue;
     }
-    if (pkg.kind === "news") {
+    if (pkg.kind === "news" || pkg.kind === "digest") {
       const msk = mskNow(new Date(pkg.scheduled_for || now.getTime()));
       const win = currentWindow(msk.minuteOfDay);
       if (win) {
         const used = await countInWindow(env, win, new Date(pkg.scheduled_for || now.getTime()));
         if (used >= win.cap) {
-          // окно переполнено — переносим в следующий свободный слот
+          // окно уже занято другим постом/выпуском — переносим в следующий слот
           const next = await nextFreeSlot(env, now);
           await kv.removeStock(env, pkg.id);
           await kv.addStock(env, { ...pkg, scheduled_for: next });
@@ -436,7 +455,7 @@ async function publishDueStock(env, now = new Date()) {
     // Свежая карточка в момент публикации: небо рисуется под реальное время
     // выхода поста (рендер-сервис считает МСК сам), а не под время генерации.
     // Формат — по настройке card_format (auto/gif/png).
-    if (!dry && pkg.kind === "news" && pkg.data) {
+    if (!dry && pkg.data && pkg.kind !== "event") {
       try {
         const fresh = await renderCardBytes(env, pkg.data, {
           link: pkg.link || "",
@@ -487,54 +506,203 @@ async function publishDueStock(env, now = new Date()) {
   }
 }
 
-// ---------- главный тик ----------
+// ---------- сборка дайджестов по окнам ----------
 
-// Автопостинг целиком в воркере: генерим карточку из кандидата (LLM/правила)
-// прямо здесь и кладём на склад в следующий свободный слот. Публикация идёт
-// строго по расписанию из publishDueStock. GitHub для автопостинга не нужен.
-async function autoGenerateStock(env, cands) {
-  for (const c of cands) {
-    // Новость успела протухнуть, пока ждала в очереди — не готовим.
-    if (isStaleItem(c, Date.now())) continue;
-    try {
-      const slot = await nextFreeSlot(env);
-      const { data, b64 } = await buildCardPackage(env, c.text || c.title, {
-        link: c.link || "",
-        source: sourceDomain(c.link || ""),
-        guid: c.guid || "",
-      });
-      await kv.addStock(env, {
-        id: `a${Date.now().toString(36)}${Math.floor(Math.random() * 1000)}`,
-        kind: "news",
-        title: data.headline,
-        caption: data.caption,
-        png: b64,
-        data: {
-          headline: data.headline,
-          headline_lines: data.headline_lines || [data.headline],
-          caption: data.caption,
-          cards: data.cards || [],
-          tier: data.tier || "news",
-          source: data.source || sourceDomain(c.link || ""),
-        },
-        link: c.link || "",
-        guid: c.guid || "",
-        source: sourceDomain(c.link || ""),
-        tags: [],
-        scheduled_for: slot,
-        created_at: new Date().toISOString(),
-        from_admin: false,
-      });
-      console.log("[scheduler] autogen stock:", data.headline, "slot", new Date(slot).toISOString());
-    } catch (e) {
-      console.log("[scheduler] autogen stock error:", e.message);
-      await kv.addCandidate(env, c);
-    }
-  }
+// Свежих кандидатов на выпуск: не протухшие, свежайшие первыми, не больше
+// DIGEST_MAX_ITEMS. Пусто -> дайджест не выйдет (кандидаты могли прийти позже
+// в окне — маркер не ставим).
+async function pickDigestItems(env, count) {
+  const nowMs = Date.now();
+  const list = ((await kv.getCandidates(env)) || []).filter((c) => !isStaleItem(c, nowMs));
+  list.sort((a, b) => digestFreshScore(b) - digestFreshScore(a));
+  return list.slice(0, count);
 }
 
-export async function tick(env) {
-  const now = new Date();
+// Собирает готовый пакет-дайджест из items (текст через LLM/правила + обложка).
+// Ничего не публикует и не потребляет — только готовит. Возвращает pkg или null,
+// если обложку не удалось собрать.
+async function finalizeDigestPkg(env, items, opts) {
+  const { label, slug, date, slot } = opts;
+  const itemMeta = items.map((c) => ({
+    guid: c.guid || "",
+    title: String(c.title || "").replace(/\s+/g, " ").trim().slice(0, 120),
+    link: c.link || "",
+    source: sourceDomain(c.link || "") || c.source || "",
+    text: String(c.text || "").replace(/\s+/g, " ").trim().slice(0, 800),
+  }));
+
+  const { headline, caption } = await generateDigestText(items, env, { label, slug, date });
+
+  const data = {
+    headline,
+    headline_lines: [headline],
+    caption,
+    cards: [
+      {
+        type: "list",
+        label: "В этом выпуске",
+        items: itemMeta.map((m2) => m2.title || "Новость").slice(0, DIGEST_MAX_ITEMS),
+      },
+    ],
+    tier: "news",
+    source: "TrustNode",
+  };
+
+  // Одна обложка на весь выпуск (рендер по данным пакета, пере-рисуется и в
+  // момент публикации под реальное время суток).
+  let b64 = "";
+  try {
+    const bytes = await renderCardBytes(env, data, { link: "", source: "TrustNode" });
+    if (bytes && bytes.length > 100) b64 = bytesToBase64(bytes);
+  } catch (e) {
+    console.log("[scheduler] дайджест: обложку не собрали:", e.message);
+  }
+  if (!b64) {
+    // Обложка обязательна (TG/VK постят картинку) — без неё выпуск не выйдет,
+    // кандидатов не трогаем, окно попробуем собрать на следующем тике.
+    return null;
+  }
+
+  return {
+    pkg: {
+      id: `dg${date.replace(/-/g, "")}${slug}`,
+      kind: "digest",
+      title: headline,
+      caption,
+      png: b64,
+      data,
+      link: "",
+      guid: `digest:${date}:${slug}`,
+      source: "TrustNode",
+      tags: [],
+      items: itemMeta,
+      scheduled_for: slot,
+      created_at: new Date().toISOString(),
+      from_admin: false,
+      window_slug: slug,
+    },
+  };
+}
+
+// Собирает пакет-дайджест для активного окна. Возвращает { pkg, items }
+// (items — выбранные свежие кандидаты) или null, если окно уже собрано
+// (маркер) или нет свежих кандидатов.
+async function buildDigestForWindow(env, win, now) {
+  const msk = mskNow(now);
+  const date = msk.date;
+  if (await kv.getDigestDone(env, date, win.slug)) return null;
+
+  const items = await pickDigestItems(env, DIGEST_MAX_ITEMS);
+  if (!items.length) return null;
+  const res = await finalizeDigestPkg(env, items, {
+    label: win.label,
+    slug: win.slug,
+    date,
+    slot: mskToUtcMs(msk.dow, win.start, now),
+  });
+  if (!res) return null;
+  return { pkg: res.pkg, items };
+}
+
+// Потребляет собранных кандидатов и ставит маркер — дайджест выйдет один раз.
+async function commitDigest(env, date, win, items) {
+  const consumed = new Set(items.map((c) => c.guid));
+  const rest = (await kv.getCandidates(env)).filter((c) => !consumed.has(c.guid));
+  await kv.setCandidates(env, rest);
+  await kv.setDigestDone(env, date, win.slug, { assembled_at: new Date().toISOString(), items: items.length });
+}
+
+// Автопостинг ВКЛ: собранный в активном окне дайджест ложится на склад и
+// публикуется тем же тиком (slot уже наступил). Возвращает массив guid.
+export async function assembleDigests(env, now = new Date()) {
+  const msk = mskNow(now);
+  const made = [];
+  for (const w of NEWS_WINDOWS) {
+    if (msk.minuteOfDay < w.start || msk.minuteOfDay >= w.end) continue;
+    const res = await buildDigestForWindow(env, w, now);
+    if (!res) continue;
+    await kv.addStock(env, res.pkg);
+    await commitDigest(env, msk.date, w, res.items);
+    made.push(res.pkg.guid);
+    console.log("[scheduler] дайджест собран:", res.pkg.title, "→", new Date(res.pkg.scheduled_for).toISOString());
+  }
+  return made;
+}
+
+// Автопостинг ВЫКЛ: вместо публикации админу приходит дайджест-превью на
+// одобрение (кнопки 🌐/🔵/🟢/🔄/❌).
+async function sendDigestPreview(env, adminChat, pkg) {
+  const bytes = decodePng(pkg.png);
+  const sent = await sendCard(env, adminChat, bytes, pkg.caption, {
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: approveButtons(pkg.id) },
+  });
+  await kv.saveDraft(env, {
+    id: pkg.id,
+    kind: "digest",
+    status: "pending",
+    title: pkg.title,
+    caption: pkg.caption,
+    png: pkg.png,
+    link: "",
+    source: "TrustNode",
+    guid: pkg.guid,
+    items: pkg.items,
+    admin_chat_id: adminChat,
+    preview_message_id: sent && sent.message_id,
+    created_at: new Date().toISOString(),
+  });
+}
+
+export async function assembleDigestDrafts(env, now = new Date()) {
+  const msk = mskNow(now);
+  const adminChat = env.TELEGRAM_ADMIN_CHAT_ID;
+  let sent = 0;
+  for (const w of NEWS_WINDOWS) {
+    if (msk.minuteOfDay < w.start || msk.minuteOfDay >= w.end) continue;
+    const res = await buildDigestForWindow(env, w, now);
+    if (!res) continue;
+    if (adminChat) await sendDigestPreview(env, adminChat, res.pkg);
+    await commitDigest(env, msk.date, w, res.items);
+    sent++;
+    console.log("[scheduler] дайджест-превью админу:", res.pkg.title);
+  }
+  return sent;
+}
+
+// «Переделать» для дайджест-превью: кандидаты уже потреблены выпуском, поэтому
+// пересобираем текст и обложку из компонентов сохранённого черновика (без
+// повторного диспатча на GitHub) и шлём админу новое превью. Возвращает
+// { ok: true } или { ok: false, reason }.
+export async function rebuildDigestPreview(env, draft) {
+  const slug = String(draft.id || "").replace(/^dg\d{8}/, "");
+  const win = NEWS_WINDOWS.find((w) => w.slug === slug);
+  const date = String(draft.guid || "").split(":")[1] || "";
+  if (!win || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return { ok: false, reason: "не распознан выпуск дайджеста" };
+  }
+  if (!Array.isArray(draft.items) || !draft.items.length) {
+    return { ok: false, reason: "нет сохранённых новостей выпуска" };
+  }
+
+  const res = await finalizeDigestPkg(env, draft.items, {
+    label: win.label,
+    slug: win.slug,
+    date,
+    slot: mskToUtcMs(0, win.start, new Date()),
+  });
+  if (!res) return { ok: false, reason: "обложку не собрали" };
+
+  const adminChat = draft.admin_chat_id || env.TELEGRAM_ADMIN_CHAT_ID;
+  await kv.deleteDraft(env, draft.id);
+  if (adminChat) await sendDigestPreview(env, adminChat, res.pkg);
+  return { ok: true };
+}
+
+// ---------- главный тик ----------
+
+export async function tick(env, opts = {}) {
+  const now = opts.now ? new Date(opts.now) : new Date();
 
   // Анти-перекрытие крон: Cloudflare не ждёт завершения предыдущего запуска,
   // если крон раз в 5 минут «не успевает». Два параллельных тика читают одну и
@@ -567,46 +735,24 @@ export async function tick(env) {
   }
   state.meta.scan_chunk = (offset + 1) % CHUNK_COUNT;
 
-  // 2. пополнение склада: автопостинг в воркере или диспатч на GitHub
+  // 2. накопление кандидатов и сборка дайджестов по окнам.
+  // Автопостинг ВКЛ: выпуск (сводка 3-5 новостей + обложка) ложится на склад и
+  // уходит в TG+VK тем же тиком. ВЫКЛ: админу приходит дайджест-превью на
+  // одобрение. GitHub (workflow_dispatch) для автопостинга больше не нужен —
+  // остался только для ручных постов админа.
   try {
-    const nowMs = Date.now();
-    // выкидываем протухшие кандидаты, чтобы они не публиковались позже
+    const nowMs = now.getTime();
+    // выкидываем протухшие кандидаты, чтобы они не ждали выпуска до лучших времён
     const candList = await kv.getCandidates(env);
     const freshCands = candList.filter((c) => !isStaleItem(c, nowMs));
     if (freshCands.length !== candList.length) await kv.setCandidates(env, freshCands);
-    const stock = await kv.getStock(env);
-    const inFlight = (await kv.listDispatches(env)).filter(
-      (d) =>
-        d.status !== "done" &&
-        d.status !== "fallback_posted" &&
-        d.kind !== "manual" &&
-        !(d.guid || "").startsWith("m") &&
-        Date.now() - d.at < 60 * 60 * 1000
-    ).length;
-    const need = STOCK_TARGET - stock.length;
-    if (need > 0 && inFlight < MAX_IN_FLIGHT) {
-      const toSend = Math.min(MAX_CANDIDATES_PER_TICK, need, MAX_IN_FLIGHT - inFlight);
-      const cands = await kv.takeCandidates(env, toSend);
-      if (await kv.getAutopost(env)) {
-        // автопостинг целиком в воркере: карточка -> склад в строгий слот
-        await autoGenerateStock(env, cands);
-      } else {
-        for (const c of cands) {
-          // Новость успела протухнуть, пока ждала в очереди — не отдаём на подготовку.
-          if (isStaleItem(c, Date.now())) continue;
-          try {
-            const ok = await dispatchToGitHub(env, c);
-            if (!ok) {
-              await kv.addCandidate(env, c);
-            }
-          } catch (e) {
-            await kv.addCandidate(env, c);
-          }
-        }
-      }
+    if (await kv.getAutopost(env)) {
+      await assembleDigests(env, now);
+    } else {
+      await assembleDigestDrafts(env, now);
     }
   } catch (e) {
-    console.log("[scheduler] dispatch error:", e.message);
+    console.log("[scheduler] digest error:", e.message);
   }
 
   // 5. авто-отложка черновиков (нет ответа админа 30 мин)

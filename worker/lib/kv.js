@@ -235,6 +235,35 @@ export async function removeVkRetry(env, id) {
   return next.length !== list.length;
 }
 
+// ---------- digest_done (маркер «дайджест окна собран» — анти-дубль) ----------
+
+// Маркер на дату+окно (date = "YYYY-MM-DD", slug = "morning|day|evening"):
+// страхует, что за одно окно соберётся ровно один дайджест, даже если крон
+// уёдет в параллельный запуск или переживёт ретрай публикации.
+export async function getDigestDone(env, date, slug) {
+  return kvGet(env, `digest_done:${date}:${slug}`, null);
+}
+
+export async function setDigestDone(env, date, slug, info = {}) {
+  await kvSet(env, `digest_done:${date}:${slug}`, info);
+}
+
+export async function listDigestMarkers(env) {
+  const items = [];
+  if (env.BOT_KV && typeof env.BOT_KV.list === "function") {
+    try {
+      const res = await env.BOT_KV.list({ prefix: "digest_done:" });
+      for (const k of res.keys || []) {
+        const v = await env.BOT_KV.get(k.name, "json");
+        if (v) items.push({ key: k.name, ...v });
+      }
+    } catch (e) {
+      /* ignore */
+    }
+  }
+  return items;
+}
+
 // ---------- dispatch tracking (для фолбэка при аутэдже GitHub) ----------
 
 export async function markDispatch(env, guid, info) {

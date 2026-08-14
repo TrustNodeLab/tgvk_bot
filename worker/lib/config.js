@@ -1,16 +1,19 @@
 // Константы и утилиты бота: часовой пояс МСК, окна публикации, лимиты, футер.
 export const MSK_OFFSET_MIN = 3 * 60; // UTC+3
 
-// Окна публикации новостных постов (минуты от полуночи МСК).
-// Строгое расписание: каждые 4 часа ровно один пост, начиная с 00:00 МСК.
+// Окна публикации дайджестов (минуты от полуночи МСК).
+// Идеальная формула канала: 3 дайджеста в день — утро (09:00),
+// день (13:00) и вечер (18:00). В каждом — сводка 3-5 свежих новостей.
+// Публикация — ровно в начале окна.
 export const NEWS_WINDOWS = [
-  { start: 0, end: 4 * 60, cap: 1 },
-  { start: 4 * 60, end: 8 * 60, cap: 1 },
-  { start: 8 * 60, end: 12 * 60, cap: 1 },
-  { start: 12 * 60, end: 16 * 60, cap: 1 },
-  { start: 16 * 60, end: 20 * 60, cap: 1 },
-  { start: 20 * 60, end: 24 * 60, cap: 1 },
+  { start: 9 * 60, end: 12 * 60, cap: 1, slug: "morning", label: "утро" },
+  { start: 13 * 60, end: 17 * 60, cap: 1, slug: "day", label: "день" },
+  { start: 18 * 60, end: 24 * 60, cap: 1, slug: "evening", label: "вечер" },
 ];
+
+// Дайджест: минимум и максимум новостей в сводке.
+export const DIGEST_MIN_ITEMS = 3;
+export const DIGEST_MAX_ITEMS = 5;
 
 // Свежесть новости для поста: не старше 24 часов, приоритет последним 6 часам.
 export const MAX_AGE_MS = 24 * 3600 * 1000;
@@ -36,12 +39,7 @@ export function isStaleItem(item, now = Date.now()) {
   return t === null ? false : now - t > MAX_AGE_MS;
 }
 
-// Склад и подготовка.
-export const STOCK_TARGET = 8; // сколько готовых постов держим «про запас»
-export const STOCK_MIN = 3; // при падении ниже — активно добираем кандидатов
-export const MAX_IN_FLIGHT = 3; // сколько кандидатов одновременно у GitHub на подготовке
 export const MAX_CANDIDATES_QUEUE = 20;
-export const MAX_CANDIDATES_PER_TICK = 2; // сколько кандидатов диспатчим за один крон
 
 // Admin-черновики: без ответа 30 минут -> отложенный слот.
 export const DRAFT_TIMEOUT_MIN = 30;

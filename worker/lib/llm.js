@@ -7,9 +7,68 @@
 
 import { mskNow } from "./config.js";
 import { markdownToHtml, stripMarkdown, fitCaption } from "./text.js";
+import { analyzePost, buildCards, buildAdvice, sanitizeLink } from "./nlp.js";
 
 const RUSTORE = "https://www.rustore.ru/catalog/app/com.frauddetector.app";
 const SITE = "https://trustnodelab.github.io";
+
+// Жанры поста — ротация «как в живой редакции», чтобы соседние посты не
+// выглядели одинаково (шаблон-«бот» = убийца охватов). Жанр выбирается
+// детерминированно от guid/текста: стабилен для той же новости, но разный
+// между соседними постами. Инструкция дописывается в системный промпт LLM.
+const POST_STYLES = [
+  {
+    id: "razbor",
+    name: "Разбор схемы",
+    instruction:
+      "Формат поста — «Разбор схемы»: сначала коротко о чём новость, затем " +
+      "по шагам — как именно работает схема обмана (что говорит мошенник, как " +
+      "давит на страхи, где точка отказа), и в конце — конкретная защита. " +
+      "Пиши как аналитик безопасности, объясняющий механику, а не как новостная лента.",
+  },
+  {
+    id: "warning",
+    name: "Предупреждение",
+    instruction:
+      "Формат поста — «Предупреждение»: поставь читателя в ситуацию («вы " +
+      "можете столкнуться с этим сегодня»), объясни риск человеческим языком, " +
+      "дай 2—3 действия, которые прямо сейчас снижают угрозу. Тон — заботливый, " +
+      "без паники и кликбейта.",
+  },
+  {
+    id: "fact",
+    name: "Факт-карточка",
+    instruction:
+      "Формат поста — «Факт-карточка»: сухо и по делу. Собери главные факты " +
+      "новости короткими абзацами, цифры — точно из источника, вывод — одним " +
+      "предложением. Без лишних слов и общих советов; стиль — информационный.",
+  },
+  {
+    id: "myth",
+    name: "Разбор заблуждения",
+    instruction:
+      "Формат поста — «Разбор заблуждения»: найди распространённый миф или " +
+      "наивную ошибку, связанную с новостью («я думал, меня это не касается»), " +
+      "разбери, почему она работает на людях, и покажи, как правильно поступать. " +
+      "Пиши спокойно, с примерами «хорошо/плохо».",
+  },
+  {
+    id: "case",
+    name: "Кейс-история",
+    instruction:
+      "Формат поста — «Кейс-история»: перескажи ситуацию из новости как " +
+      "историю конкретного человека ( кто, где, что случилось, что потерял ), " +
+      "выдели момент, где его можно было остановить, и сделай вывод-совет. " +
+      "Рассказывай живо и по-человечески, без канцелярита.",
+  },
+];
+
+function pickPostStyle(meta = {}) {
+  const seed = String(meta.guid || meta.link || meta.title || meta.text || "").trim();
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return POST_STYLES[h % POST_STYLES.length];
+}
 
 export const FOOTER_HTML =
   `🛡️ <b>TrustNode</b>\n` +
@@ -36,12 +95,6 @@ function finalizeCaption(body) {
   return bodyFit + "\n\n" + FOOTER_HTML;
 }
 
-function sentences(text) {
-  const t = String(text || "").replace(/\s+/g, " ").trim();
-  if (!t) return [];
-  return t.split(/(?<=[.!?…])\s+/).map((s) => s.trim()).filter(Boolean);
-}
-
 function truncateAt(s, max) {
   if (s.length <= max) return s;
   const cut = s.slice(0, max);
@@ -53,195 +106,224 @@ function stripLink(s) {
   return s.replace(/https?:\/\/\S+/gi, "").replace(/\s+/g, " ").trim();
 }
 
-// --- helpers для качественного заголовка без LLM ---
-
-// Первое содержательное предложение текста (для лида и для заголовка, если нет title).
-function firstSentence(body) {
-  const t = String(body || "").trim();
-  if (!t) return null;
-  const first = sentences(t)[0];
-  if (!first) return null;
-  const cleaned = stripLink(first);
-  return cleaned.length > 15 ? cleaned : null;
-}
-
-// Первая строка достаточно «похожа на заголовок», чтобы использовать целиком.
-function headlineWorthy(line) {
-  const l = String(line || "").trim();
-  return l.length >= 10 && l.length <= 110 && !/^(москва|риа|tass|интерфакс)/i.test(l);
-}
-
-const NUM_RE =
-  /(\d[\d\s]*[.,]?\d*)\s*(%|млн|млрд|тыс\.?|₽|руб(?:лей)?|миллион|тысяч|млрд\s*руб|процент|из\s+\d+)/gi;
-
-function findStat(s) {
-  const m = String(s).match(NUM_RE);
-  if (!m) return null;
-  const raw = m[0].replace(/\s+/g, " ");
-  if (!/\d/.test(raw)) return null;
-  return raw.slice(0, 14);
-}
-
-// ---------- детекторы схем мошенничества (для советов без LLM) ----------
-
-const SCHEME_DETECTORS = [
-  {
-    key: "call",
-    re: /звон(?:ят|ит|ают)|позвонил|телефонный|телефону|по телефону|оператор|из банка|безопасн[а-я]* счёт|представился|колл-центр/i,
-    hint: "Голосовой разговор",
-    tips: [
-      "Положите трубку и перезвоните в банк по номеру с обратной стороны карты",
-      "Сотрудники банка никогда не просят код из SMS или перевод «на безопасный счёт»",
-    ],
-  },
-  {
-    key: "sms",
-    re: /код (?:из|в )?[сs]мс?|смс|телефонную подтвержден|подтверждени|код подтверждени|вход в аккаунт/i,
-    hint: "Код из SMS",
-    tips: [
-      "Код из SMS — это ключ к вашему аккаунту. Никому его не называйте.",
-      "Банк, госорган и «служба безопасности» никогда не запрашивают код по телефону",
-    ],
-  },
-  {
-    key: "link",
-    re: /ссылк|фишинг|фейк|поддельн|скопирова|сообщени[а-я]*\s+закрыт|перейти по/i,
-    hint: "Фишинг-ссылки",
-    tips: [
-      "Проверяйте адрес сайта перед вводом данных — подделка может отличаться одной буквой",
-      "Не переходите по ссылкам и QR-кодам от незнакомцев и в сомнительных сообщениях",
-    ],
-  },
-  {
-    key: "investment",
-    re: /инвест|крипто|доход|вложени|пассивн|обман.*вклад|реклама.*заработ/i,
-    hint: "Инвестиции/крипто",
-    tips: [
-      "Гарантированный доход «прямо сейчас» — признак мошенничества",
-      "Не выводите средства на «безопасный счёт» и не передавайте доступ к кошельку",
-    ],
-  },
-  {
-    key: "identity",
-    re: /представил|пoлюцейск|следовател|фсб|прокурор|служб[а-я]* безопасност|госуслуг/i,
-    hint: "Фейковый сотрудник",
-    tips: [
-      "Незнакомец «из органов» не имеет права требовать деньги или доступ по телефону",
-      "Перепроверяйте личность звонящего, позвонив по официальному номеру ведомства",
-    ],
-  },
-  {
-    key: "gosuslugi",
-    re: /госуслуг|аккаунт\s+взлома|восстанови* доступ/i,
-    hint: "Аккаунт на Госуслугах",
-    tips: [
-      "Настоящие сотрудники не просят код из SMS или «подтверждение входа» по телефону",
-      "Смените пароль только через официальный портал, не по ссылке из сообщения",
-    ],
-  },
-];
-
-function detectScheme(text) {
-  for (const d of SCHEME_DETECTORS) {
-    const m = d.re.exec(String(text || "").toLowerCase());
-    if (m) return d;
-  }
-  return null;
-}
-
-// Вычленяем «факты» из описания: содержательные предложения-тезисы (кроме первого).
-function extractFacts(sents) {
-  const skipLead = /^((москва|риа|tass|интерфакс|прайм)[, -]*\d+\s*(авг|сент|окт|ноя|дек|янв|фев|мар|апр|мая|июн|июл)\s*,?)?/i;
-  return sents
-    .slice(1)
-    .filter((s) => {
-      const t = s.replace(/^[\s\d.,\-–:]+/, "").trim();
-      return t.length >= 25 && t.length <= 180;
-    })
-    .map((s) => truncateAt(stripLink(s).replace(/^[\s\d.,:–-]+/, "").replace(/[.;,]+$/, ""), 150))
-    .slice(0, 4);
-}
-
 // ---------- генератор по правилам ----------
 
 export function generateByRules(text, meta = {}) {
   const src = String(meta.text || text || "");
+  const analysis = analyzePost(src, meta);
 
-  // Текст обычно приходит как «строка-заголовок \n лид-абзац». Заголовок берём
-  // с первой строки (или явный meta.title), лид — с первой строки-абзаца.
-  const titleText = stripLink(String(meta.title || "").trim());
-  const rawLines = src.split(/\n+/).map((l) => stripLink(l).trim()).filter(Boolean);
-  const firstLine = rawLines[0] || "";
-  const bodyText = rawLines.slice(1).join(" ").trim();
-  const cleaned = rawLines.join(" ");
+  const cards = buildCards(analysis, meta);
+  const headline = analysis.headline;
+  const norm = (s) => String(s || "").toLowerCase().replace(/[.,!?…]+$/g, "").trim();
+  const lead = analysis.lead && norm(analysis.lead) !== norm(headline) ? analysis.lead : null;
+  const scheme = analysis.topic;
+  const style = pickPostStyle(meta);
 
-  const headline = truncateAt(
-    titleText || (firstLine && headlineWorthy(firstLine) ? firstLine : null) ||
-      firstSentence(bodyText || firstLine) ||
-      "Кибербезопасность: главное",
-    85
-  );
+  const HOOKS = {
+    razbor: ["Разбираем, как работает схема — по шагам."],
+    warning: ["С этим можно столкнуться уже сегодня."],
+    fact: ["Коротко о главном."],
+    myth: ["Что на самом деле происходит — и где подвох."],
+    case: ["Случай из новости — как это выглядело на деле."],
+  };
+  const hook = (HOOKS[style.id] || []).find(Boolean);
 
-  // Крючок-подзаголовок: первое содержательное предложение лид-абзаца.
-  const lead = firstSentence(bodyText || firstLine);
-
-  let sents = sentences(bodyText || firstLine);
-  if (sents.length < 2 && !titleText) sents = sentences(firstLine + " " + bodyText);
-
-  const facts = extractFacts(sents);
-  const scheme = detectScheme(cleaned || titleText);
-
-  // Карточки собраны так, чтобы их хватало для визуала без текста.
-  const cards = [];
-  const statNum = findStat(cleaned || src);
-  if (statNum) {
-    cards.push({
-      type: "stat",
-      number: statNum,
-      label: "ключевая цифра",
-      desc: stripLink(sents[0] || headline),
-    });
-  }
-  if (facts.length >= 1) {
-    cards.push({ type: "list", label: scheme ? "Как это происходит" : "Суть", items: facts });
-  }
-  if (scheme) {
-    cards.push({ type: "list", label: "Как защититься", items: buildAdvice(scheme) });
-  }
-  // последний запасной — если ничего не набрали
-  if (!cards.length) {
-    cards.push({
-      type: "list",
-      label: "Суть",
-      items: sents.slice(0, 3).map((s) => truncateAt(stripLink(s), 150)),
-    });
-  }
-
-  const captionLines = [`<b>${sanitizeHtml(headline)}</b>`];
+  const captionLines = [];
+  if (hook) captionLines.push(`${sanitizeHtml(hook)}\n`);
+  captionLines.push(`<b>${sanitizeHtml(headline)}</b>`);
   if (lead) captionLines.push(`\n${sanitizeHtml(lead)}`);
-  if (facts.length) {
+  if (analysis.facts.length) {
     captionLines.push("");
-    captionLines.push("🔍 " + (scheme ? "Как работает схема" : "Суть"));
-    for (const f of facts) captionLines.push("• " + sanitizeHtml(f));
+    captionLines.push("🔍 " + (scheme ? scheme.hint : "Суть"));
+    for (const f of analysis.facts) captionLines.push("• " + sanitizeHtml(f));
   }
   if (scheme) {
     captionLines.push("");
     captionLines.push("🛡️ Что делать");
     for (const t of buildAdvice(scheme)) captionLines.push("• " + sanitizeHtml(t));
   }
-  if (meta.link) captionLines.push("", `Источник: <a href="${sanitizeHtml(meta.link)}">ссылка</a>`);
+  if (meta.link) captionLines.push("", `Источник: <a href="${sanitizeLink(meta.link)}">ссылка</a>`);
   captionLines.push("", FOOTER_HTML);
   const caption = captionLines.join("\n");
 
-  return { headline, headline_lines: [headline], caption, cards, tier: "news", source: meta.source || "" };
+  return {
+    headline,
+    headline_lines: [headline],
+    caption,
+    cards,
+    tier: analysis.tier,
+    source: meta.source || "",
+  };
 }
 
-// Советы по защите: из детектора + базовое правило. Без LLM.
-function buildAdvice(scheme) {
-  const tips = scheme ? scheme.tips.slice(0, 2) : [];
-  tips.push("При малейшем сомнении перезвоните сами — официальный номер с обратной стороны карты или сайта");
-  tips.push("Расскажите о схеме близким: мошенники часто давят на доверие и страх");
-  return tips.slice(0, 3);
+// ---------- дайджест (сводка нескольких новостей одним постом) ----------
+
+const DIGEST_EMOJI = { morning: "🌅", day: "☀️", evening: "🌆" };
+
+// Якорь свежести новости для сортировки внутри сводки (свежайшие первыми).
+function itemFreshMs(c) {
+  for (const f of ["pub_ts", "found_at", "created_at"]) {
+    const v = c[f];
+    if (v === null || v === undefined || v === "") continue;
+    const t = typeof v === "number" ? v : Date.parse(String(v));
+    if (!Number.isNaN(t)) return t;
+  }
+  return 0;
+}
+
+function domainOf(link) {
+  try {
+    return String(new URL(link).hostname).replace(/^www\./, "");
+  } catch (e) {
+    return "";
+  }
+}
+
+function humanDate(iso) {
+  const m = String(iso || "").match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return m ? `${m[3]}.${m[2]}` : iso || "";
+}
+
+// Правила-фолбэк: по каждой новости — заголовок + факт + ссылка, в конце —
+// общий блок защиты (советы по темам, без дублей), до 3 советов.
+export function digestByRules(items, meta = {}) {
+  const label = String(meta.label || "");
+  const head =
+    `Дайджест TrustNode · ${label}` + (meta.date ? ` — ${humanDate(meta.date)}` : "");
+  const bulletTexts = [];
+  const advice = [];
+  const seenTips = new Set();
+  for (const it of items) {
+    let a = null;
+    try {
+      a = analyzePost(it.text || it.title || "", { title: it.title || "" });
+    } catch (e) { /* пустой текст */ }
+    const title =
+      (a && a.headline) ||
+      String(it.title || "").replace(/\s+/g, " ").trim().slice(0, 90) ||
+      "Новость";
+    const fact = a && a.facts && a.facts[0] ? a.facts[0].slice(0, 140) : null;
+    let text = sanitizeHtml(title);
+    if (fact) text += ` — ${sanitizeHtml(fact)}`;
+    bulletTexts.push({ text, link: it.link || "" });
+    if (a && a.topic) {
+      for (const t of buildAdvice(a.topic)) {
+        if (advice.length >= 3) break;
+        const key = String(t).toLowerCase();
+        if (seenTips.has(key)) continue;
+        seenTips.add(key);
+        advice.push(sanitizeHtml(t));
+      }
+    }
+  }
+  return { headline: head, bulletTexts, advice };
+}
+
+// Попытка живого дайджеста от LLM (прямой API): headline + bullets (по одной
+// на новость: что произошло и почему касается читателя) + советы.
+async function callLlmDigest(env, items) {
+  const base = String(env.LLM_API_BASE || "").replace(/\/+$/, "");
+  const model = env.LLM_MODEL || "gemini-flash-lite-latest";
+  const list = items
+    .map(
+      (it, i) =>
+        `${i + 1}. ${String(it.title || "").replace(/\s+/g, " ").trim().slice(0, 200)}\n` +
+        `${String(it.text || "").replace(/\s+/g, " ").trim().slice(0, 800)}\n` +
+        `Ссылка: ${it.link || ""}`
+    )
+    .join("\n\n");
+  const prompt =
+    "Ты — редактор канала TrustNode о кибербезопасности. По списку новостей собери дайджест:\n" +
+    "верни ТОЛЬКО валидный JSON без пояснений:\n" +
+    '{"headline":"короткий заголовок выпуска (1 фраза)", "bullets":["по каждой новости 1-2 предложения: что произошло и почему это касается читателя"], "advice":["2-3 совета, как защититься"]}.\n' +
+    "Пиши живым языком редактора, без канцелярита; суммы — точно из текста новостей.\n\n" +
+    list;
+  const res = await fetch(`${base}/chat/completions`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.LLM_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model,
+      messages: [
+        { role: "system", content: "Ты редактор телеграм-канала о кибербезопасности. Отвечай только JSON." },
+        { role: "user", content: prompt },
+      ],
+      temperature: 0.75,
+    }),
+    signal: AbortSignal.timeout(90000),
+  });
+  if (!res.ok) throw new Error(`LLM digest ${res.status}`);
+  const m = String(await res.text()).match(/\{[\s\S]*\}/);
+  if (!m) throw new Error("LLM digest: не JSON");
+  const data = JSON.parse(m[0]);
+  const bullets = Array.isArray(data.bullets)
+    ? data.bullets.map((b) => String(b).trim()).filter(Boolean).slice(0, items.length)
+    : [];
+  const advice = Array.isArray(data.advice)
+    ? data.advice.map((a) => String(a).trim()).filter(Boolean).slice(0, 3)
+    : [];
+  if (!bullets.length) throw new Error("LLM digest: пустые bullets");
+  return { headline: String(data.headline || "").trim() || undefined, bullets, advice };
+}
+
+// Текст дайджеста: headline + caption (набор заголовка, bullets с ссылками на
+// источники, блок «Что делать», футер). LLM при доступности, иначе — правила.
+export async function generateDigestText(items, env = {}, meta = {}) {
+  const fallback = digestByRules(items, meta);
+  let headline = fallback.headline;
+  let bulletTexts = fallback.bulletTexts;
+  let advice = fallback.advice;
+
+  if (env.LLM_API_BASE && env.LLM_API_KEY) {
+    try {
+      const llm = await callLlmDigest(env, items);
+      if (llm.headline) headline = llm.headline;
+      if (llm.bullets.length) {
+        bulletTexts = llm.bullets.map((t, i) => ({
+          text: markdownToHtml(t),
+          link: items[i] && items[i].link,
+        }));
+      }
+      if (llm.advice.length) advice = llm.advice.map((t) => markdownToHtml(t));
+    } catch (e) {
+      console.log("[llm] LLM-дайджест недоступен, использую правила:", e.message);
+    }
+  }
+
+  const emoji = DIGEST_EMOJI[meta.slug] || "📰";
+  const parts = [`${emoji} <b>${sanitizeHtml(headline)}</b>`];
+  for (let i = 0; i < bulletTexts.length; i++) {
+    let txt = `• <b>${i + 1}.</b> ${bulletTexts[i].text}`;
+    if (bulletTexts[i].link) {
+      txt += `\n<a href="${sanitizeLink(bulletTexts[i].link)}">источник →</a>`;
+    }
+    parts.push(txt);
+  }
+  if (advice.length) {
+    parts.push("🛡️ <b>Что делать</b>");
+    for (const t of advice) parts.push("• " + t);
+  }
+  parts.push(FOOTER_HTML);
+  const caption = fitCaption(parts.join("\n\n"), 1024);
+
+  return {
+    headline,
+    headline_lines: [headline],
+    caption,
+    items: items.map((it, i) => ({
+      guid: it.guid || "",
+      title: String(it.title || "").replace(/\s+/g, " ").trim().slice(0, 120),
+      link: it.link || "",
+      source: domainOf(it.link || "") || it.source || "",
+    })),
+  };
+}
+
+// Свежайшие первыми — для отбора новостей в выпуск.
+export function digestFreshScore(c) {
+  return itemFreshMs(c);
 }
 
 // ---------- вызов LLM ----------
@@ -249,13 +331,13 @@ function buildAdvice(scheme) {
 // Прокси через Render-сервис: GigaChat из Worker напрямую нельзя (CA Сбера).
 // Render-сервис держит ключи GigaChat/Gemini и ходит в них сам. provider:
 // "gigachat" | "gemini".
-async function callProxyLlm(env, text, prevPost = null, provider = "gigachat") {
+async function callProxyLlm(env, text, prevPost = null, provider = "gigachat", style = null) {
   const base = (env.LLM_PROXY_URL || "").replace(/\/+$/, "");
   if (!base) throw new Error("LLM_PROXY_URL не задан");
   const res = await fetch(`${base}/llm`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ text, prev_post: prevPost, provider }),
+    body: JSON.stringify({ text, prev_post: prevPost, provider, style: style ? style.id : "" }),
     signal: AbortSignal.timeout(115000),
   });
   const raw = await res.text();
@@ -304,10 +386,13 @@ const LLM_SYSTEM =
   '"label":"..."} для цифр или {"type":"list","label":"...","items":["..."]} для тезисов, ' +
   "1-3 карточки), \"tier\" (news|real_threat|medium|safe). Не выдумывай цифры сверх текста.";
 
-async function callLlm(env, text) {
+async function callLlm(env, text, style = null) {
   const base = (env.LLM_API_BASE || "").replace(/\/+$/, "");
   const url = `${base}/chat/completions`;
   const model = env.LLM_MODEL || "gemini-flash-lite-latest";
+  const system = style
+    ? `${LLM_SYSTEM}\n\n${style.instruction}`
+    : LLM_SYSTEM;
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -317,10 +402,10 @@ async function callLlm(env, text) {
     body: JSON.stringify({
       model,
       messages: [
-        { role: "system", content: LLM_SYSTEM },
+        { role: "system", content: system },
         { role: "user", content: String(text).slice(0, 6000) },
       ],
-      temperature: 0.4,
+      temperature: 0.75,
     }),
   });
   if (!res.ok) throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 120)}`);
@@ -403,12 +488,13 @@ export function providerPlan(env, msk) {
 async function generateWithProviders(env, text, meta, order, joint) {
   const src = meta.text || text;
   const prev = meta.prev_post || null;
+  const style = pickPostStyle(meta);
   const errors = [];
 
   if (joint) {
     // Совместный пост: пробуем оба LLM, объединяем успешные ответы.
     const attempts = await Promise.allSettled(
-      order.map((p) => callProxyLlm(env, src, prev, p).then((d) => normalizeProxyData(d, src)))
+      order.map((p) => callProxyLlm(env, src, prev, p, style).then((d) => normalizeProxyData(d, src)))
     );
     const ok = attempts.filter((a) => a.status === "fulfilled").map((a) => a.value);
     if (ok.length >= 2) return mergeDualPost(ok[0], ok[1]);
@@ -420,7 +506,7 @@ async function generateWithProviders(env, text, meta, order, joint) {
   let lastErr = null;
   for (const p of order) {
     try {
-      const data = await callProxyLlm(env, src, prev, p);
+      const data = await callProxyLlm(env, src, prev, p, style);
       return normalizeProxyData(data, src);
     } catch (e) {
       lastErr = e;
@@ -457,7 +543,7 @@ export async function generatePostData(text, env, meta = {}) {
   }
   if (!forced && env.LLM_API_KEY && env.LLM_API_BASE) {
     try {
-      const data = await callLlm(env, meta.text || text);
+      const data = await callLlm(env, meta.text || text, pickPostStyle(meta));
       return { ...validateLlm(data, text), llm_provider: "gemini-direct" };
     } catch (e) {
       console.log("[llm] LLM недоступен, использую правила:", e.message);

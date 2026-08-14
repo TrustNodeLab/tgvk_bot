@@ -32,6 +32,38 @@ PROMPT_PATH = os.path.join(HERE, "..", "prompts", "extract_prompt.md")
 DEFAULT_API_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
 DEFAULT_MODEL = "gemini-flash-lite-latest"
 
+# Жанры поста: ротация «как в живой редакции», чтобы соседние посты не выглядели
+# одинаково. Ключ совпадает с POST_STYLES в worker/lib/llm.js.
+_STYLE_HINTS = {
+    "razbor": (
+        "«Разбор схемы»: коротко о чём новость, затем ПО ШАГАМ — как работает "
+        "схема обмана (что говорит мошенник, как давит на страхи, где точка "
+        "остановиться), в конце — конкретная защита. Тон — аналитик безопасности, "
+        "объясняющий механику, а не новостная лента."
+    ),
+    "warning": (
+        "«Предупреждение»: поставь читателя в ситуацию («вы можете столкнуться "
+        "с этим сегодня»), объясни риск человеческим языком, дай 2–3 действия, "
+        "которые прямо сейчас снижают угрозу. Заботливо, без паники и кликбейта."
+    ),
+    "fact": (
+        "«Факт-карточка»: сухо и по делу. Главные факты новости короткими "
+        "абзацами, цифры точно из источника, вывод одним предложением. Без "
+        "лишних слов и общих советов, информационный стиль."
+    ),
+    "myth": (
+        "«Разбор заблуждения»: найди миф или наивную ошибку, связанную с "
+        "новостью («я думал, меня это не касается»), разбери, почему это "
+        "работает на людях, и покажи, как правильно. Спокойно, с примерами "
+        "«хорошо/плохо»."
+    ),
+    "case": (
+        "«Кейс-история»: перескажи ситуацию из новости как историю конкретного "
+        "человека (кто, где, что случилось, что потерял), выдели момент, где "
+        "можно было остановиться, и сделай вывод-совет. Живо, без канцелярита."
+    ),
+}
+
 DEFAULT_GIGACHAT_MODEL = "GigaChat-Max"
 GIGACHAT_OAUTH_URL = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
 GIGACHAT_CHAT_URL = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
@@ -121,7 +153,7 @@ def _gigachat_chat_request(token: str, model: str, messages: list) -> requests.R
         json={
             "model": model,
             "messages": messages,
-            "temperature": 0.4,
+            "temperature": 0.7,
         },
         timeout=120,
         verify=_gigachat_verify(),
@@ -196,7 +228,7 @@ def _call_openai_compatible(api_key: str, api_base: str, model: str, messages: l
         json={
             "model": model,
             "messages": messages,
-            "temperature": 0.4,
+            "temperature": 0.7,
         },
         timeout=120,
     )
@@ -204,10 +236,13 @@ def _call_openai_compatible(api_key: str, api_base: str, model: str, messages: l
     return resp.json()["choices"][0]["message"]["content"]
 
 
-def extract_post_data(raw_text: str, prev_post: dict = None, provider: str = None) -> dict:
+def extract_post_data(raw_text: str, prev_post: dict = None, provider: str = None, style: str = None) -> dict:
     """prev_post (опц.) — данные предыдущего поста канала: их количество/типы карточек
     и layout. Передаётся в промпт, чтобы бот не публиковал подряд посты с одинаковой
     сеткой и набором карточек.
+
+    style (опц.) — жанр поста из ротации ("razbor"|"warning"|"fact"|"myth"|"case"),
+    чтобы соседние посты выглядели по-разному, как у живой редакции.
 
     provider (опц.) — явный выбор: "gigachat" | "gemini" | иной OpenAI-совместимый.
     Если не задан — берётся из LLM_PROVIDER env (по умолчанию gigachat)."""
@@ -225,6 +260,8 @@ def extract_post_data(raw_text: str, prev_post: dict = None, provider: str = Non
             f"layout {prev_layout}. Сделай ДРУГОЕ количество карточек, другие типы "
             "и другую сетку layout, чтобы посты не выглядели одинаково."
         )
+    if style:
+        user_content += f"\n\nТребование к формату поста: {_STYLE_HINTS.get(style, '')}".rstrip()
 
     messages = [
         {"role": "system", "content": _load_system_prompt()},

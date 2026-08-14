@@ -153,7 +153,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             prev = payload.get("prev_post")
             provider = str(payload.get("provider") or "").strip() or None
-            result = extract_post_data(text, prev, provider)
+            style = str(payload.get("style") or "").strip() or None
+            result = extract_post_data(text, prev, provider, style)
             self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"))
         except KeyError as e:
             self._send(503, json.dumps({"error": f"нет секрета: {e}"}).encode("utf-8"))
