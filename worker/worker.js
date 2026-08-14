@@ -41,7 +41,7 @@ import {
   handleEventDialogMessage,
 } from "./lib/support.js";
 
-const VERSION = "2.3.0";
+const VERSION = "2.4.0";
 
 // ---------- тексты ----------
 

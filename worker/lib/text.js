@@ -42,24 +42,34 @@ export function fullPostText(caption) {
 
 export function fitCaption(caption, limit = TG_CAPTION_LIMIT) {
   if (caption.length <= limit) return caption;
+  // Отделяем футер (и POST_FOOTER, и FOOTER_HTML из llm.js) по маркеру TrustNode.
   let body = caption;
   let footer = "";
-  if (caption.endsWith(POST_FOOTER)) {
-    body = caption.slice(0, -POST_FOOTER.length).trimEnd();
-    footer = "\n\n" + POST_FOOTER;
-  }
-  const budget = limit - footer.length - 1;
-  if (budget <= 0) return caption.slice(0, Math.max(0, limit - 1)) + "…";
-  let cut = body.slice(0, budget).trimEnd();
-  for (const sep of [". ", "! ", "? ", "…", " ", "— "]) {
-    const idx = cut.lastIndexOf(sep);
-    if (idx > budget / 2) {
-      cut = cut.slice(0, idx).trimEnd() + "…";
-      break;
+  const fIdx = body.lastIndexOf("TrustNode");
+  if (fIdx >= 0) {
+    const blockStart = body.lastIndexOf("\n\n", fIdx);
+    if (blockStart >= 0) {
+      footer = body.slice(blockStart + 2);
+      body = body.slice(0, blockStart).trimEnd();
     }
   }
-  if (!cut.endsWith("…")) cut = body.slice(0, budget - 1).trimEnd() + "…";
-  return cut + footer;
+  const budget = limit - footer.length - 1;
+  if (budget <= 30) return caption.slice(0, Math.max(0, limit - 1)) + "…";
+  // Режем по абзацам (двойной перенос), а не по символу — HTML-теги (<a href>, <b>)
+  // целиком сохраняются, ссылки не рвутся. Неуместившиеся абзацы отбрасываются.
+  const paras = body.split(/\n\s*\n/).filter((p) => p.trim());
+  let out = "";
+  for (const p of paras) {
+    const candidate = out ? out + "\n\n" + p : p;
+    if (candidate.length > budget) {
+      if (out) out += "\n\n…";
+      else out = body.slice(0, budget - 1).trimEnd() + "…";
+      break;
+    }
+    out = candidate;
+  }
+  if (!out.trim()) out = body.slice(0, budget - 1).trimEnd() + "…";
+  return (out + "\n\n" + footer).trimEnd();
 }
 
 // Простое экранирование HTML для Telegram parse_mode=HTML.
