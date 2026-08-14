@@ -673,6 +673,35 @@ export async function assembleDigestDrafts(env, now = new Date()) {
   return sent;
 }
 
+// Тестовое превью (/digesttest): собирает дайджест из текущих кандидатов как
+// будто наступило ближайшее окно и шлёт его админу. Кандидатов НЕ потребляет и
+// маркер digest_done НЕ ставит. Возвращает { ok, reason?, title }.
+export async function sendDigestTestPreview(env) {
+  const msk = mskNow();
+  const now = new Date();
+  const win =
+    NEWS_WINDOWS.find((w) => msk.minuteOfDay >= w.start && msk.minuteOfDay < w.end) ||
+    NEWS_WINDOWS[0];
+
+  const items = await pickDigestItems(env, DIGEST_MAX_ITEMS);
+  if (!items.length) {
+    return { ok: false, reason: "В очереди нет свежих кандидатов — запусти /rescan" };
+  }
+
+  const date = msk.date;
+  const res = await finalizeDigestPkg(env, items, {
+    label: win.label,
+    slug: win.slug,
+    date,
+    slot: mskToUtcMs(0, win.start, now),
+  });
+  if (!res) return { ok: false, reason: "Обложку не удалось собрать" };
+
+  const adminChat = env.TELEGRAM_ADMIN_CHAT_ID;
+  if (adminChat) await sendDigestPreview(env, adminChat, res.pkg);
+  return { ok: true, title: res.pkg.title };
+}
+
 // «Переделать» для дайджест-превью: кандидаты уже потреблены выпуском, поэтому
 // пересобираем текст и обложку из компонентов сохранённого черновика (без
 // повторного диспатча на GitHub) и шлём админу новое превью. Возвращает

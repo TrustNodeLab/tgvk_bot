@@ -15,6 +15,7 @@ import {
   publishPackage,
   nextFreeSlot,
   rebuildDigestPreview,
+  sendDigestTestPreview,
 } from "./lib/scheduler.js";
 import {
   sendMessage,
@@ -104,6 +105,7 @@ const COMMANDS = [
   { command: "drafts", description: "Черновики" },
   { command: "export", description: "Экспорт истории" },
   { command: "rescan", description: "Полный тик" },
+  { command: "digesttest", description: "Тестовое превью дайджеста" },
   { command: "version", description: "Версия" },
 ];
 
@@ -1420,6 +1422,16 @@ async function handleCommand(env, state, chatId, text) {
         await sendMessage(env, chatId, "✅ Полный тик выполнен");
       } catch (e) {
         await sendMessage(env, chatId, `⚠️ Ошибка тика: ${escHtml(e.message)}`);
+      }
+      break;
+    }
+
+    case "/digesttest": {
+      const r = await sendDigestTestPreview(env);
+      if (r.ok) {
+        await sendMessage(env, chatId, `🌅 Тестовое превью дайджеста отправлено: ${escHtml(r.title || "")}`);
+      } else {
+        await sendMessage(env, chatId, `⚠️ ${escHtml(r.reason || "Не получилось собрать превью")}`);
       }
       break;
     }
