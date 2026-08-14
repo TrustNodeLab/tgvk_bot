@@ -416,46 +416,62 @@ def _digest_headline_by_rules(items: list) -> str:
     return "Дайджест TrustNode"
 
 
-def extract_digest(items: list, provider: str = None) -> dict:
-    """Собирает дайджест «коллективом»: заголовок и булеты — живые модели
-    (GigaChat и Gemini по очереди, по номеру новости), советы — шаблон по
-    ключевым словам. Если одна модель недоступна — вторая закрывает все булеты,
-    а при полном отказе — шаблонные булеты из первого предложения новости.
-    Возвращает {headline, bullets, advice} (по 1 булету на новость)."""
-    import itertools
+def _opinion_score(b: str) -> float:
+    """Оценивает, насколько булет — мнение, а не пересказ: маркеры позиции
+    дают большой вес, длинный содержательный текст — небольшой бонус."""
+    b = str(b or "").lower()
+    markers = (
+        "вердикт", "развод", "не ведитесь", "бегите", "не доверяй", "насторож",
+        "наш взгляд", "наше мнение", "мы считаем", "кажется", "звучит",
+        "классика жанра", "ловушка", "красный флаг", "стоит помнить",
+        "помните", "не платите", "проверяй", "осторож", "тревожн", "признак",
+        "афера", "обман", "схема наживы",
+    )
+    score = 0.0
+    for m in markers:
+        if m in b:
+            score += 3.0
+    score += min(len(b) / 40.0, 4.0)  # содержательность
+    return score
 
-    # два провайдера: основной и второй (если задан один — дублируем его)
+
+def extract_digest(items: list, provider: str = None) -> dict:
+    """Собирает дайджест «коллективом»: обе модели (GigaChat и Gemini) пишут
+    булеты по всем новостям, для каждой выбираем лучший по признаку «это
+    мнение, а не пересказ». Заголовок — от модели с позицией, советы — шаблон
+    по ключевым словам. При отказе модели её булеты закрывает вторая, при
+    полном отказе — шаблонные булеты из первого предложения новости.
+    Возвращает {headline, bullets, advice} (по 1 булету на новость)."""
     primary = provider or os.environ.get("LLM_PROVIDER", "") or "gigachat"
     secondary = "gemini" if primary != "gemini" else "gigachat"
 
-    bullets = [None] * len(items)
-    headline = None
-    errors = []
-
-    def _group(items_group, prov, idxs):
-        nonlocal headline
+    def _try(prov):
         try:
-            res = _digest_json(items_group, prov)
+            return _digest_json(items, prov)
         except Exception as e:  # noqa: BLE001
-            errors.append(f"{prov}: {e}")
+            print(f"[llm] дайджест {prov} недоступен: {e}")
             return None
-        for k, idx in zip(range(len(res.get("bullets") or [])), idxs):
-            if idx < len(bullets):
-                bullets[idx] = res["bullets"][k]
-        if not headline and res.get("headline"):
-            headline = res["headline"]
-        return res
 
-    half = (len(items) + 1) // 2
-    idxs_a = list(range(0, half))
-    idxs_b = list(range(half, len(items)))
-    group_a = [items[i] for i in idxs_a]
-    group_b = [items[i] for i in idxs_b]
+    res_primary = _try(primary)
+    res_secondary = _try(secondary)
 
-    # сначала основной провайдер на группу A, второй на группу B
-    ok = _group(group_a, primary, idxs_a) is not None
-    if group_b:
-        ok = _group(group_b, secondary, idxs_b) is not None or ok
+    bullets = [None] * len(items)
+    for i in range(len(items)):
+        cands = []
+        for res in (res_primary, res_secondary):
+            if res and i < len(res.get("bullets") or []):
+                cands.append(res["bullets"][i])
+        if cands:
+            bullets[i] = max(cands, key=_opinion_score)
+
+    # заголовок: тот, что больше похож на позицию; иначе любой живой
+    headline = ""
+    heads = []
+    for res in (res_primary, res_secondary):
+        if res and res.get("headline"):
+            heads.append(res["headline"])
+    if heads:
+        headline = max(heads, key=_opinion_score)
 
     # закрываем недостающие булеты шаблоном
     for i in range(len(items)):
