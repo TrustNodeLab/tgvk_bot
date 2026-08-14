@@ -217,7 +217,7 @@ export function digestByRules(items, meta = {}) {
     bulletTexts.push({ text, link: it.link || "" });
     if (a && a.topic) {
       for (const t of buildAdvice(a.topic)) {
-        if (advice.length >= 3) break;
+        if (advice.length >= 2) break;
         const key = String(t).toLowerCase();
         if (seenTips.has(key)) continue;
         seenTips.add(key);
@@ -271,7 +271,7 @@ async function callLlmDigest(env, items) {
     ? data.bullets.map((b) => String(b).trim()).filter(Boolean).slice(0, items.length)
     : [];
   const advice = Array.isArray(data.advice)
-    ? data.advice.map((a) => String(a).trim()).filter(Boolean).slice(0, 3)
+    ? data.advice.map((a) => String(a).trim()).filter(Boolean).slice(0, 2)
     : [];
   if (!bullets.length) throw new Error("LLM digest: пустые bullets");
   return { headline: String(data.headline || "").trim() || undefined, bullets, advice };
@@ -295,7 +295,7 @@ async function callProxyDigest(env, items) {
     ? data.bullets.map((b) => String(b).trim()).filter(Boolean).slice(0, items.length)
     : [];
   const advice = Array.isArray(data.advice)
-    ? data.advice.map((a) => String(a).trim()).filter(Boolean).slice(0, 3)
+    ? data.advice.map((a) => String(a).trim()).filter(Boolean).slice(0, 2)
     : [];
   if (!bullets.length) throw new Error("LLM /digest: пустые bullets");
   return { headline: String(data.headline || "").trim() || undefined, bullets, advice };
