@@ -193,6 +193,31 @@ function toggle(list, value, add) {
   return arr.filter((x) => x !== value);
 }
 
+// Пингует Render-инстансы (/health), чтобы free tier не засыпал: без трафика
+// ~15 мин инстанс уходит в cold start, и первый /digest или /render падает.
+async function keepRenderWarm(env) {
+  const urls = new Set();
+  if (env.LLM_PROXY_URL) urls.add(String(env.LLM_PROXY_URL).trim());
+  if (env.CARD_RENDER_URL) urls.add(String(env.CARD_RENDER_URL).trim());
+  if (env.CARD_RENDER_URLS) {
+    for (const u of Array.isArray(env.CARD_RENDER_URLS)
+      ? env.CARD_RENDER_URLS
+      : String(env.CARD_RENDER_URLS).split(",")) {
+      if (u && String(u).trim()) urls.add(String(u).trim());
+    }
+  }
+  for (const base of urls) {
+    try {
+      await fetch(`${base.replace(/\/+$/, "")}/health`, {
+        method: "GET",
+        signal: AbortSignal.timeout(20000),
+      });
+    } catch (e) {
+      console.log(`[keep-warm] ${base} не ответил:`, e.message);
+    }
+  }
+}
+
 async function sendLong(env, chatId, text, opts = {}) {
   const CHUNK = 4000;
   const parts = [];
@@ -1589,6 +1614,14 @@ export default {
       await ensureCommands(env);
     } catch (e) {
       console.log("ensureCommands error:", e.message);
+    }
+    // Держим Render-инстанс тёплым (free tier засыпает после ~15 мин без
+    // трафика): пингуем /health каждый тик, чтобы /digest и /render всегда
+    // отвечали сразу, без холодного старта.
+    try {
+      await keepRenderWarm(env);
+    } catch (e) {
+      console.log("keepRenderWarm error:", e.message);
     }
     try {
       await schedulerTick(env);

@@ -278,9 +278,26 @@ async function callLlmDigest(env, items) {
 }
 
 // Дайджест через Render-прокси (/digest): GigaChat/Gemini со стороны Python.
+// Первый запрос к спящему free-tier инстансу может упасть на cold start
+// (timeout/5xx) — повторяем один раз, обычно хватает разбудить.
 async function callProxyDigest(env, items) {
   const base = (env.LLM_PROXY_URL || "").replace(/\/+$/, "");
   if (!base) throw new Error("LLM_PROXY_URL не задан");
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      return await proxyDigestOnce(base, items);
+    } catch (e) {
+      if (attempt === 0) {
+        console.log(`[llm] /digest попытка ${attempt + 1} не удалась, повторяю:`, e.message);
+        continue;
+      }
+      throw e;
+    }
+  }
+  throw new Error("LLM /digest: не удалось");
+}
+
+async function proxyDigestOnce(base, items) {
   const res = await fetch(`${base}/digest`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
