@@ -319,6 +319,23 @@ test("isRussianText: русская статья проходит, иностр�
   assert.equal(isRussianText(""), true);
 });
 
+test("isPoliticalText: политика отсекается, кроме мошенничества", async () => {
+  const { isPoliticalText } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/feeds.js");
+  const politics = ["политик", "депутат", "госдум", "законопроект", "партия", "президент", "выборы"];
+  const fraud = ["мошенник", "мошенничеств", "фишинг", "аферист"];
+  // чистая политика — мимо
+  assert.equal(isPoliticalText("Депутаты Госдумы предлагают законопроект о штрафах", politics, fraud), true);
+  assert.equal(isPoliticalText("Политики обсудили бюджет на встрече", politics, fraud), true);
+  // политика + мошенничество — проходит (тематика канала)
+  assert.equal(isPoliticalText("Депутат стал жертвой мошенников и потерял сбережения", politics, fraud), false);
+  assert.equal(isPoliticalText("Мошенники звонят от имени Госдумы, выманивая данные", politics, fraud), false);
+  // не политика — проходит
+  assert.equal(isPoliticalText("Мошенники выманивают деньги через поддельные сайты", politics, fraud), false);
+  assert.equal(isPoliticalText("Фишинговая рассылка от имени банка", politics, fraud), false);
+  // пустой список политики — ничего не отсекаем
+  assert.equal(isPoliticalText("Депутаты что-то предлагают", [], fraud), false);
+});
+
 test("generateByRules: из русского текста получается заголовок, тезисы и caption", async () => {
   const { generateByRules } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
   const text =

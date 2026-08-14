@@ -49,6 +49,7 @@ export const DEFAULT_SOURCES = {
   ],
   keywords: ["мошенник", "мошенничеств", "фишинг", "кибермошенник", "дроппер"],
   exclude_keywords: [],
+  politics_keywords: [],
 };
 
 async function fetchJson(env, path) {
@@ -91,12 +92,23 @@ function applyOverrides(config, state) {
     ...config,
     keywords,
     exclude_keywords: [...(config.exclude_keywords || []), ...(state.blacklist?.keywords || [])],
+    politics_keywords: config.politics_keywords || [],
   };
 }
 
 function hasAny(text, keywords) {
   const low = (text || "").toLowerCase();
   return keywords.some((k) => low.includes((k || "").toLowerCase()));
+}
+
+// Политическую новость в кандидаты не берём (политика — вне тематики канала),
+// ЕДИНСТВЕННОЕ исключение — если новость прямо про мошенничество/кибербезопасность:
+// «депутат», «законопроект» и т.п. в тексте тогда не делают её политической.
+export function isPoliticalText(text, politicsKeywords, fraudKeywords) {
+  if (!politicsKeywords || !politicsKeywords.length) return false;
+  if (!hasAny(text, politicsKeywords)) return false;
+  if (hasAny(text, fraudKeywords || [])) return false;
+  return true;
 }
 
 const CODE_HINTS = [
@@ -147,6 +159,7 @@ export async function scanFeeds(env, chunkOffset = 0, chunkCount = 2) {
   const feeds = config.feeds || [];
   const keywords = config.keywords || [];
   const exclude = config.exclude_keywords || [];
+  const politicsKeywords = config.politics_keywords || [];
 
   if (!feeds.length) return [];
 
@@ -175,6 +188,7 @@ export async function scanFeeds(env, chunkOffset = 0, chunkCount = 2) {
         const haystack = item.title + " " + item.description;
         if (!hasAny(haystack, keywords)) continue;
         if (hasAny(haystack, exclude)) continue;
+        if (isPoliticalText(haystack, politicsKeywords, keywords)) continue;
         if (!isRussianText(haystack)) continue;
         raw.push(item);
       }

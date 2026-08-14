@@ -373,8 +373,14 @@ def extract_digest(items: list, provider: str = None) -> dict:
         snippet = str(content)[:200]
         return {"error": f"LLM вернул невалидный JSON: {snippet}"}
 
+    bullets = [_strip_source_tail(str(b).strip()) for b in data.get("bullets") or [] if str(b).strip()]
+    # По одному булету на каждую новость: если модель вернула меньше (склеила
+    # или выбросила новость), результат невалиден — карточка и текст разойдутся.
+    if len(bullets) != len(items):
+        return {"error": f"LLM вернул {len(bullets)} булетов на {len(items)} новостей"}
+
     return {
         "headline": _strip_source_tail(str(data.get("headline") or "").strip()),
-        "bullets": [_strip_source_tail(str(b).strip()) for b in data.get("bullets") or [] if str(b).strip()][: len(items)],
+        "bullets": bullets,
         "advice": [_strip_source_tail(str(a).strip()) for a in data.get("advice") or [] if str(a).strip()][:2],
     }

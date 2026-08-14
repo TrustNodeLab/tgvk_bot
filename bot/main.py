@@ -664,31 +664,12 @@ def run():
 
     state["last_update_id"] = max_id
 
-    # --- автопоиск: бот сам ищет новости по RSS, без участия Михаила ---
-    # max_items=3 — за один проход до 3 новых кандидатов (по запросу Михаила)
-    # Если включён автопостинг — найденное публикуется сразу, без одобрения.
-    auto_publish = st.autopost_enabled(state)
-    try:
-        seen = set(state.get("seen_guids", []))
-        candidates = find_candidates(seen, max_items=3)
-        for cand in candidates:
-            st.remember_guid(state, cand["guid"])
-            try:
-                handle_new_text(tg, admin_chat_id, cand["text"], auto_found=True,
-                                vk=vk, channel_id=channel_id, auto_publish=auto_publish,
-                                state=state)
-            except Exception as e:
-                traceback.print_exc()
-                try:
-                    tg.send_message(
-                        admin_chat_id,
-                        f"⚠️ Автонайденная новость не дошла до approve "
-                        f"(guid={cand['guid']}): {e}"
-                    )
-                except Exception:
-                    pass
-    except Exception as e:
-        traceback.print_exc()
+    # --- автопоиск ОТКЛЮЧЁН (legacy-контур) ---
+    # Раньше GitHub Actions сам искал новости по RSS и слал админу отдельные
+    # превью «одна новость + карточка». Теперь этим занимается Cloudflare Worker:
+    # он сканирует ленты и собирает дайджесты (3 окна в день). Отдельные превью
+    # из GH Actions дублируют дайджесты и спамят админа — автопоиск выключен.
+    # handle_new_text остаётся доступным для ручных постов через webhook/кнопки.
 
     st.save_state(state)
 

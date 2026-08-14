@@ -273,6 +273,9 @@ async function callLlmDigest(env, items) {
   const advice = Array.isArray(data.advice)
     ? data.advice.map((a) => String(a).trim()).filter(Boolean).slice(0, 2)
     : [];
+  if (bullets.length !== items.length) {
+    throw new Error(`LLM digest: булетов ${bullets.length} из ${items.length} новостей`);
+  }
   if (!bullets.length) throw new Error("LLM digest: пустые bullets");
   return { headline: String(data.headline || "").trim() || undefined, bullets, advice };
 }
@@ -314,11 +317,14 @@ async function proxyDigestOnce(base, items) {
   const data = JSON.parse(raw);
   if (data && data.error) throw new Error(`LLM /digest: ${data.error}`);
   const bullets = Array.isArray(data.bullets)
-    ? data.bullets.map((b) => String(b).trim()).filter(Boolean).slice(0, items.length)
+    ? data.bullets.map((b) => String(b).trim()).filter(Boolean).slice(0, slimItems.length)
     : [];
   const advice = Array.isArray(data.advice)
     ? data.advice.map((a) => String(a).trim()).filter(Boolean).slice(0, 2)
     : [];
+  if (bullets.length !== slimItems.length) {
+    throw new Error(`LLM /digest: булетов ${bullets.length} из ${slimItems.length} новостей`);
+  }
   if (!bullets.length) throw new Error("LLM /digest: пустые bullets");
   return { headline: String(data.headline || "").trim() || undefined, bullets, advice };
 }
