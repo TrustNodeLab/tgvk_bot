@@ -53,7 +53,7 @@ export function fitCaption(caption, limit = TG_CAPTION_LIMIT) {
       body = body.slice(0, blockStart).trimEnd();
     }
   }
-  const budget = limit - footer.length - 1;
+  const budget = limit - footer.length - 3; // -2 разделитель "\n\n", -1 запас/многоточие
   if (budget <= 30) return caption.slice(0, Math.max(0, limit - 1)) + "…";
   // Режем по абзацам (двойной перенос), а не по символу — HTML-теги (<a href>, <b>)
   // целиком сохраняются, ссылки не рвутся. Неуместившиеся абзацы отбрасываются.
@@ -69,7 +69,7 @@ export function fitCaption(caption, limit = TG_CAPTION_LIMIT) {
     out = candidate;
   }
   if (!out.trim()) out = body.slice(0, budget - 1).trimEnd() + "…";
-  return (out + "\n\n" + footer).trimEnd();
+  return (out + "\n\n" + footer).trimEnd().slice(0, limit);
 }
 
 // Простое экранирование HTML для Telegram parse_mode=HTML.
