@@ -298,10 +298,15 @@ async function callProxyDigest(env, items) {
 }
 
 async function proxyDigestOnce(base, items) {
+  const slimItems = (items || []).slice(0, 3).map((it) => ({
+    title: String(it.title || "").replace(/\s+/g, " ").trim().slice(0, 140),
+    text: String(it.text || "").replace(/\s+/g, " ").trim().slice(0, 500),
+    link: it.link || "",
+  }));
   const res = await fetch(`${base}/digest`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ items, provider: "gigachat" }),
+    body: JSON.stringify({ items: slimItems, provider: "gigachat" }),
     signal: AbortSignal.timeout(115000),
   });
   const raw = await res.text();

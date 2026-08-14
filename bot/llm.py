@@ -154,6 +154,11 @@ def _gigachat_chat_request(token: str, model: str, messages: list) -> requests.R
             "model": model,
             "messages": messages,
             "temperature": 0.7,
+            # Без явного max_tokens GigaChat по умолчанию ограничивает ответ
+            # ~512 токенами и при переполнении отвечает «Не укладываюсь в
+            # ограничения» вместо ответа. Дайджест на 3 новости легко превышает
+            # этот лимит, поэтому закладываем с запасом.
+            "max_tokens": 1024,
         },
         timeout=120,
         verify=_gigachat_verify(),
