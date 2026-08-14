@@ -305,7 +305,7 @@ async function callProxyDigest(env, items) {
 }
 
 async function proxyDigestOnce(base, items) {
-  const slimItems = (items || []).slice(0, 2).map((it) => ({
+  const slimItems = (items || []).slice(0, 4).map((it) => ({
     title: String(it.title || "").replace(/\s+/g, " ").trim().slice(0, 200),
     text: String(it.text || "").replace(/\s+/g, " ").trim().slice(0, 900),
     link: it.link || "",
@@ -333,9 +333,11 @@ async function proxyDigestOnce(base, items) {
   return { headline: String(data.headline || "").trim() || undefined, bullets, advice };
 }
 
-// Текст дайджеста: headline + caption (набор заголовка, bullets с ссылками на
-// источники, блок «Что делать», футер). Собирается ТОЛЬКО живым LLM: без него
-// возвращает null, чтобы не постить сырые заголовки (лучше пропустить окно).
+// Текст дайджеста. Возвращает { headline, caption, digest_text, items }:
+//  — caption — короткая подпись обложки (заголовок + футер, влезает в 1024);
+//  — digest_text — полный разбор до 4096 симв. (отдельное текстовое сообщение).
+// Собирается ТОЛЬКО живым LLM: без него возвращает null, чтобы не постить
+// сырые заголовки (лучше пропустить окно).
 export async function generateDigestText(items, env = {}, meta = {}) {
   let llm = null;
   if ((env.LLM_PROXY_URL || "").trim()) {
@@ -372,41 +374,20 @@ export async function generateDigestText(items, env = {}, meta = {}) {
   });
   const adviceHeader = "🛡️ <b>Что делать</b>";
   const adviceParts = advice.map((t) => "• " + t);
-  // Бюджет caption: футер всегда целиком; заголовок и булеты обязательны,
-  // при переполнении ужимаются по словам (не по символу), советы — наименьший
-  // приоритет, отбрасываются целиком. Многоточия перед футером быть не должно.
-  const footerLen = FOOTER_HTML.length;
-  const budget = 1024 - footerLen - 2; // разделитель "\n\n"
-  const join = (arr) => arr.join("\n\n");
-  let parts = [headlinePart, ...bulletParts];
-  // режем последний булет по словам, пока всё тело не влезает в бюджет
-  while (join(parts).length > budget && parts.length > 1) {
-    const last = parts[parts.length - 1];
-    const over = join(parts).length - budget;
-    const keep = Math.max(12, last.length - over - 4);
-    const trimmed = last.slice(0, keep).trimEnd();
-    const sp = trimmed.lastIndexOf(" ");
-    const cut = (sp > 8 ? trimmed.slice(0, sp) : trimmed).replace(/[.,;:—–-]+$/, "");
-    const next = cut + ".";
-    parts = parts.slice(0, -1).concat(next.length >= 8 ? [next] : []);
-    if (next.length < 8) parts = parts.slice(0, -1);
-  }
-  const bodyText = join(parts);
-  let adv = "";
-  if (bodyText.length <= budget) {
-    let advArr = [adviceHeader, ...adviceParts];
-    while (advArr.length > 1 && (bodyText + "\n\n" + advArr.join("\n\n")).length > budget) {
-      advArr = advArr.slice(0, -1);
-      if (advArr.length === 1) advArr = []; // и сам заголовок «Что делать» не влез
-    }
-    if (advArr.length) adv = "\n\n" + advArr.join("\n\n");
-  }
-  const caption = fitCaption(bodyText + adv + "\n\n" + FOOTER_HTML, 1024);
+
+  // Полный разбор — отдельное текстовое сообщение (лимит TG 4096).
+  const fullParts = [headlinePart, ...bulletParts];
+  if (adviceParts.length) fullParts.push(adviceHeader, ...adviceParts);
+  let digest_text = fitCaption(fullParts.join("\n\n") + "\n\n" + FOOTER_HTML, 4096);
+
+  // Короткая подпись обложки: заголовок + футер (влезает в 1024).
+  const caption = fitCaption(`${headlinePart}\n\n${FOOTER_HTML}`, 1024);
 
   return {
     headline,
     headline_lines: [headline],
     caption,
+    digest_text,
     items: items.map((it, i) => ({
       guid: it.guid || "",
       title: String(it.title || "").replace(/\s+/g, " ").trim().slice(0, 120),

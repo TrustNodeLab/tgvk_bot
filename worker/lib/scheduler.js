@@ -16,7 +16,7 @@ import { generateDigestText, digestFreshScore } from "./llm.js";
 import {
   publishToTelegram, publishToVk, sendMessage, vkCall, sendCard,
 } from "./telegram.js";
-import { fmtTime, escHtml } from "./text.js";
+import { fmtTime, escHtml, fitCaption } from "./text.js";
 
 const CHUNK_COUNT = 2; // скан делится на 2 части (лимит подзапросов free-плана)
 const TICK_LOCK_TTL_MS = 10 * 60 * 1000; // анти-перекрытие крон: не чаще 1 тика
@@ -387,6 +387,7 @@ async function autoDeferDrafts(env, state, now = new Date()) {
       kind: d.kind === "digest" ? "digest" : "news",
       title: d.title || "",
       caption: d.caption || "",
+      digest_text: d.digest_text || "",
       png_key: d.png_key || null,
       png: d.png ? (typeof d.png === "string" ? decodePng(d.png) : d.png) : null,
       link: d.link || "",
@@ -541,7 +542,7 @@ async function finalizeDigestPkg(env, items, opts) {
   // Без живого LLM выпуск не собираем: фолбэк-правила дают сырые заголовки,
   // это мусор. Окно пропускается, кандидаты не тратятся.
   if (!digestText) return null;
-  const { headline, caption } = digestText;
+  const { headline, caption, digest_text } = digestText;
 
   const data = {
     headline,
@@ -580,6 +581,7 @@ async function finalizeDigestPkg(env, items, opts) {
       kind: "digest",
       title: headline,
       caption,
+      digest_text,
       png: b64,
       data,
       link: "",
@@ -641,19 +643,26 @@ export async function assembleDigests(env, now = new Date()) {
 }
 
 // Автопостинг ВЫКЛ: вместо публикации админу приходит дайджест-превью на
-// одобрение (кнопки 🌐/🔵/🟢/🔄/❌).
+// одобрение (кнопки 🌐/🔵/🟢/🔄/❌). Обложка — с короткой подписью, полный
+// разбор уходит отдельным сообщением.
 async function sendDigestPreview(env, adminChat, pkg) {
   const bytes = decodePng(pkg.png);
   const sent = await sendCard(env, adminChat, bytes, pkg.caption, {
     parse_mode: "HTML",
     reply_markup: { inline_keyboard: approveButtons(pkg.id) },
   });
+  let digestMsgId = null;
+  if (pkg.digest_text) {
+    const msg = await sendMessage(env, adminChat, fitCaption(pkg.digest_text, 4096), { parse_mode: "HTML" });
+    digestMsgId = msg && msg.message_id;
+  }
   await kv.saveDraft(env, {
     id: pkg.id,
     kind: "digest",
     status: "pending",
     title: pkg.title,
     caption: pkg.caption,
+    digest_text: pkg.digest_text,
     png: pkg.png,
     link: "",
     source: "TrustNode",
@@ -661,6 +670,7 @@ async function sendDigestPreview(env, adminChat, pkg) {
     items: pkg.items,
     admin_chat_id: adminChat,
     preview_message_id: sent && sent.message_id,
+    digest_message_id: digestMsgId,
     created_at: new Date().toISOString(),
   });
 }

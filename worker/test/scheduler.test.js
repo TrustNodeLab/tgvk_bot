@@ -62,9 +62,15 @@ export function installFetchMock(dispatchStatus = 204) {
       return jsonResp({ ok: true, result: { message_id: 1 } });
     }
     if (u.includes("render.test/digest")) {
+      const body = JSON.parse(opts.body || "{}");
+      const n = Array.isArray(body.items) ? body.items.length : 2;
+      const bullets = [];
+      for (let i = 0; i < n; i++) {
+        bullets.push(`Новость ${i + 1}: схема обмана, продавцы просят предоплату. Наш совет — не платить незнакомцам.`);
+      }
       return jsonResp({
         headline: "Мошенничество: главное",
-        bullets: ["Схема обмана при покупке авто. Продавцы просят предоплату.", "Новый фишинг на удалёнке."],
+        bullets,
         advice: ["Не платите предоплату незнакомцам."],
       });
     }
@@ -1100,6 +1106,7 @@ test("tick: autopost вкл -> дайджест публикуется и пиш
 test("assembleDigests: из 3+ кандидатов собирается один дайджест; повтор не дублирует", async () => {
   const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
   const { assembleDigests } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  installFetchMock(); // /digest, обложка и TG — локальные заглушки
   const env = makeEnv();
   await kv.setAutopost(env, true);
   const now = new Date("2026-08-07T06:00:00Z"); // 09:00 МСК — утро
@@ -1117,7 +1124,7 @@ test("assembleDigests: из 3+ кандидатов собирается оди�
   const stock = await kv.getStock(env);
   const dg = stock.find((p) => p.kind === "digest");
   assert.ok(dg, "дайджест на складе");
-  assert.ok(dg.title.includes("утро"), "заголовок выпуска с окном");
+  assert.equal(dg.title, "Мошенничество: главное", "заголовок выпуска — headline от LLM");
   assert.ok(dg.caption.includes("TrustNode"), "caption с футером");
   assert.ok(dg.items.length >= 1 && dg.items.length <= 5, `1-5 новостей в выпуске, а ${dg.items.length}`);
   assert.ok(dg.png, "обложка сохранена");
@@ -1131,6 +1138,7 @@ test("assembleDigests: из 3+ кандидатов собирается оди�
 test("assembleDigests: один кандидат -> дайджест выходит как есть (публикуем что есть)", async () => {
   const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
   const { assembleDigests } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  installFetchMock(); // /digest, обложка и TG — локальные заглушки
   const env = makeEnv();
   await kv.setAutopost(env, true);
   const now = new Date("2026-08-07T12:30:00Z"); // 15:30 МСК — день
@@ -1145,7 +1153,7 @@ test("assembleDigests: один кандидат -> дайджест выход�
   assert.equal(made.length, 1);
   const dg = (await kv.getStock(env)).find((p) => p.kind === "digest");
   assert.ok(dg && dg.items.length === 1, "выпуск вышел даже с одной новостью");
-  assert.ok(dg.title.includes("день"), "окно — день");
+  assert.ok(dg.digest_text && dg.digest_text.length > 0, "полный разбор в digest_text");
 });
 
 test("assembleDigestDrafts: автопостинг выкл -> хранит превью как черновик и потребляет", async () => {

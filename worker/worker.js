@@ -952,6 +952,7 @@ async function approveDraft(env, draft, dry, target = "all") {
       kind: draft.kind || "news",
       title: draft.title || "",
       caption: draft.caption || "",
+      digest_text: draft.digest_text || "",
       png_key: draft.png_key || null,
       png: decodePng(draft.png) || null,
       link: draft.link || "",

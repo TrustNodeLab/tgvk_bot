@@ -214,6 +214,7 @@ export async function addVkRetry(env, pkg, extra = {}) {
     kind: pkg.kind || "news",
     title: pkg.title || "",
     caption: pkg.caption || "",
+    digest_text: pkg.digest_text || "",
     png_key: pkg.png_key || null,
     png: pkg.png || null, // base64-строка или байты
     link: pkg.link || "",

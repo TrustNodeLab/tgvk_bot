@@ -502,17 +502,27 @@ export async function publishToTelegram(env, pkg, dry) {
     return { ok: true, dry: true, target: "tg" };
   }
   const res = await sendCard(env, chatId, bytes, caption, { parse_mode: "HTML" });
+  // Дайджест: после обложки (короткая подпись) уходит отдельное текстовое
+  // сообщение с полным разбором (лимит TG 4096, в caption фото не влезает).
+  let digestMsgId = null;
+  if (pkg.kind === "digest" && pkg.digest_text) {
+    const msg = await sendMessage(env, chatId, fitCaption(pkg.digest_text, 4096), { parse_mode: "HTML" });
+    digestMsgId = msg && msg.message_id;
+  }
   if (dedupKey && res && res.message_id) {
     try {
-      await env.BOT_KV.put(`tg_posted:${dedupKey}`, JSON.stringify({ message_id: res.message_id, at: new Date().toISOString() }));
+      await env.BOT_KV.put(`tg_posted:${dedupKey}`, JSON.stringify({ message_id: res.message_id, digest_message_id: digestMsgId, at: new Date().toISOString() }));
     } catch (e) { /* ignore */ }
   }
-  return { ok: true, target: "tg", message_id: res && res.message_id };
+  return { ok: true, target: "tg", message_id: res && res.message_id, digest_message_id: digestMsgId };
 }
 
 export async function publishToVk(env, pkg, dry) {
+  // Дайджест: в текст поста идёт полный разбор (digest_text), а не короткая
+  // подпись обложки. VK-лимит текста ~9000 симв. — 4096 влезает.
+  const sourceText = pkg.kind === "digest" && pkg.digest_text ? pkg.digest_text : pkg.caption;
   const message =
-    (pkg.caption || "").replace(/<[^>]+>/g, "").trim() || pkg.title || "🛡️ TrustNode";
+    (sourceText || "").replace(/<[^>]+>/g, "").trim() || pkg.title || "🛡️ TrustNode";
   if (dry) {
     console.log(`[dry-run] VK wall.post message=${message.length} симв.`);
     return { ok: true, dry: true, target: "vk" };
