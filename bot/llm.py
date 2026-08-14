@@ -324,15 +324,16 @@ def _complete(messages: list, provider: str = None) -> str:
 DIGEST_SYSTEM_PROMPT = (
     "Ты — ведущий выпуска новостей TrustNode о кибербезопасности. По списку "
     "новостей собери дайджест в стиле новостного вещания. По каждой новости "
-    "ровно 2 предложения (в сумме до ~180 символов на булет): что произошло и "
-    "почему это важно читателю. Вещательный тон ведущего, живой язык, без "
-    "канцелярита, без выдуманных фактов (бери только из текста). Не вставляй "
-    "URL и слова «источник» в булет.\n"
-    "Советов не более 2, каждый до ~60 символов — выпуск должен поместиться в "
+    "ровно 1 булет из 2 коротких предложений (до ~150 символов на булет): что "
+    "произошло и почему это важно читателю. Вещательный тон ведущего, живой "
+    "язык, без канцелярита, без выдуманных фактов (бери только из текста). "
+    "Не вставляй URL и слова «источник» в булет.\n"
+    "Советов не более 2, каждый до ~50 символов — выпуск должен поместиться в "
     "лимит сообщения Telegram (1024 символа).\n"
     "Верни ТОЛЬКО валидный JSON без пояснений и без markdown-разметки:\n"
     '{"headline":"короткий заголовок выпуска, 1 фраза", '
-    '"bullets":["по 2 предложения на новость"], '
+    '"bullets":["по 1 булету на каждую новость — ровно столько булетов, сколько '
+    'новостей в списке"], '
     '"advice":["1-2 коротких совета"]}.'
 )
 
@@ -348,10 +349,129 @@ def _strip_source_tail(s: str) -> str:
     return t.strip()
 
 
+def _bullet_by_rules(it: dict) -> str:
+    """Шаблонный булет из текста новости: первое осмысленное предложение + что
+    делать читателю. Используется как фолбэк, когда обе LLM недоступны."""
+    import re
+
+    text = str(it.get("text") or "").strip()
+    title = str(it.get("title") or "").strip()
+    if not text:
+        return (title or "Новость")[:150]
+    # первое предложение целиком
+    first = re.split(r"(?<=[.!?…])\s+", text)[0].strip()
+    if len(first) > 140:
+        cut = first[:137]
+        sp = cut.rfind(" ")
+        first = (cut[:sp] if sp > 20 else cut).rstrip(" ,.") + "."
+    return first[:150]
+
+
+# Готовые советы по ситуациям (шаблон): выбираем подходящие по ключевым словам.
+_DIGEST_TIPS = [
+    ("предоплат|задаток|перевед", "Не платите аванс незнакомцам: проверяйте организацию заранее"),
+    ("безопасн[аяо] счёт|дропп", "Никогда не переводите деньги на «безопасный счёт» — это развод"),
+    ("штраф|госуслуг", "Проверяйте штрафы только на официальных порталах"),
+    ("код|sms|смс|парол", "Не сообщайте коды из SMS и пароли никому"),
+    ("ссылк|фишинг|сайт", "Не переходите по подозрительным ссылкам из писем и сообщений"),
+    ("звон|банк", "При звонке «из банка» перезвоните сами по номеру с карты"),
+]
+
+
+def _advice_by_rules(items: list) -> list:
+    """Советы из шаблона: смотрим текст новостей, выбираем до 2 релевантных."""
+    hay = " ".join(
+        (str(it.get("title") or "") + " " + str(it.get("text") or "")).lower() for it in items
+    )
+    picked = []
+    for kw, tip in _DIGEST_TIPS:
+        if any(w in hay for w in kw.split("|")):
+            picked.append(tip[:60])
+        if len(picked) >= 2:
+            break
+    return picked
+
+
+def _digest_headline_by_rules(items: list) -> str:
+    """Заголовок выпуска из шаблона: тема + обобщение."""
+    themes = {
+        "мошенник": "Мошенники атакуют",
+        "фишинг": "Фишинг наступает",
+        "дропп": "Дропперы и схемы",
+        "банк": "Банковские аферы",
+        "штраф": "Штрафы и защита",
+        "предоплат": "Предоплата: схемы",
+    }
+    hay = " ".join(str(it.get("title") or "").lower() for it in items)
+    for kw, theme in themes.items():
+        if kw in hay:
+            return theme
+    return "Дайджест TrustNode"
+
+
 def extract_digest(items: list, provider: str = None) -> dict:
-    """Собирает дайджест из списка новостей: headline + по bullets на новость
-    (2–3 предложения вещательным стилем) + советы. provider: "gigachat"|"gemini"
-    или из LLM_PROVIDER."""
+    """Собирает дайджест «коллективом»: заголовок и булеты — живые модели
+    (GigaChat и Gemini по очереди, по номеру новости), советы — шаблон по
+    ключевым словам. Если одна модель недоступна — вторая закрывает все булеты,
+    а при полном отказе — шаблонные булеты из первого предложения новости.
+    Возвращает {headline, bullets, advice} (по 1 булету на новость)."""
+    import itertools
+
+    # два провайдера: основной и второй (если задан один — дублируем его)
+    primary = provider or os.environ.get("LLM_PROVIDER", "") or "gigachat"
+    secondary = "gemini" if primary != "gemini" else "gigachat"
+
+    bullets = [None] * len(items)
+    headline = None
+    errors = []
+
+    def _group(items_group, prov, idxs):
+        nonlocal headline
+        try:
+            res = _digest_json(items_group, prov)
+        except Exception as e:  # noqa: BLE001
+            errors.append(f"{prov}: {e}")
+            return None
+        for k, idx in zip(range(len(res.get("bullets") or [])), idxs):
+            if idx < len(bullets):
+                bullets[idx] = res["bullets"][k]
+        if not headline and res.get("headline"):
+            headline = res["headline"]
+        return res
+
+    half = (len(items) + 1) // 2
+    idxs_a = list(range(0, half))
+    idxs_b = list(range(half, len(items)))
+    group_a = [items[i] for i in idxs_a]
+    group_b = [items[i] for i in idxs_b]
+
+    # сначала основной провайдер на группу A, второй на группу B
+    ok = _group(group_a, primary, idxs_a) is not None
+    if group_b:
+        ok = _group(group_b, secondary, idxs_b) is not None or ok
+
+    # закрываем недостающие булеты шаблоном
+    for i in range(len(items)):
+        if not bullets[i]:
+            bullets[i] = _bullet_by_rules(items[i])
+
+    if not headline:
+        headline = _digest_headline_by_rules(items)
+
+    advice = _advice_by_rules(items)
+    if not advice:
+        advice = ["Проверяйте информацию и никому не сообщайте свои данные"]
+
+    return {
+        "headline": _strip_source_tail(str(headline).strip()),
+        "bullets": [_strip_source_tail(str(b).strip()) for b in bullets if str(b).strip()][: len(items)],
+        "advice": [_strip_source_tail(str(a).strip()) for a in advice][:2],
+    }
+
+
+def _digest_json(items: list, provider: str) -> dict:
+    """Один вызов LLM для подмножества новостей: JSON {headline, bullets, advice}.
+    bullets — ровно по одному на каждую новость в items."""
     lines = []
     for i, it in enumerate(items, 1):
         title = str(it.get("title") or "").strip()
@@ -377,7 +497,7 @@ def extract_digest(items: list, provider: str = None) -> dict:
     # По одному булету на каждую новость: если модель вернула меньше (склеила
     # или выбросила новость), результат невалиден — карточка и текст разойдутся.
     if len(bullets) != len(items):
-        return {"error": f"LLM вернул {len(bullets)} булетов на {len(items)} новостей"}
+        raise ValueError(f"LLM вернул {len(bullets)} булетов на {len(items)} новостей")
 
     return {
         "headline": _strip_source_tail(str(data.get("headline") or "").strip()),

@@ -53,22 +53,25 @@ export function fitCaption(caption, limit = TG_CAPTION_LIMIT) {
       body = body.slice(0, blockStart).trimEnd();
     }
   }
-  const budget = limit - footer.length - 3; // -2 разделитель "\n\n", -1 запас/многоточие
-  if (budget <= 30) return caption.slice(0, Math.max(0, limit - 1)) + "…";
+  const budget = limit - footer.length - 2; // -2 разделитель "\n\n"
+  if (budget <= 30) return footer ? "\n\n" + footer : caption.slice(0, limit - 1) + "…";
   // Режем по абзацам (двойной перенос), а не по символу — HTML-теги (<a href>, <b>)
-  // целиком сохраняются, ссылки не рвутся. Неуместившиеся абзацы отбрасываются.
+  // целиком сохраняются, ссылки не рвутся. Неуместившиеся абзацы отбрасываются;
+  // многоточие НЕ ставим — перед футером оно выглядит как обрыв по вине бота.
   const paras = body.split(/\n\s*\n/).filter((p) => p.trim());
   let out = "";
   for (const p of paras) {
     const candidate = out ? out + "\n\n" + p : p;
     if (candidate.length > budget) {
-      if (out) out += "\n\n…";
-      else out = body.slice(0, budget - 1).trimEnd() + "…";
+      if (!out) {
+        // Даже первый абзац не влез — режем по слову, но без «…» перед футером.
+        out = body.slice(0, budget - 1).trimEnd();
+      }
       break;
     }
     out = candidate;
   }
-  if (!out.trim()) out = body.slice(0, budget - 1).trimEnd() + "…";
+  if (!out.trim()) out = body.slice(0, budget - 1).trimEnd();
   return (out + "\n\n" + footer).trimEnd().slice(0, limit);
 }
 

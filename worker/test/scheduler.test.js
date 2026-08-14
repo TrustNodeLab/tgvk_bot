@@ -363,6 +363,40 @@ test("generateByRules: схемы мошенничества дают совет
   assert.ok(data.cards.some((c) => c.items.length >= 2), "в защите несколько пунктов");
 });
 
+test("fitCaption: футер всегда целиком, без многоточия перед ним", async () => {
+  const { fitCaption } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/text.js");
+  const FOOTER =
+    "🛡️ <b>TrustNode</b>\n" +
+    '📱 Приложение: <a href="https://x.app">RuStore</a>\n' +
+    '🌐 Сайт: <a href="https://site.io">site.io</a>';
+  // длинный текст, который точно превышает лимит
+  const longBody =
+    "🌅 <b>Заголовок</b>\n\n" +
+    "• <b>1.</b> Первая новость с длинным описанием, которое занимает место. " +
+    "Вторая часть предложения о том, что случилось и почему это важно читателю.\n" +
+    '<a href="https://x.com/a">источник →</a>\n\n' +
+    "• <b>2.</b> Вторая новость тоже достаточно длинная, чтобы занять место. " +
+    "Продолжаем рассказывать про схему обмана и защиту.\n" +
+    '<a href="https://x.com/b">источник →</a>\n\n' +
+    "🛡️ <b>Что делать</b>\n\n" +
+    "• Не доверяйте посторонним\n\n" +
+    "• Второй совет для безопасности";
+  const caption = longBody + "\n\n" + FOOTER;
+  const fit = fitCaption(caption, 1024);
+  assert.ok(fit.length <= 1024, `caption в лимите (${fit.length})`);
+  assert.ok(fit.includes("TrustNode"), "футер есть");
+  assert.ok(fit.endsWith("site.io</a>"), "футер целиком в конце");
+  const tail = fit.slice(0, fit.indexOf("🛡️ <b>TrustNode</b>")).trimEnd();
+  assert.ok(!tail.endsWith("…"), "перед футером нет многоточия");
+});
+
+test("fitCaption: короткий текст не трогается", async () => {
+  const { fitCaption } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/text.js");
+  const short = "🌅 <b>Привет</b>\n\n🛡️ <b>TrustNode</b>";
+  assert.equal(fitCaption(short, 1024), short);
+});
+
+
 test("generateByRules: заголовок берётся с первой строки, а не обрывок с лидом", async () => {
   const { generateByRules } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
   const text =

@@ -244,8 +244,8 @@ async function callLlmDigest(env, items) {
   const prompt =
     "Ты — редактор канала TrustNode о кибербезопасности. По списку новостей собери дайджест:\n" +
     "верни ТОЛЬКО валидный JSON без пояснений:\n" +
-    '{"headline":"короткий заголовок выпуска (1 фраза)", "bullets":["по каждой новости ровно 2 предложения (до ~180 символов на булет), как диктор новостей: что произошло и почему это касается читателя"], "advice":["не более 2 советов, каждый до ~60 символов"]}.\n' +
-    "Вещательный тон ведущего, без канцелярита; суммы — точно из текста новостей; не вставляй URL и слово «источник» в булет. Весь выпуск должен поместиться в 1024 символа.\n\n" +
+    '{"headline":"короткий заголовок выпуска (1 фраза)", "bullets":["ровно по 1 булету на каждую новость, 2 коротких предложения (до ~150 символов): что произошло и почему это касается читателя"], "advice":["не более 2 советов, каждый до ~50 символов"]}.\n' +
+    "Булетов должно быть РОВНО столько же, сколько новостей в списке. Вещательный тон ведущего, без канцелярита; суммы — точно из текста новостей; не вставляй URL и слово «источник» в булет. Весь выпуск должен поместиться в 1024 символа.\n\n" +
     list;
   const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
@@ -360,20 +360,44 @@ export async function generateDigestText(items, env = {}, meta = {}) {
   const advice = llm.advice.map((t) => markdownToHtml(stripSourceTail(t)));
 
   const emoji = DIGEST_EMOJI[meta.slug] || "📰";
-  const parts = [`${emoji} <b>${sanitizeHtml(headline)}</b>`];
-  for (let i = 0; i < bulletTexts.length; i++) {
-    let txt = `• <b>${i + 1}.</b> ${bulletTexts[i].text}`;
-    if (bulletTexts[i].link) {
-      txt += `\n<a href="${sanitizeLink(bulletTexts[i].link)}">источник →</a>`;
+  const headlinePart = `${emoji} <b>${sanitizeHtml(headline)}</b>`;
+  const bulletParts = bulletTexts.map((b, i) => {
+    let txt = `• <b>${i + 1}.</b> ${b.text}`;
+    if (b.link) txt += `\n<a href="${sanitizeLink(b.link)}">источник →</a>`;
+    return txt;
+  });
+  const adviceHeader = "🛡️ <b>Что делать</b>";
+  const adviceParts = advice.map((t) => "• " + t);
+  // Бюджет caption: футер всегда целиком; заголовок и булеты обязательны,
+  // при переполнении ужимаются по словам (не по символу), советы — наименьший
+  // приоритет, отбрасываются целиком. Многоточия перед футером быть не должно.
+  const footerLen = FOOTER_HTML.length;
+  const budget = 1024 - footerLen - 2; // разделитель "\n\n"
+  const join = (arr) => arr.join("\n\n");
+  let parts = [headlinePart, ...bulletParts];
+  // режем последний булет по словам, пока всё тело не влезает в бюджет
+  while (join(parts).length > budget && parts.length > 1) {
+    const last = parts[parts.length - 1];
+    const over = join(parts).length - budget;
+    const keep = Math.max(12, last.length - over - 4);
+    const trimmed = last.slice(0, keep).trimEnd();
+    const sp = trimmed.lastIndexOf(" ");
+    const cut = (sp > 8 ? trimmed.slice(0, sp) : trimmed).replace(/[.,;:—–-]+$/, "");
+    const next = cut + ".";
+    parts = parts.slice(0, -1).concat(next.length >= 8 ? [next] : []);
+    if (next.length < 8) parts = parts.slice(0, -1);
+  }
+  const bodyText = join(parts);
+  let adv = "";
+  if (bodyText.length <= budget) {
+    let advArr = [adviceHeader, ...adviceParts];
+    while (advArr.length > 1 && (bodyText + "\n\n" + advArr.join("\n\n")).length > budget) {
+      advArr = advArr.slice(0, -1);
+      if (advArr.length === 1) advArr = []; // и сам заголовок «Что делать» не влез
     }
-    parts.push(txt);
+    if (advArr.length) adv = "\n\n" + advArr.join("\n\n");
   }
-  if (advice.length) {
-    parts.push("🛡️ <b>Что делать</b>");
-    for (const t of advice) parts.push("• " + t);
-  }
-  parts.push(FOOTER_HTML);
-  const caption = fitCaption(parts.join("\n\n"), 1024);
+  const caption = fitCaption(bodyText + adv + "\n\n" + FOOTER_HTML, 1024);
 
   return {
     headline,
