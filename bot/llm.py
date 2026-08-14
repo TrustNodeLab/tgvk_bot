@@ -359,12 +359,23 @@ def _strip_source_tail(s: str) -> str:
     return t.strip()
 
 
+def _strip_cdata(s: str) -> str:
+    """Убирает из текста XML-мусор типа «<![CDATA[…]]>» и пустые теги, которые
+    попадают из RSS-фидов. Нормализует пробелы."""
+    import re
+
+    t = str(s or "")
+    t = re.sub(r"<!\[CDATA\[|\]\]>", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"<[^>]+>", " ", t)
+    return re.sub(r"\s+", " ", t).strip()
+
+
 def _bullet_by_rules(it: dict) -> str:
     """Шаблонный булет из текста новости: первое осмысленное предложение + что
     делать читателю. Используется как фолбэк, когда обе LLM недоступны."""
     import re
 
-    text = str(it.get("text") or "").strip()
+    text = _strip_cdata(it.get("text") or "")
     title = str(it.get("title") or "").strip()
     if not text:
         return (title or "Новость")[:150]
@@ -501,8 +512,8 @@ def _digest_json(items: list, provider: str) -> dict:
     bullets — ровно по одному на каждую новость в items."""
     lines = []
     for i, it in enumerate(items, 1):
-        title = str(it.get("title") or "").strip()
-        text = str(it.get("text") or "").strip()
+        title = _strip_cdata(it.get("title") or "")
+        text = _strip_cdata(it.get("text") or "")
         link = str(it.get("link") or "").strip()
         lines.append(f"{i}. {title}\n{text}\nСсылка: {link}")
     user_content = "\n\n".join(lines)
