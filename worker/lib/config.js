@@ -11,9 +11,10 @@ export const NEWS_WINDOWS = [
   { start: 18 * 60, end: 24 * 60, cap: 1, slug: "evening", label: "вечер" },
 ];
 
-// Дайджест: минимум и максимум новостей в сводке.
+// Дайджест: минимум и максимум новостей в сводке. MAX=3, чтобы весь выпуск
+// (булеты по ~180 симв. + 2 совета + футер) влезал в лимит TG 1024 симв.
 export const DIGEST_MIN_ITEMS = 3;
-export const DIGEST_MAX_ITEMS = 5;
+export const DIGEST_MAX_ITEMS = 3;
 
 // Свежесть новости для поста: не старше 24 часов, приоритет последним 6 часам.
 export const MAX_AGE_MS = 24 * 3600 * 1000;
