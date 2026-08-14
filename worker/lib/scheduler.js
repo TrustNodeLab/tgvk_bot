@@ -7,7 +7,7 @@ import {
   NEWS_WINDOWS,
   DIGEST_MAX_ITEMS,
   MSK_OFFSET_MIN,
-  DRAFT_TIMEOUT_MIN, mskNow, isStaleItem,
+  DRAFT_TIMEOUT_MIN, mskNow, isStaleItem, cleanRssTitle,
 } from "./config.js";
 import * as kv from "./kv.js";
 import { scanFeeds } from "./feeds.js";
@@ -515,7 +515,10 @@ async function pickDigestItems(env, count) {
   const nowMs = Date.now();
   const list = ((await kv.getCandidates(env)) || []).filter((c) => !isStaleItem(c, nowMs));
   list.sort((a, b) => digestFreshScore(b) - digestFreshScore(a));
-  return list.slice(0, count);
+  return list.slice(0, count).map((c) => ({
+    ...c,
+    title: cleanRssTitle(c.title || ""),
+  }));
 }
 
 // Собирает готовый пакет-дайджест из items (текст через LLM/правила + обложка).

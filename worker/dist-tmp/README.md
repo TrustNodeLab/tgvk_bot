@@ -1,0 +1,1 @@
+This folder contains the built output assets for the worker "tgvk-bot-webhook" generated at 2026-08-14T06:46:55.031Z.

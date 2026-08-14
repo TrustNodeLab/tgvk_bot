@@ -68,6 +68,20 @@ export function decodeEntities(s) {
     .replace(/&amp;/g, "&");
 }
 
+// Чистит сырой RSS-заголовок: убирает обёртки <![CDATA[...]]>, раскодирует
+// entities и срезает хвост «Источник: <url>», который некоторые ленты (tass,
+// gazeta) вставляют прямо в title.
+export function cleanRssTitle(s) {
+  let t = String(s || "")
+    .replace(/<!\[CDATA\[/g, "")
+    .replace(/\]\]>/g, "")
+    .trim();
+  t = decodeEntities(t);
+  t = t.replace(/\s+источник\s*:\s*https?:\/\/\S+\s*$/i, "").trim();
+  t = t.replace(/\s*[—–-]\s*источник\s*:\s*https?:\/\/\S+\s*$/i, "").trim();
+  return t;
+}
+
 export function parseRSS(xml) {
   const items = [];
   const itemRe = /<item>([\s\S]*?)<\/item>/g;
@@ -79,7 +93,7 @@ export function parseRSS(xml) {
       const mm = block.match(re);
       return mm ? decodeEntities(mm[1]).trim() : "";
     };
-    const title = get("title");
+    const title = cleanRssTitle(get("title"));
     const link = get("link");
     const guid = get("guid") || link || title;
     const description = get("description");

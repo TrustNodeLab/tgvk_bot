@@ -291,3 +291,71 @@ def extract_post_data(raw_text: str, prev_post: dict = None, provider: str = Non
         # менять ли промпт или ретраить.
         snippet = str(content)[:200]
         return {"error": f"LLM вернул невалидный JSON: {snippet}"}
+
+
+def _resolve_provider(provider: str = None) -> str:
+    return (provider or os.environ.get("LLM_PROVIDER", "") or "").strip().lower()
+
+
+def _complete(messages: list, provider: str = None) -> str:
+    """Вызывает LLM (GigaChat / Gemini / OpenAI-совместимый) по готовому списку
+    сообщений и возвращает сырой текст ответа."""
+    p = _resolve_provider(provider)
+    if p == "gigachat":
+        api_key = os.environ.get("GIGACHAT_API_KEY") or os.environ["LLM_API_KEY"]
+        model = os.environ.get("GIGACHAT_MODEL") or os.environ.get("LLM_MODEL") or DEFAULT_GIGACHAT_MODEL
+        return _call_gigachat_with_fallback(api_key, model, messages)
+    if p == "gemini":
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ["LLM_API_KEY"]
+        api_base = os.environ.get("GEMINI_API_BASE") or os.environ.get("LLM_API_BASE", DEFAULT_API_BASE)
+        model = os.environ.get("GEMINI_MODEL") or os.environ.get("LLM_MODEL") or DEFAULT_MODEL
+        return _call_openai_compatible(api_key, api_base, model, messages)
+    api_key = os.environ["LLM_API_KEY"]
+    api_base = os.environ.get("LLM_API_BASE", DEFAULT_API_BASE)
+    model = os.environ.get("LLM_MODEL") or DEFAULT_MODEL
+    return _call_openai_compatible(api_key, api_base, model, messages)
+
+
+DIGEST_SYSTEM_PROMPT = (
+    "Ты — ведущий утреннего/дневного/вечернего выпуска новостей TrustNode о "
+    "кибербезопасности. По списку новостей собери дайджест в стиле новостного "
+    "вещания: по каждой новости коротко, 2–3 предложения, как диктор новостей — "
+    "что произошло, почему это важно читателю. Тон — уверенный ведущий, живой "
+    "язык, без канцелярита и без выдуманных цифр/сумм (бери только из текста).\n"
+    "Верни ТОЛЬКО валидный JSON без пояснений и без markdown-разметки:\n"
+    '{"headline":"короткий заголовок выпуска, 1 фраза", '
+    '"bullets":["по каждой новости 2-3 предложения"], '
+    '"advice":["2-3 совета, как защититься"]}.'
+)
+
+
+def extract_digest(items: list, provider: str = None) -> dict:
+    """Собирает дайджест из списка новостей: headline + по bullets на новость
+    (2–3 предложения вещательным стилем) + советы. provider: "gigachat"|"gemini"
+    или из LLM_PROVIDER."""
+    lines = []
+    for i, it in enumerate(items, 1):
+        title = str(it.get("title") or "").strip()
+        text = str(it.get("text") or "").strip()
+        link = str(it.get("link") or "").strip()
+        lines.append(f"{i}. {title}\n{text}\nСсылка: {link}")
+    user_content = "\n\n".join(lines)
+
+    messages = [
+        {"role": "system", "content": DIGEST_SYSTEM_PROMPT},
+        {"role": "user", "content": user_content},
+    ]
+
+    content = _complete(messages, provider)
+    clean = _strip_code_fence(content)
+    try:
+        data = json.loads(clean)
+    except (json.JSONDecodeError, TypeError):
+        snippet = str(content)[:200]
+        return {"error": f"LLM вернул невалидный JSON: {snippet}"}
+
+    return {
+        "headline": str(data.get("headline") or "").strip(),
+        "bullets": [str(b).strip() for b in data.get("bullets") or [] if str(b).strip()][: len(items)],
+        "advice": [str(a).strip() for a in data.get("advice") or [] if str(a).strip()][:3],
+    }

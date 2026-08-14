@@ -235,8 +235,8 @@ async function callLlmDigest(env, items) {
   const prompt =
     "Ты — редактор канала TrustNode о кибербезопасности. По списку новостей собери дайджест:\n" +
     "верни ТОЛЬКО валидный JSON без пояснений:\n" +
-    '{"headline":"короткий заголовок выпуска (1 фраза)", "bullets":["по каждой новости 1-2 предложения: что произошло и почему это касается читателя"], "advice":["2-3 совета, как защититься"]}.\n' +
-    "Пиши живым языком редактора, без канцелярита; суммы — точно из текста новостей.\n\n" +
+    '{"headline":"короткий заголовок выпуска (1 фраза)", "bullets":["по каждой новости 2-3 предложения, как диктор новостей: что произошло и почему это касается читателя"], "advice":["2-3 совета, как защититься"]}.\n' +
+    "Пиши живым языком ведущего новостей, без канцелярита; суммы — точно из текста новостей.\n\n" +
     list;
   const res = await fetch(`${base}/chat/completions`, {
     method: "POST",
@@ -268,6 +268,30 @@ async function callLlmDigest(env, items) {
   return { headline: String(data.headline || "").trim() || undefined, bullets, advice };
 }
 
+// Дайджест через Render-прокси (/digest): GigaChat/Gemini со стороны Python.
+async function callProxyDigest(env, items) {
+  const base = (env.LLM_PROXY_URL || "").replace(/\/+$/, "");
+  if (!base) throw new Error("LLM_PROXY_URL не задан");
+  const res = await fetch(`${base}/digest`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items, provider: "gigachat" }),
+    signal: AbortSignal.timeout(115000),
+  });
+  const raw = await res.text();
+  if (!res.ok) throw new Error(`LLM proxy /digest ${res.status}: ${raw.slice(0, 160)}`);
+  const data = JSON.parse(raw);
+  if (data && data.error) throw new Error(`LLM /digest: ${data.error}`);
+  const bullets = Array.isArray(data.bullets)
+    ? data.bullets.map((b) => String(b).trim()).filter(Boolean).slice(0, items.length)
+    : [];
+  const advice = Array.isArray(data.advice)
+    ? data.advice.map((a) => String(a).trim()).filter(Boolean).slice(0, 3)
+    : [];
+  if (!bullets.length) throw new Error("LLM /digest: пустые bullets");
+  return { headline: String(data.headline || "").trim() || undefined, bullets, advice };
+}
+
 // Текст дайджеста: headline + caption (набор заголовка, bullets с ссылками на
 // источники, блок «Что делать», футер). LLM при доступности, иначе — правила.
 export async function generateDigestText(items, env = {}, meta = {}) {
@@ -276,20 +300,30 @@ export async function generateDigestText(items, env = {}, meta = {}) {
   let bulletTexts = fallback.bulletTexts;
   let advice = fallback.advice;
 
-  if (env.LLM_API_BASE && env.LLM_API_KEY) {
+  let llm = null;
+  if ((env.LLM_PROXY_URL || "").trim()) {
     try {
-      const llm = await callLlmDigest(env, items);
-      if (llm.headline) headline = llm.headline;
-      if (llm.bullets.length) {
-        bulletTexts = llm.bullets.map((t, i) => ({
-          text: markdownToHtml(t),
-          link: items[i] && items[i].link,
-        }));
-      }
-      if (llm.advice.length) advice = llm.advice.map((t) => markdownToHtml(t));
+      llm = await callProxyDigest(env, items);
+    } catch (e) {
+      console.log("[llm] LLM /digest недоступен, использую правила:", e.message);
+    }
+  }
+  if (!llm && env.LLM_API_BASE && env.LLM_API_KEY) {
+    try {
+      llm = await callLlmDigest(env, items);
     } catch (e) {
       console.log("[llm] LLM-дайджест недоступен, использую правила:", e.message);
     }
+  }
+  if (llm) {
+    if (llm.headline) headline = llm.headline;
+    if (llm.bullets.length) {
+      bulletTexts = llm.bullets.map((t, i) => ({
+        text: markdownToHtml(t),
+        link: items[i] && items[i].link,
+      }));
+    }
+    if (llm.advice.length) advice = llm.advice.map((t) => markdownToHtml(t));
   }
 
   const emoji = DIGEST_EMOJI[meta.slug] || "📰";

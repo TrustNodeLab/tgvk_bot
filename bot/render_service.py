@@ -30,7 +30,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from card_generator import render_card, render_card_gif  # noqa: E402
-from llm import extract_post_data  # noqa: E402
+from llm import extract_post_data, extract_digest  # noqa: E402
 
 PORT = int(os.environ.get("PORT", "8000"))
 YEAR = datetime.now().year
@@ -111,6 +111,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/llm":
             self._handle_llm()
             return
+        if self.path == "/digest":
+            self._handle_digest()
+            return
         if self.path != "/render":
             self._send(404, json.dumps({"error": "not found"}).encode("utf-8"))
             return
@@ -155,6 +158,27 @@ class Handler(BaseHTTPRequestHandler):
             provider = str(payload.get("provider") or "").strip() or None
             style = str(payload.get("style") or "").strip() or None
             result = extract_post_data(text, prev, provider, style)
+            self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        except KeyError as e:
+            self._send(503, json.dumps({"error": f"нет секрета: {e}"}).encode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            self._send(500, json.dumps({"error": str(e)}).encode("utf-8"))
+
+    def _handle_digest(self):
+        """Собирает дайджест из списка новостей: {items: [{title, text, link}]},
+        provider: "gigachat"|"gemini". Возвращает {headline, bullets, advice}."""
+        if not (os.environ.get("LLM_API_KEY") or os.environ.get("GIGACHAT_API_KEY") or os.environ.get("GEMINI_API_KEY")):
+            self._send(503, json.dumps({"error": "LLM_API_KEY не задан"}).encode("utf-8"))
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            items = payload.get("items") or []
+            if not isinstance(items, list) or not items:
+                self._send(400, json.dumps({"error": "пустой items"}).encode("utf-8"))
+                return
+            provider = str(payload.get("provider") or "").strip() or None
+            result = extract_digest(items, provider)
             self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"))
         except KeyError as e:
             self._send(503, json.dumps({"error": f"нет секрета: {e}"}).encode("utf-8"))
