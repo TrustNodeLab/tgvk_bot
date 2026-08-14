@@ -106,6 +106,15 @@ function stripLink(s) {
   return s.replace(/https?:\/\/\S+/gi, "").replace(/\s+/g, " ").trim();
 }
 
+// Срезает хвосты «— Источник: https://…» / «Источник: URL», которые LLM иногда
+// копирует из сырого текста новости в bullets. Сама ссылка добавляется отдельно.
+export function stripSourceTail(s) {
+  return String(s || "")
+    .replace(/\s*[—–-]\s*источник\s*:\s*(?:https?:\/\/)?\S+\s*$/i, "")
+    .replace(/\s*источник\s*:\s*(?:https?:\/\/)?\S+\s*$/i, "")
+    .trim();
+}
+
 // ---------- генератор по правилам ----------
 
 export function generateByRules(text, meta = {}) {
@@ -316,14 +325,14 @@ export async function generateDigestText(items, env = {}, meta = {}) {
     }
   }
   if (llm) {
-    if (llm.headline) headline = llm.headline;
+    if (llm.headline) headline = stripSourceTail(llm.headline);
     if (llm.bullets.length) {
       bulletTexts = llm.bullets.map((t, i) => ({
-        text: markdownToHtml(t),
+        text: markdownToHtml(stripSourceTail(t)),
         link: items[i] && items[i].link,
       }));
     }
-    if (llm.advice.length) advice = llm.advice.map((t) => markdownToHtml(t));
+    if (llm.advice.length) advice = llm.advice.map((t) => markdownToHtml(stripSourceTail(t)));
   }
 
   const emoji = DIGEST_EMOJI[meta.slug] || "📰";

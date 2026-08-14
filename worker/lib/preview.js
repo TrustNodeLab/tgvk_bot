@@ -79,6 +79,7 @@ export async function renderCardBytes(env, data, meta = {}) {
           link: meta.link || "",
           format: wantGif ? "gif" : "png",
           frames: meta.frames || 12,
+          ...(meta.quote !== undefined ? { quote: meta.quote } : {}),
         }),
         signal: AbortSignal.timeout(90000),
       });

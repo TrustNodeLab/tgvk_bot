@@ -330,6 +330,17 @@ DIGEST_SYSTEM_PROMPT = (
 )
 
 
+def _strip_source_tail(s: str) -> str:
+    """Срезает хвосты «— Источник: https://…» / «Источник: URL», которые LLM
+    копирует из сырого текста новости. Сама ссылка добавляется отдельно."""
+    import re
+
+    t = str(s or "").strip()
+    t = re.sub(r"\s*[—–-]\s*источник\s*:\s*(?:https?://)?\S+\s*$", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"\s*источник\s*:\s*(?:https?://)?\S+\s*$", "", t, flags=re.IGNORECASE)
+    return t.strip()
+
+
 def extract_digest(items: list, provider: str = None) -> dict:
     """Собирает дайджест из списка новостей: headline + по bullets на новость
     (2–3 предложения вещательным стилем) + советы. provider: "gigachat"|"gemini"
@@ -356,7 +367,7 @@ def extract_digest(items: list, provider: str = None) -> dict:
         return {"error": f"LLM вернул невалидный JSON: {snippet}"}
 
     return {
-        "headline": str(data.get("headline") or "").strip(),
-        "bullets": [str(b).strip() for b in data.get("bullets") or [] if str(b).strip()][: len(items)],
-        "advice": [str(a).strip() for a in data.get("advice") or [] if str(a).strip()][:3],
+        "headline": _strip_source_tail(str(data.get("headline") or "").strip()),
+        "bullets": [_strip_source_tail(str(b).strip()) for b in data.get("bullets") or [] if str(b).strip()][: len(items)],
+        "advice": [_strip_source_tail(str(a).strip()) for a in data.get("advice") or [] if str(a).strip()][:3],
     }

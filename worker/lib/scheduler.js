@@ -454,13 +454,15 @@ async function publishDueStock(env, now = new Date()) {
     }
     // Свежая карточка в момент публикации: небо рисуется под реальное время
     // выхода поста (рендер-сервис считает МСК сам), а не под время генерации.
-    // Формат — по настройке card_format (auto/gif/png); дайджест-обложка — PNG.
+    // Формат — по настройке card_format (auto/gif/png); дайджест-обложка — PNG
+    // и без плашки цитаты (обычные новости).
     if (!dry && pkg.data && pkg.kind !== "event") {
       try {
         const fresh = await renderCardBytes(env, pkg.data, {
           link: pkg.link || "",
           source: pkg.source || "",
           format: pkg.kind === "digest" ? "png" : undefined,
+          quote: pkg.kind === "digest" ? "" : undefined,
         });
         if (fresh && fresh.length > 100) pkg.png = fresh;
       } catch (e) {
@@ -553,10 +555,11 @@ async function finalizeDigestPkg(env, items, opts) {
   };
 
   // Одна обложка на весь выпуск (рендер по данным пакета, пере-рисуется и в
-  // момент публикации под реальное время суток). Всегда PNG — фото, а не файл.
+  // момент публикации под реальное время суток). Всегда PNG — фото, а не файл;
+  // без плашки цитаты (обычные новости).
   let b64 = "";
   try {
-    const bytes = await renderCardBytes(env, data, { link: "", source: "TrustNode", format: "png" });
+    const bytes = await renderCardBytes(env, data, { link: "", source: "TrustNode", format: "png", quote: "" });
     if (bytes && bytes.length > 100) b64 = bytesToBase64(bytes);
   } catch (e) {
     console.log("[scheduler] дайджест: обложку не собрали:", e.message);
