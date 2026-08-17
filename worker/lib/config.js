@@ -98,7 +98,9 @@ export function parseRSS(xml) {
     const title = cleanRssTitle(get("title"));
     const link = get("link");
     const guid = get("guid") || link || title;
-    const description = get("description");
+    const description = String(get("description") || "")
+      .replace(/<!\[CDATA\[/g, "")
+      .replace(/\]\]>/g, "");
     const pub_date = get("pubDate") || get("dc:date");
     if (title && link) {
       items.push({ guid, title, link, description, pub_date });
