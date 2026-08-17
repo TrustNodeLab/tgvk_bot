@@ -5,6 +5,19 @@ import { POST_FOOTER, TG_CAPTION_LIMIT, MSK_OFFSET_MIN } from "./config.js";
 
 const BLOCK_HEADS = ["🔍", "📌", "⚠", "🛡", "💡"];
 
+// VK не рендерит HTML: caption для него конвертируется в плоский текст.
+// Ключевое — ссылка источника `<a href="URL">ссылка</a>` должна остаться URL,
+// а не превратиться в слово «ссылка».
+export function htmlToPlain(html) {
+  return String(html || "")
+    .replace(/<a\s+[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (m, url, label) => {
+      const text = String(label || "").replace(/<[^>]+>/g, "").trim();
+      return text && text !== "ссылка" && text !== "источник" ? `${text}: ${url}` : url;
+    })
+    .replace(/<[^>]+>/g, "")
+    .trim();
+}
+
 export function normalizeCaption(caption) {
   const lines = (caption || "").split("\n").map((ln) => (ln || "").trimEnd());
   const out = [];

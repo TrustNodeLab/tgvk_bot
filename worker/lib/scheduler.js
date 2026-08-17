@@ -19,7 +19,7 @@ import { getWindows, windowBySlug, currentWindow as schedCurrentWindow } from ".
 import {
   publishToTelegram, publishToVk, sendMessage, vkCall, sendCard,
 } from "./telegram.js";
-import { fmtTime, escHtml, fitCaption } from "./text.js";
+import { fmtTime, escHtml, fitCaption, htmlToPlain } from "./text.js";
 import { maybeSendReports } from "./analytics.js";
 
 const CHUNK_COUNT = 2; // скан делится на 2 части (лимит подзапросов free-плана)
@@ -304,7 +304,7 @@ export async function publishText(env, text, dry, kind, extra = {}) {
       tgOk = true;
     } catch (e) { tgErr = e.message; }
   }
-  const plain = text.replace(/<[^>]+>/g, "").trim();
+  const plain = htmlToPlain(text);
   if (dry) {
     console.log(`[dry-run] VK wall.post text (${plain.length} симв.)`);
     vkOk = true;

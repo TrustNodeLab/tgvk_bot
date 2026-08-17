@@ -9,7 +9,7 @@ import {
 } from "./telegram.js";
 import { mskNow } from "./config.js";
 import { mskToUtcMs } from "./scheduler.js";
-import { fmtTime, escHtml } from "./text.js";
+import { fmtTime, escHtml, htmlToPlain } from "./text.js";
 
 // ---------- меню пользователя ----------
 
@@ -268,7 +268,7 @@ async function publishSuggestion(env, sug, target, dry) {
   let vkOk = false;
   let tgErr = null;
   let vkErr = null;
-  const plain = caption.replace(/<[^>]+>/g, "").trim();
+  const plain = htmlToPlain(caption);
 
   if (target !== "vk") {
     try {

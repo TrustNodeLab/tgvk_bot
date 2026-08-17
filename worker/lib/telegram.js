@@ -6,7 +6,7 @@ const VK_API = "https://api.vk.com/method/";
 const VK_VERSION = "5.199";
 
 import { pngToGif } from "./cardgen.js";
-import { fitCaption } from "./text.js";
+import { fitCaption, htmlToPlain } from "./text.js";
 
 // ---------- низкоуровневые вызовы ----------
 
@@ -529,7 +529,7 @@ export async function publishToVk(env, pkg, dry) {
   // подпись обложки. VK-лимит текста ~9000 симв. — 4096 влезает.
   const sourceText = pkg.kind === "digest" && pkg.digest_text ? pkg.digest_text : pkg.caption;
   const message =
-    (sourceText || "").replace(/<[^>]+>/g, "").trim() || pkg.title || "🛡️ TrustNode";
+    htmlToPlain(sourceText) || pkg.title || "🛡️ TrustNode";
   if (dry) {
     console.log(`[dry-run] VK wall.post message=${message.length} симв.`);
     return { ok: true, dry: true, target: "vk" };
