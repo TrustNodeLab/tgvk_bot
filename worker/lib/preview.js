@@ -81,7 +81,7 @@ export async function renderCardBytes(env, data, meta = {}) {
           frames: meta.frames || 12,
           ...(meta.quote !== undefined ? { quote: meta.quote } : {}),
         }),
-        signal: AbortSignal.timeout(90000),
+        signal: AbortSignal.timeout(30000),
       });
       if (res.ok) {
         const bytes = new Uint8Array(await res.arrayBuffer());
@@ -135,6 +135,10 @@ export async function sendGeneratedPreview(env, chatId, text, meta = {}) {
     created_at: new Date().toISOString(),
   };
   if (meta.provider) draft.provider = meta.provider;
+  draft.scheme_id = data.scheme_id || null;
+  draft.style_id = data.style_id || null;
+  draft.topic_id = data.topic_id || null;
+  draft.llm_provider = data.llm_provider || null;
   await kv.saveDraft(env, draft);
   return data;
 }

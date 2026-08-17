@@ -1,4 +1,4 @@
-// Модульные тесты Worker: node:test + стабы KV/fetch. Без реальных публикаций.
+﻿// Модульные тесты Worker: node:test + стабы KV/fetch. Без реальных публикаций.
 // Запуск: node --test worker/test/
 
 import { test } from "node:test";
@@ -183,7 +183,7 @@ test("tick: скан и ротация chunk; вне окна очередь н�
   assert.equal(calls.github.filter((c) => c.url.includes("/dispatches")).length, 0, "workflow_dispatch не вызывался");
 });
 
-test("tick: автопостинг выкл -> в окне админу уходит дайджест-превью (draft) без GitHub", async () => {
+test("tick: автопостинг выкл -> в окне админу уходит превью одиночной новости (draft) без GitHub", async () => {
   const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
   const { tick } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
   const calls = installFetchMock(500); // GitHub «лежит» — но не должен вызываться
@@ -197,14 +197,14 @@ test("tick: автопостинг выкл -> в окне админу уход
   });
   await tick(env, { now: new Date("2026-08-07T06:00:00Z") }); // 09:00 МСК — утро
   const drafts = await kv.listDrafts(env);
-  const dg = drafts.find((d) => d.kind === "digest");
-  assert.ok(dg, "дайджест-черновик создан");
+  const dg = drafts.find((d) => d.kind === "news" && d.guid === "g3");
+  assert.ok(dg, "черновик-превью одиночной новости создан");
   assert.ok(dg.caption.includes("TrustNode"), "caption с футером");
   assert.ok(calls.tg.some((c) => c.url.includes("/sendPhoto")) ||
     calls.tg.some((c) => c.url.includes("/sendAnimation")), "превью ушло в TG");
   assert.equal(calls.github.filter((c) => c.url.includes("/dispatches")).length, 0, "workflow_dispatch не вызывался");
   const cands = await kv.getCandidates(env);
-  assert.ok(!cands.some((c) => c.guid === "g3"), "кандидат потреблён выпуском");
+  assert.ok(!cands.some((c) => c.guid === "g3"), "кандидат потреблён постом");
 });
 
 test("webhook: команда /status отвечает админу", async () => {
@@ -481,6 +481,24 @@ test("generateByRules: new схема даёт карточку защиты и 
   assert.ok(data.tier === "real_threat" || data.tier === "medium", "tier определён");
 });
 
+test("generateByRules: meta.opinion подставляет живое «мнение студии» вместо шаблона", async () => {
+  const { generateByRules } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
+  const text = "Мошенники звонят россиянам, представляясь сотрудниками банка.";
+  const data = generateByRules(text, { opinion: "Живое мнение студии: проверьте трубку." });
+  assert.ok(data.caption.includes("Живое мнение студии"), "мнение студии в caption");
+});
+
+test("generateRulesWithOpinion: без LLM собирает правила и не падает", async () => {
+  const { generateRulesWithOpinion } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
+  const data = await generateRulesWithOpinion(
+    "Мошенники звонят россиянам, представляясь сотрудниками банка. Лжеоператоры убеждают перевести деньги на безопасный счёт.",
+    {},
+    { link: "https://ria.ru/x" }
+  );
+  assert.ok(data.headline && data.caption, "есть заголовок и caption");
+  assert.ok(data.caption.includes("TrustNode"), "футер на месте");
+});
+
 test("publishPackage: target=tg публикует только в TG, не в VK", async () => {
   const { publishPackage } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
   const calls = installFetchMock(500);
@@ -700,6 +718,26 @@ test("generatePostData: при недоступном прокси фолбэк 
   delete globalThis.fetch;
 });
 
+test("generatePostData: Workers AI пишет пост, когда внешние LLM недоступны", async () => {
+  const { generatePostData } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
+  const json = JSON.stringify({
+    headline: "Workers AI пишет пост",
+    caption: "**МВД советует виртуальную карту** для покупок в интернете. Это защищает деньги от списания.",
+    cards: [],
+    tier: "news",
+  });
+  const env = {
+    LLM_PROXY_URL: "https://render.test",
+    AI: { run: async () => ({ response: json }) },
+  };
+  globalThis.fetch = async () => new Response("boom", { status: 502 });
+  const text = "МВД посоветовало использовать виртуальную карту. За год похищено 15,8 млрд рублей.";
+  const data = await generatePostData(text, env, {});
+  assert.ok(data.headline.includes("Workers AI"), "headline из Workers AI");
+  assert.ok(data.caption.includes("TrustNode"), "footer на месте");
+  delete globalThis.fetch;
+});
+
 test("webhook: обычный текст генерит карточку и превью на одобрение (без GitHub)", async () => {
   const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
   const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
@@ -743,9 +781,40 @@ test("renderCard: JS-фолбэк умеет и PNG, и анимированны
   const gif = await renderCard(data, { format: "gif", frames: 5 });
   assert.ok(gif && gif.length > 1000, "GIF не пустой");
   assert.ok(String.fromCharCode(...gif.slice(0, 6)) === "GIF89a", "GIF89a magic-байты");
-  let gce = 0;
-  for (let i = 0; i + 1 < gif.length; i++) if (gif[i] === 0x21 && gif[i + 1] === 0xf9) gce++;
-  assert.equal(gce, 5, "5 кадров в GIF");
+  // Считаем кадры структурно (обходим блоки GIF), а не сканированием сырых байт —
+  // в LZW-потоке могут случайно встретиться байты 0x21 0xF9.
+  const countFrames = (buf) => {
+    let off = 6 + 7; // сигнатура + logical screen descriptor
+    const packed = buf[10];
+    if (packed & 0x80) off += 3 * (1 << ((packed & 7) + 1)); // global color table
+    let frames = 0;
+    while (off < buf.length) {
+      const b = buf[off];
+      if (b === 0x3b) break; // trailer
+      if (b === 0x21) {
+        const label = buf[off + 1];
+        if (label === 0xf9) frames++;
+        off += 2;
+        while (off < buf.length && buf[off] !== 0x00) {
+          off += 1 + buf[off];
+        }
+        off += 1; // block terminator
+      } else if (b === 0x2c) {
+        off += 10;
+        const ipacked = buf[off - 1];
+        if (ipacked & 0x80) off += 3 * (1 << ((ipacked & 7) + 1)); // local color table
+        off += 1; // LZW min code size
+        while (off < buf.length && buf[off] !== 0x00) {
+          off += 1 + buf[off];
+        }
+        off += 1; // block terminator
+      } else {
+        break;
+      }
+    }
+    return frames;
+  };
+  assert.equal(countFrames(gif), 5, "5 кадров в GIF");
   const a = await renderCard(data, { format: "png", phase: 0 });
   const b = await renderCard(data, { format: "png", phase: 0.25 });
   let differ = false;
@@ -1077,7 +1146,7 @@ test("event dialog: админ создаёт ивент в два шага (т�
   assert.ok(ev.scheduled_for > Date.now() - 60 * 1000, "время публикации в будущем");
 });
 
-test("tick: autopost вкл -> дайджест публикуется и пишется в лог (без GitHub)", async () => {
+test("tick: autopost вкл -> одиночная новость публикуется и пишется в лог (без GitHub)", async () => {
   const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
   const { tick } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
   const calls = installFetchMock(500); // GitHub «лежит»
@@ -1092,13 +1161,13 @@ test("tick: autopost вкл -> дайджест публикуется и пиш
   });
   await tick(env, { now: new Date("2026-08-07T06:00:00Z") }); // 09:00 МСК — утро
   const log = await kv.getLog(env);
-  const dg = log.find((e) => e.kind === "digest");
-  assert.ok(dg, "дайджест опубликован и записан в лог (kind=digest)");
+  const dg = log.find((e) => e.kind === "news" && e.guid === "g-autogen");
+  assert.ok(dg, "одиночная новость опубликована и записана в лог (kind=news)");
   assert.ok(dg.caption.includes("TrustNode"), "caption с футером");
   const stock = await kv.getStock(env);
-  assert.ok(!stock.some((p) => p.kind === "digest"), "дайджест ушёл со склада");
+  assert.ok(!stock.some((p) => p.kind === "news"), "новость ушла со склада");
   const cands = await kv.getCandidates(env);
-  assert.ok(!cands.some((c) => c.guid === "g-autogen"), "кандидат потреблён выпуском");
+  assert.ok(!cands.some((c) => c.guid === "g-autogen"), "кандидат потреблён постом");
   const githubCalls = calls.github.filter((c) => c.url.includes("/dispatches"));
   assert.equal(githubCalls.length, 0, "GitHub workflow_dispatch не вызывался при autopost");
 });
@@ -1181,6 +1250,71 @@ test("assembleDigestDrafts: автопостинг выкл -> хранит пр
   assert.equal((await kv.getCandidates(env)).length, 0, "кандидаты потреблены");
 });
 
+test("assembleNewsPosts: топ-1 кандидат -> одиночная новость на склад; повтор не дублирует", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { assembleNewsPosts } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  installFetchMock();
+  const env = makeEnv();
+  await kv.setAutopost(env, true);
+  const now = new Date("2026-08-07T06:00:00Z"); // 09:00 МСК — утро
+  const hour = 3600 * 1000;
+  await kv.addCandidate(env, {
+    guid: "gna",
+    title: "Новость A",
+    link: "http://x/a",
+    text: "МВД советует виртуальную карту. Мошенники похитили миллиарды рублей.",
+    found_at: new Date(Date.now() - 2 * hour).toISOString(),
+  });
+  await kv.addCandidate(env, {
+    guid: "gnb",
+    title: "Новость B",
+    link: "http://x/b",
+    text: "МВД советует виртуальную карту. Мошенники похитили миллиарды рублей.",
+    found_at: new Date(Date.now() - hour).toISOString(),
+  });
+  const made = await assembleNewsPosts(env, now);
+  assert.equal(made.length, 1, "одно активное окно — одна новость");
+  const stock = await kv.getStock(env);
+  const n = stock.find((p) => p.kind === "news");
+  assert.ok(n, "одиночная новость на складе");
+  assert.equal(n.guid, "gnb", "взят топ-1 (свежайший), а не все кандидаты");
+  assert.ok(n.caption.includes("TrustNode"), "caption с футером");
+  assert.ok(n.png, "карточка сохранена");
+  assert.equal(n.no_rereder, true, "карточку не пере-рендерим на тике публикации");
+  const cands = await kv.getCandidates(env);
+  assert.equal(cands.length, 1, "потреблён только один кандидат (топ-1)");
+  assert.equal(cands[0].guid, "gna", "остался только неопубликованный кандидат");
+  const again = await assembleNewsPosts(env, now);
+  assert.equal(again.length, 0, "повторно окно не собирается (маркер digest_done)");
+  assert.equal((await kv.getStock(env)).length, 1, "на складе по-прежнему один пост");
+});
+
+test("assembleNewsDrafts: автопостинг выкл -> черновик kind=news и потребление топ-1", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { assembleNewsDrafts } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  const calls = installFetchMock(500);
+  const env = makeEnv();
+  const now = new Date("2026-08-07T06:00:00Z"); // 09:00 МСК — утро
+  await kv.addCandidate(env, {
+    guid: "g9",
+    title: "Новость",
+    link: "http://x/9",
+    text: "Мошенники звонят от имени банка, убеждая перевести деньги на безопасный счёт.",
+    found_at: new Date().toISOString(),
+  });
+  const sent = await assembleNewsDrafts(env, now);
+  assert.equal(sent, 1);
+  const drafts = await kv.listDrafts(env);
+  const nd = drafts.find((d) => d.kind === "news");
+  assert.ok(nd, "черновик-превью новости сохранён");
+  assert.equal(nd.guid, "g9", "guid кандидата в черновике");
+  assert.ok(nd.caption.includes("TrustNode"), "caption с футером");
+  assert.ok(calls.tg.some((c) => c.url.includes("/sendPhoto")) ||
+    calls.tg.some((c) => c.url.includes("/sendAnimation")), "превью отправлено");
+  assert.equal((await kv.getStock(env)).length, 0, "на склад ничего не ушло (ждут одобрения)");
+  assert.equal((await kv.getCandidates(env)).length, 0, "кандидат потреблён");
+});
+
 test("rebuildDigestPreview: пересобирает превью из сохранённого черновика без потребления", async () => {
   const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
   const { rebuildDigestPreview } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
@@ -1239,7 +1373,17 @@ test("generateDigestText: полный caption с футером и лимито
     { guid: "1", title: "Первая", link: "https://ria.ru/1", text: "Мошенники похитили 15,8 млрд рублей за год." },
     { guid: "2", title: "Вторая", link: "https://tass.ru/2", text: "Взломаны 2 млн аккаунтов Госуслуг." },
   ];
-  const out = await generateDigestText(items, {}, { label: "вечер", slug: "evening", date: "2026-08-07" });
+  const out = await generateDigestText(items, {
+    AI: {
+      run: async () => ({
+        response: JSON.stringify({
+          headline: "Главное за вечер",
+          bullets: ["Булет первый: похищены миллиарды, но есть защита.", "Булет второй: взломаны аккаунты Госуслуг."],
+          advice: ["Проверяйте ссылки", "Включите 2FA"],
+        }),
+      }),
+    },
+  }, { label: "вечер", slug: "evening", date: "2026-08-07" });
   assert.ok(out.headline.includes("вечер"), "заголовок с окном");
   assert.ok(out.caption.includes("️ 🛡️") || out.caption.includes("Что делать") || out.caption.includes("🛡"), "блок защиты");
   assert.ok(out.caption.includes("TrustNode"), "футер");

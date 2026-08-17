@@ -18,6 +18,13 @@ import {
   sendDigestTestPreview,
 } from "./lib/scheduler.js";
 import {
+  getSchedule,
+  setScheduleMode,
+  setSlotsPerDay,
+  maybeAdjustSchedule,
+  resetSchedule,
+} from "./lib/schedule.js";
+import {
   sendMessage,
   sendPhoto,
   editMessageReplyMarkup,
@@ -27,9 +34,11 @@ import {
   vkCall,
 } from "./lib/telegram.js";
 import { fmtTime, escHtml } from "./lib/text.js";
-import { NEWS_WINDOWS, DIGEST_MIN_ITEMS, DIGEST_MAX_ITEMS, mskNow } from "./lib/config.js";
+import { DIGEST_MIN_ITEMS, DIGEST_MAX_ITEMS, mskNow, plural } from "./lib/config.js";
 import { sendGeneratedPreview, approveButtons } from "./lib/preview.js";
-import { renderCard } from "./lib/cardgen.js";
+import { renderCard, renderDashboard } from "./lib/cardgen.js";
+import { collectVkMetrics, refreshContentWeights, recordReaction, bestPerformingPosts, aggregateStats, dashboardData } from "./lib/stats.js";
+import { eveningSummaryText, dayReportText, weekReportText, monthReportText } from "./lib/analytics.js";
 import {
   handleUserStart,
   handleUserCallback,
@@ -41,7 +50,7 @@ import {
   handleEventDialogMessage,
 } from "./lib/support.js";
 
-const VERSION = "2.4.0";
+const VERSION = "2.5.0";
 
 // ---------- тексты ----------
 
@@ -67,7 +76,8 @@ const HELP_TEXT =
   "<b>Провайдеры карточек:</b>\n" +
   "/gemini &lt;текст&gt; | /gigachat &lt;текст&gt; | /noai &lt;текст&gt;\n" +
   "<b>Обзор:</b>\n" +
-  "/status — статус, /stats — статистика, /stock — склад\n" +
+  "/status — статус, /stats — статистика, /top — лучшие посты, /stock — склад\n" +
+  "/report [вечер|день|неделя|месяц] — отчёт студии (автоматически: вечер 20:00, день 23:30, неделя вс, месяц 1-го)\n" +
   "/schedule — расписание слотов, /sources — источники и ключевые слова\n" +
   "/drafts — черновики на одобрении, /export — выгрузка истории\n" +
   "<b>Настройки:</b>\n" +
@@ -95,6 +105,7 @@ const COMMANDS = [
   { command: "skip", description: "Пропустить кандидата" },
   { command: "event", description: "Создать ивент" },
   { command: "stats", description: "Статистика" },
+  { command: "report", description: "Отчёт студии: вечер|день|неделя|месяц" },
   { command: "blacklist", description: "Чёрный список" },
   { command: "keyword", description: "Ключевые слова" },
   { command: "settings", description: "Настройки" },
@@ -116,6 +127,9 @@ const BTN_NEW_POST = "✍️ Сделать пост";
 const BTN_NOAI = "📝 Пост без ИИ";
 const BTN_STOCK = "🗄 Склад";
 const BTN_STATS = "📜 Статистика";
+const BTN_TOP = "🏆 Топ постов";
+const BTN_REPORT = "📈 Отчёт студии";
+const BTN_SCHEDULE = "🗓 Расписание";
 const BTN_SOURCES = "📡 Источники";
 const BTN_SETTINGS = "⚙️ Настройки";
 const BTN_HELP = "📖 Помощь";
@@ -132,12 +146,13 @@ function replyKeyboard(rows) {
   };
 }
 
+// Мониторинг студии в первую очередь: статистика, топ залётности, отчёты,
+// расписание и источники — в верхних рядах, создание контента — ниже.
 const MAIN_KB = replyKeyboard([
-  [BTN_STATUS, BTN_NEW_POST],
-  [BTN_NOAI],
-  [BTN_STOCK, BTN_STATS],
-  [BTN_EVENT, BTN_SETTINGS],
-  [BTN_HELP],
+  [BTN_STATUS, BTN_STATS, BTN_TOP],
+  [BTN_REPORT, BTN_SCHEDULE, BTN_SOURCES],
+  [BTN_NEW_POST, BTN_NOAI, BTN_STOCK],
+  [BTN_EVENT, BTN_SETTINGS, BTN_HELP],
 ]);
 
 // Ответ по нажатию reply-кнопки -> команда (кроме «Сделать пост» — там подсказка).
@@ -145,6 +160,9 @@ const BTN_CMDS = {
   [BTN_STATUS]: "/status",
   [BTN_STOCK]: "/stock",
   [BTN_STATS]: "/stats",
+  [BTN_TOP]: "/top",
+  [BTN_REPORT]: "/report",
+  [BTN_SCHEDULE]: "/schedule",
   [BTN_SOURCES]: "/sources",
   [BTN_SETTINGS]: "/settings",
   [BTN_HELP]: "/help",
@@ -195,6 +213,8 @@ function toggle(list, value, add) {
 
 // Пингует Render-инстансы (/health), чтобы free tier не засыпал: без трафика
 // ~15 мин инстанс уходит в cold start, и первый /digest или /render падает.
+// Все ping — параллельно с коротким таймаутом: keep-warm не должен съедать
+// wall-clock бюджет scheduled-хендлера, который нужен основному тику.
 async function keepRenderWarm(env) {
   const urls = new Set();
   if (env.LLM_PROXY_URL) urls.add(String(env.LLM_PROXY_URL).trim());
@@ -206,16 +226,15 @@ async function keepRenderWarm(env) {
       if (u && String(u).trim()) urls.add(String(u).trim());
     }
   }
-  for (const base of urls) {
-    try {
-      await fetch(`${base.replace(/\/+$/, "")}/health`, {
-        method: "GET",
-        signal: AbortSignal.timeout(20000),
-      });
-    } catch (e) {
-      console.log(`[keep-warm] ${base} не ответил:`, e.message);
-    }
-  }
+  const list = [...urls].filter(Boolean).slice(0, 3);
+  await Promise.allSettled(list.map((base) =>
+    fetch(`${String(base).replace(/\/+$/, "")}/health`, {
+      method: "GET",
+      signal: AbortSignal.timeout(6000),
+    }).then((r) => {
+      if (!r.ok) throw new Error(`health ${r.status}`);
+    })));
+  for (const u of list) console.log(`[keep-warm] ping ${u}`);
 }
 
 async function sendLong(env, chatId, text, opts = {}) {
@@ -959,6 +978,10 @@ async function approveDraft(env, draft, dry, target = "all") {
       guid: draft.guid || "",
       source: draft.source || "",
       tags: draft.tags || [],
+      scheme_id: draft.scheme_id || null,
+      style_id: draft.style_id || null,
+      topic_id: draft.topic_id || null,
+      llm_provider: draft.llm_provider || null,
     },
     dry,
     target
@@ -1004,6 +1027,62 @@ async function handleCallback(env, cq, state) {
 
   if (!isAdmin(env, chatId)) {
     try { await answerCallbackQuery(env, qid, "Нет доступа"); } catch (e) { /* ignore */ }
+    return;
+  }
+
+  // отчёты студии (/report → кнопки): вечер/день/неделя/месяц
+  if (action === "report") {
+    const which = segs[1] || "evening";
+    const builders = {
+      evening: () => eveningSummaryText(env, { now: new Date() }),
+      day: () => dayReportText(env, { now: new Date() }),
+      week: () => weekReportText(env, { now: new Date() }),
+      month: () => monthReportText(env, { now: new Date() }),
+    };
+    try {
+      const text = await (builders[which] || builders.evening)();
+      if (!text) {
+        try { await answerCallbackQuery(env, qid, "Отчёт не собрался: пока мало данных"); } catch (e) { /* ignore */ }
+        return;
+      }
+      try { await editMessageReplyMarkup(env, chatId, msgId, []); } catch (e) { /* ignore */ }
+      await sendMessage(env, chatId, text, { parse_mode: "HTML" });
+      try { await answerCallbackQuery(env, qid, "Готово"); } catch (e) { /* ignore */ }
+    } catch (e) {
+      try { await answerCallbackQuery(env, qid, `Ошибка: ${e.message.slice(0, 90)}`); } catch (e2) { /* ignore */ }
+    }
+    return;
+  }
+
+  // управление расписанием (/schedule): авто/ручной, +/− слот, сброс
+  if (action === "sched") {
+    const op = segs[1] || "";
+    try {
+      if (op === "auto") {
+        await setScheduleMode(env, "auto");
+      } else if (op === "manual") {
+        await setScheduleMode(env, "manual");
+      } else if (op === "plus") {
+        const sc = await getSchedule(env);
+        await setSlotsPerDay(env, sc.windows.length + 1);
+      } else if (op === "minus") {
+        const sc = await getSchedule(env);
+        await setSlotsPerDay(env, sc.windows.length - 1);
+      } else if (op === "reset") {
+        await resetSchedule(env);
+      } else {
+        throw new Error("неизвестная операция");
+      }
+      const sc = await getSchedule(env);
+      const label = `расписание: ${sc.mode === "auto" ? "авто" : "ручной"}, ${sc.windows.length} ${plural(sc.windows.length, "слот", "слота", "слотов")} в день`;
+      await answerCallbackQuery(env, qid, label);
+      try { await editMessageReplyMarkup(env, chatId, msgId, []); } catch (e) { /* ignore */ }
+      try {
+        await sendMessage(env, chatId, `🗓 ${label}\nДетали — /schedule`, { parse_mode: "HTML" });
+      } catch (e) { /* ignore */ }
+    } catch (e) {
+      try { await answerCallbackQuery(env, qid, `Ошибка: ${e.message.slice(0, 90)}`); } catch (e2) { /* ignore */ }
+    }
     return;
   }
 
@@ -1200,17 +1279,39 @@ async function handleCommand(env, state, chatId, text) {
     }
 
     case "/schedule": {
-      const wins = NEWS_WINDOWS.map(
+      const sched = await getSchedule(env);
+      const wins = sched.windows.map(
         (w) => `• <b>${w.label}</b> — ${minutesToClock(w.start)} МСК: сводка ${DIGEST_MIN_ITEMS}–${DIGEST_MAX_ITEMS} свежих новостей`
       ).join("\n");
+      const modeLabel = sched.mode === "auto" ? "авто" : "ручной";
+      const schedLine =
+        `Режим: <b>${modeLabel}</b> · ${sched.windows.length} ${plural(sched.windows.length, "слот", "слота", "слотов")} в день\n` +
+        (sched.reason ? `Причина: ${escHtml(sched.reason)}\n` : "") +
+        (sched.updated_at ? `Обновлено: ${fmtTime(sched.updated_at)}\n` : "");
+      const nextSlot = await nextFreeSlot(env, new Date());
+      const next = fmtTime(new Date(nextSlot).toISOString());
       const msg =
         "🗓 <b>Расписание (МСК)</b>\n\n" +
-        "Три дайджеста в день — по одному выпуску в окне:\n" +
+        schedLine +
+        "\n" +
         wins +
-        "\n\n🚨 Автопостинг вкл — выпуски выходят сами.\n" +
-        "🚫 Выкл — сводка приходит админу на одобрение.\n\n" +
-        "🎪 Ивенты публикуются в заданное время.";
-      await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
+        "\n\nСледующий слот: <b>" + next + "</b>\n\n" +
+        "Авто-режим: бот смотрит на средние охваты и сам добавляет/убирает слоты — публикует чаще, когда охваты низкие, и реже, когда высокие.\n" +
+        "Ручной режим: вы управляете частотой сами.";
+      const kb = {
+        inline_keyboard: [
+          [
+            { text: "🤖 Авто", callback_data: "sched:auto" },
+            { text: "✋ Ручной", callback_data: "sched:manual" },
+          ],
+          [
+            { text: "➕ Слот", callback_data: "sched:plus" },
+            { text: "➖ Слот", callback_data: "sched:minus" },
+            { text: "🔄 Сброс", callback_data: "sched:reset" },
+          ],
+        ],
+      };
+      await sendMessage(env, chatId, msg, { parse_mode: "HTML", reply_markup: kb });
       break;
     }
 
@@ -1249,12 +1350,134 @@ async function handleCommand(env, state, chatId, text) {
       }).length;
       const byKind = {};
       for (const e of log) byKind[e.kind || "news"] = (byKind[e.kind || "news"] || 0) + 1;
+      // Русские метки типов контента.
+      const KIND_LABELS = {
+        news: "новости",
+        digest: "дайджесты",
+        event: "ивенты",
+        generated: "посты",
+        suggestion: "предложки",
+        retry: "повторы",
+      };
       const lines = Object.entries(byKind)
-        .map(([k, v]) => `• ${k}: ${v}`)
+        .map(([k, v]) => `• ${KIND_LABELS[k] || k}: ${v}`)
         .join("\n");
+      // Вовлечённость: views из VK + реакции из TG по уже опубликованным постам.
+      let engagement = "";
+      try {
+        const agg = aggregateStats(log);
+        const bestStyle = agg.style[0];
+        const bestScheme = agg.scheme[0];
+        const bestTopic = agg.topic[0];
+        const fmt = (b) => (b ? `${b.key}: ${b.posts} пост., ~${b.avg_views} просм., ${b.reactions} реакций` : "—");
+        const withViews = log.filter((e) => e && e.stats && e.stats.vk && e.stats.vk.views > 0);
+        const avgViews = withViews.length
+          ? Math.round(withViews.reduce((a, e) => a + e.stats.vk.views, 0) / withViews.length)
+          : 0;
+        engagement =
+          "\n\n📊 <b>Вовлечённость</b>\n" +
+          `Средние просмотры: <b>${avgViews}</b>\n` +
+          `• Лучший жанр: ${fmt(bestStyle)}\n` +
+          `• Лучшая схема: ${fmt(bestScheme)}\n` +
+          `• Лучшая тема: ${fmt(bestTopic)}\n` +
+          `Детальнее — /top`;
+      } catch (e) {
+        engagement = "";
+      }
+      // Картинка-«скриншот» статистики: дашборд в стиле студии + короткая
+      // подпись. Числовые детали остаются в текстовом сообщении ниже.
+      try {
+        const dash = dashboardData(log, { now: new Date() });
+        const sched = await getSchedule(env);
+        dash.schedule_text = sched && sched.mode === "auto"
+          ? `расписание: авто · ${sched.windows.length} ${plural(sched.windows.length, "слот", "слота", "слотов")} в день`
+          : `расписание: ручное · ${sched ? sched.windows.length : "—"} ${sched ? plural(sched.windows.length, "слот", "слота", "слотов") : ""} в день`;
+        const png = await renderDashboard(dash);
+        const cap =
+          "📈 <b>Статистика канала</b>\n\n" +
+          `Всего: <b>${log.length}</b> · Сегодня: <b>${today}</b>\n` +
+          `Средние просмотры: <b>${dash.avg_views}</b> · Реакций всего: <b>${dash.total_reactions}</b>\n` +
+          `Расписание: ${dash.schedule_text}`;
+        await sendPhoto(env, chatId, png, cap, { parse_mode: "HTML" });
+      } catch (e) {
+        await sendMessage(env, chatId, "⚠️ Не удалось собрать картинку статистики.", { parse_mode: "HTML" });
+      }
       const msg =
-        "📈 <b>Статистика</b>\n\n" +
-        `Всего: <b>${log.length}</b>\nСегодня: <b>${today}</b>\n\n${lines || "—"}`;
+        "📊 <b>Состав публикаций</b>\n\n" +
+        `Всего: <b>${log.length}</b>\nСегодня: <b>${today}</b>\n\n${lines || "—"}` +
+        engagement;
+      await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
+      break;
+    }
+
+    case "/report": {
+      if (!args) {
+        const kb = {
+          inline_keyboard: [
+            [{ text: "🌆 Вечерняя сводка", callback_data: "report:evening" }],
+            [{ text: "📋 Отчёт за день", callback_data: "report:day" }],
+            [{ text: "🗓 Недельная сводка", callback_data: "report:week" }],
+            [{ text: "📅 Месячная сводка", callback_data: "report:month" }],
+          ],
+        };
+        await sendMessage(
+          env,
+          chatId,
+          "📈 <b>Отчёты студии</b>\n\nАвтоматически приходят: вечером 20:00 — сводка, в 23:30 — отчёт за день, в воскресенье — неделя, 1-го числа — месяц.\n\nВыберите отчёт:",
+          { parse_mode: "HTML", reply_markup: kb }
+        );
+        break;
+      }
+      const period = args.toLowerCase();
+      const builders = {
+        "вечер": () => eveningSummaryText(env, { now: new Date() }),
+        "день": () => dayReportText(env, { now: new Date() }),
+        "неделя": () => weekReportText(env, { now: new Date() }),
+        "месяц": () => monthReportText(env, { now: new Date() }),
+        "today": () => eveningSummaryText(env, { now: new Date() }),
+        "day": () => dayReportText(env, { now: new Date() }),
+        "week": () => weekReportText(env, { now: new Date() }),
+        "month": () => monthReportText(env, { now: new Date() }),
+      };
+      const build = builders[period] || builders["вечер"];
+      const text = await build();
+      if (!text) {
+        await sendMessage(
+          env,
+          chatId,
+          "Отчёт не собрался: пока мало данных. Автоматически приходит: вечером 20:00 — сводка, в 23:30 — отчёт за день, в воскресенье — неделя, 1-го числа — месяц.",
+          { parse_mode: "HTML" }
+        );
+        break;
+      }
+      await sendMessage(env, chatId, text, { parse_mode: "HTML" });
+      break;
+    }
+
+    case "/top": {
+      const log = await kv.getLog(env);
+      const top = bestPerformingPosts(log, 6);
+      if (!top.length) {
+        await sendMessage(env, chatId, "Пока нет постов с метриками. Они появятся после публикаций и опроса VK (раз в час) — новые посты уже пишутся «под» лучшие.");
+        break;
+      }
+      const lines = top.map((p, i) => {
+        const dims = [p.style_id, p.scheme_id, p.topic_id].filter(Boolean).join("/");
+        const meta = [
+          p.views ? `👁 ${p.views}` : null,
+          p.likes ? `❤️ ${p.likes}` : null,
+          p.reposts ? `↻ ${p.reposts}` : null,
+          p.reactions ? `⚡ ${p.reactions}` : null,
+        ].filter(Boolean).join(" · ");
+        const url = p.vk_post_id && env.VK_GROUP_ID
+          ? ` · <a href="https://vk.com/wall-${env.VK_GROUP_ID}_${p.vk_post_id}">VK</a>`
+          : "";
+        return `${i + 1}. <b>${escHtml(p.title || p.headline || "")}</b>\n   ${dims ? `[${escHtml(dims)}] ` : ""}${meta}${url}`;
+      });
+      const msg =
+        "🏆 <b>Топ залётности</b>\n(активность с поправкой на возраст)\n\n" +
+        lines.join("\n\n") +
+        "\n\nНовые посты и дайджесты собираются в этом же ключе.";
       await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
       break;
     }
@@ -1575,6 +1798,14 @@ async function handleUpdate(env, update) {
     await handleMessage(env, update.message, state);
   } else if (update.edited_message) {
     await handleMessage(env, update.edited_message, state);
+  } else if (update.message_reaction) {
+    // Реакции на посты канала — источник метрик вовлечённости (TG-сторона).
+    // Фиксируются в publish_log по tg_message_id для агрегации в /stats.
+    try {
+      await recordReaction(env, update.message_reaction);
+    } catch (e) {
+      console.log("record reaction error:", e.message);
+    }
   } else {
     console.log(`[webhook] unknown update ${update.update_id}`);
   }
@@ -1617,10 +1848,10 @@ export default {
       console.log("ensureCommands error:", e.message);
     }
     // Держим Render-инстанс тёплым (free tier засыпает после ~15 мин без
-    // трафика): пингуем /health каждый тик, чтобы /digest и /render всегда
-    // отвечали сразу, без холодного старта.
+    // трафика): ping в фоне, НЕ блокируя основной тик — у scheduled-хендлера
+    // и так жёсткий wall-clock лимит, и каждая секунда важна для сборки/постов.
     try {
-      await keepRenderWarm(env);
+      ctx.waitUntil(keepRenderWarm(env).catch((e) => console.log("keepRenderWarm error:", e.message)));
     } catch (e) {
       console.log("keepRenderWarm error:", e.message);
     }
@@ -1628,6 +1859,25 @@ export default {
       await schedulerTick(env);
     } catch (e) {
       console.log("scheduled error:", e.message);
+    }
+    // Статистика вовлечённости: опрос VK по опубликованным постам + обновление
+    // весов ротации (жанр/тема/схема) по интересам аудитории — чтобы следующие
+    // посты «делались под» то, что сейчас лучше всего залетает.
+    try {
+      await collectVkMetrics(env);
+      await refreshContentWeights(env);
+      // Адаптивное расписание: если охваты низкие — публикуем чаще, высокие —
+      // реже. Уведомление админу шлём, только когда расписание реально поменялось.
+      try {
+        const note = await maybeAdjustSchedule(env);
+        if (note && env.TELEGRAM_ADMIN_CHAT_ID) {
+          await sendMessage(env, env.TELEGRAM_ADMIN_CHAT_ID, note, { parse_mode: "HTML" });
+        }
+      } catch (e) {
+        console.log("adjust schedule error:", e.message);
+      }
+    } catch (e) {
+      console.log("collect metrics error:", e.message);
     }
     // Диагностика канала: резолвим chat_id и кэшируем в KV на каждом тике,
     // чтобы всегда знать целевой канал и не терять его при смене секрета.

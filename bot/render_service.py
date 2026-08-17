@@ -17,7 +17,8 @@ certifi и urllib3 (см. requirements.txt), поэтому легко депл�
 Эндпоинты:
     POST /render  — JSON: {headline, caption, cards, tier, source, link,
                            format?: "png"|"gif", frames?: 12} -> PNG либо анимированный GIF
-    POST /llm     — JSON: {text, prev_post?} -> структурированный JSON GigaChat
+    POST /llm     — JSON: {text, prev_post?, style?, best_posts?} -> структурированный JSON GigaChat
+    POST /opinion — JSON: {text} -> {"opinion": "1-2 предложения мнения редакции"}
     GET  /health  — {"ok": true}
 """
 import json
@@ -30,7 +31,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from card_generator import render_card, render_card_gif  # noqa: E402
-from llm import extract_post_data, extract_digest  # noqa: E402
+from llm import extract_post_data, extract_digest, extract_opinion, extract_critique  # noqa: E402
 
 PORT = int(os.environ.get("PORT", "8000"))
 YEAR = datetime.now().year
@@ -114,6 +115,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/digest":
             self._handle_digest()
             return
+        if self.path == "/opinion":
+            self._handle_opinion()
+            return
+        if self.path == "/critique":
+            self._handle_critique()
+            return
         if self.path != "/render":
             self._send(404, json.dumps({"error": "not found"}).encode("utf-8"))
             return
@@ -157,7 +164,8 @@ class Handler(BaseHTTPRequestHandler):
             prev = payload.get("prev_post")
             provider = str(payload.get("provider") or "").strip() or None
             style = str(payload.get("style") or "").strip() or None
-            result = extract_post_data(text, prev, provider, style)
+            best = str(payload.get("best_posts") or "").strip() or None
+            result = extract_post_data(text, prev, provider, style, best)
             self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"))
         except KeyError as e:
             self._send(503, json.dumps({"error": f"нет секрета: {e}"}).encode("utf-8"))
@@ -179,6 +187,50 @@ class Handler(BaseHTTPRequestHandler):
                 return
             provider = str(payload.get("provider") or "").strip() or None
             result = extract_digest(items, provider)
+            self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        except KeyError as e:
+            self._send(503, json.dumps({"error": f"нет секрета: {e}"}).encode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            self._send(500, json.dumps({"error": str(e)}).encode("utf-8"))
+
+
+    def _handle_opinion(self):
+        """«Мнение студии»: лёгкий вызов LLM по тексту новости -> {opinion: "..."
+        }. Используется правиловым генератором вместо шаблонного мнения."""
+        if not (os.environ.get("LLM_API_KEY") or os.environ.get("GIGACHAT_API_KEY") or os.environ.get("GEMINI_API_KEY")):
+            self._send(503, json.dumps({"error": "LLM_API_KEY не задан"}).encode("utf-8"))
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                self._send(400, json.dumps({"error": "пустой text"}).encode("utf-8"))
+                return
+            provider = str(payload.get("provider") or "").strip() or None
+            opinion = extract_opinion(text, provider)
+            self._send(200, json.dumps({"opinion": opinion}, ensure_ascii=False).encode("utf-8"))
+        except KeyError as e:
+            self._send(503, json.dumps({"error": f"нет секрета: {e}"}).encode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            self._send(500, json.dumps({"error": str(e)}).encode("utf-8"))
+
+
+def _handle_critique(self):
+        """Самокритика черновика поста: {draft} -> {issues, fixed_caption}.
+        Строгий второй проход LLM перед публикацией, чтобы вычистить клише."""
+        if not (os.environ.get("LLM_API_KEY") or os.environ.get("GIGACHAT_API_KEY") or os.environ.get("GEMINI_API_KEY")):
+            self._send(503, json.dumps({"error": "LLM_API_KEY не задан"}).encode("utf-8"))
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            draft = str(payload.get("draft") or "").strip()
+            if not draft:
+                self._send(400, json.dumps({"error": "пустой draft"}).encode("utf-8"))
+                return
+            provider = str(payload.get("provider") or "").strip() or None
+            result = extract_critique(draft, provider)
             self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"))
         except KeyError as e:
             self._send(503, json.dumps({"error": f"нет секрета: {e}"}).encode("utf-8"))

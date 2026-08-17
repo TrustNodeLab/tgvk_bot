@@ -159,6 +159,69 @@ export async function updateLog(env, id, patch) {
   await kvSet(env, "publish_log", list);
 }
 
+// ---------- style weights (веса ротации стилей по вовлечённости) ----------
+
+export async function getStyleWeights(env) {
+  return (await kvGet(env, "style_weights", {})) || {};
+}
+
+export async function setStyleWeights(env, weights) {
+  await kvSet(env, "style_weights", weights);
+}
+
+// ---------- content weights (веса ротации по жанру/теме/схеме) ----------
+
+// Сводные веса ротации по вовлечённости: { style: {...}, topic: {...}, scheme: {...} }.
+// Обновляются refreshContentWeights при сборе метрик в тике.
+export async function getContentWeights(env) {
+  const cw = await kvGet(env, "content_weights", null);
+  if (cw && typeof cw === "object" && Object.keys(cw).length) return cw;
+  // Обратная совместимость: были только веса жанров (style_weights) — выдаём их.
+  const legacyStyle = await kvGet(env, "style_weights", null);
+  return legacyStyle && typeof legacyStyle === "object" && Object.keys(legacyStyle).length
+    ? { style: legacyStyle }
+    : {};
+}
+
+export async function setContentWeights(env, weights) {
+  await kvSet(env, "content_weights", weights);
+}
+
+// ---------- schedule (адаптивное расписание) ----------
+
+// Динамическое расписание: { mode: "auto"|"manual", windows: [...], updated_at, reason }.
+export async function getScheduleState(env) {
+  return kvGet(env, "schedule_state", null);
+}
+
+export async function setScheduleState(env, state) {
+  await kvSet(env, "schedule_state", state);
+}
+
+// ---------- day_metrics (ежедневная аналитика студии) ----------
+// Запись за дату "YYYY-MM-DD": { date, posts, views, likes, reactions,
+// reposts, engagement, tg_members, vk_members, collected_at }.
+
+export async function getDayMetrics(env, date) {
+  return kvGet(env, `day_metrics:${date}`, null);
+}
+
+export async function setDayMetrics(env, date, rec) {
+  await kvSet(env, `day_metrics:${date}`, rec);
+}
+
+// ---------- report markers (анти-дубль отчётов студии) ----------
+// Ключ "report_sent:<evening|day|week|month>:<период>": отчёт за период
+// уходит админу ровно один раз, даже если крон зайдёт в окно дважды.
+
+export async function getReportMarker(env, key) {
+  return kvGet(env, `report_sent:${key}`, null);
+}
+
+export async function setReportMarker(env, key) {
+  await kvSet(env, `report_sent:${key}`, { at: new Date().toISOString() });
+}
+
 // ---------- drafts ----------
 
 export async function loadDraft(env, id) {

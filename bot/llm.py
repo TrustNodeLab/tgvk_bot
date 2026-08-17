@@ -241,13 +241,17 @@ def _call_openai_compatible(api_key: str, api_base: str, model: str, messages: l
     return resp.json()["choices"][0]["message"]["content"]
 
 
-def extract_post_data(raw_text: str, prev_post: dict = None, provider: str = None, style: str = None) -> dict:
+def extract_post_data(raw_text: str, prev_post: dict = None, provider: str = None, style: str = None, best_posts: str = None) -> dict:
     """prev_post (опц.) — данные предыдущего поста канала: их количество/типы карточек
     и layout. Передаётся в промпт, чтобы бот не публиковал подряд посты с одинаковой
     сеткой и набором карточек.
 
     style (опц.) — жанр поста из ротации ("razbor"|"warning"|"fact"|"myth"|"case"),
     чтобы соседние посты выглядели по-разному, как у живой редакции.
+
+    best_posts (опц.) — подсказка «что сейчас залетает у аудитории» (лидирующие
+    жанр/тема/схема + примеры лучших постов). LLM делает новый пост в этом же
+    ключе, не копируя дословно.
 
     provider (опц.) — явный выбор: "gigachat" | "gemini" | иной OpenAI-совместимый.
     Если не задан — берётся из LLM_PROVIDER env (по умолчанию gigachat)."""
@@ -267,6 +271,8 @@ def extract_post_data(raw_text: str, prev_post: dict = None, provider: str = Non
         )
     if style:
         user_content += f"\n\nТребование к формату поста: {_STYLE_HINTS.get(style, '')}".rstrip()
+    if best_posts:
+        user_content += f"\n\n{best_posts}"
 
     messages = [
         {"role": "system", "content": _load_system_prompt()},
@@ -298,8 +304,80 @@ def extract_post_data(raw_text: str, prev_post: dict = None, provider: str = Non
         return {"error": f"LLM вернул невалидный JSON: {snippet}"}
 
 
+OPINION_SYSTEM_PROMPT = (
+    "Ты — редактор канала TrustNode о кибербезопасности. По тексту новости напиши "
+    "авторское мнение-вывод к посту: 1-2 предложения, живой комментарий редакции "
+    "(что здесь не так, почему это касается читателя, что стоит запомнить). "
+    "Это НЕ пересказ фактов и НЕ совет по защите — это позиция и эмоция редакции.\n"
+    "Тон: как человек рассказывает знакомому, ирония и предостережение уместны, "
+    "канцелярит и слова «важно/актуально» запрещены. Верни ТОЛЬКО текст мнения, "
+    "без кавычек, пояснений, markdown и слова «мнение редакции»."
+)
+
+
+def extract_opinion(raw_text: str, provider: str = None) -> str:
+    """Лёгкий вызов LLM для «мнения студии»: 1-2 предложения авторского вывода.
+    Возвращает короткую строку; при сбое/пустом ответе — пустую строку, чтобы
+    вызывающий код подставил шаблонное мнение."""
+    try:
+        messages = [
+            {"role": "system", "content": OPINION_SYSTEM_PROMPT},
+            {"role": "user", "content": str(raw_text or "")[:3000]},
+        ]
+        content = _complete(messages, provider)
+        text = _strip_code_fence(content)
+        text = _strip_source_tail(str(text or "").strip())
+        text = text.replace("Мнение редакции:", "").replace("мнение редакции:", "").strip(" «\"'")
+        if len(text) < 20:
+            return ""
+        return text[:220]
+    except Exception as e:  # noqa: BLE001
+        print(f"[llm] мнение студии недоступно: {e}")
+        return ""
+
+
 def _resolve_provider(provider: str = None) -> str:
     return (provider or os.environ.get("LLM_PROVIDER", "") or "").strip().lower()
+
+
+CRITIQUE_SYSTEM_PROMPT = (
+    "Ты — строгий редактор телеграм-канала TrustNode о кибербезопасности. "
+    "По черновику поста (заголовок + текст) найди признаки «ботопостинга»: "
+    "пустые открывалки (важно/срочно/внимание/напоминаем/не пропустите), "
+    "клише-канцелярит (в сегодняшней статье/по итогам/стоит отметить), "
+    "бессодержательные обобщения («это большая проблема»), повторы мысли. "
+    "Верни ТОЛЬКО валидный JSON без пояснений: "
+    '{"issues":["короткие замечания"], "fixed_caption":"исправленный текст поста '
+    '(HTML, без источника и футера) или пустая строка, если всё оставить как есть"}. '
+    "Не выдумывай факты и цифры сверх новости; не добавляй ссылок и футера."
+)
+
+
+def extract_critique(draft: str, provider: str = None) -> dict:
+    """Самокритика черновика поста: {"issues": [...], "fixed_caption": "..."}.
+    При сбое/невалидном JSON возвращает пустой fixed_caption, чтобы пост не мутировал."""
+    try:
+        messages = [
+            {"role": "system", "content": CRITIQUE_SYSTEM_PROMPT},
+            {"role": "user", "content": str(draft or "")[:6000]},
+        ]
+        content = _complete(messages, provider)
+        text = _strip_code_fence(content)
+        import re as _re
+        m = _re.search(r"\{[\s\S]*\}", text or "")
+        if not m:
+            return {"issues": [], "fixed_caption": ""}
+        data = json.loads(m.group(0))
+        issues = data.get("issues") or []
+        small = data.get("fixed_caption") or ""
+        small = str(small).strip()
+        return {
+            "issues": [str(x) for x in issues if x][:5],
+            "fixed_caption": small if len(small) >= 60 else "",
+        }
+    except Exception as e:  # noqa: BLE001
+        print(f"[llm] самокритик недоступно: {e}")
+        return {"issues": [], "fixed_caption": ""}
 
 
 def _complete(messages: list, provider: str = None) -> str:

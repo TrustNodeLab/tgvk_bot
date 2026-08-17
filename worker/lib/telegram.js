@@ -18,12 +18,13 @@ export async function tgCall(env, method, params = {}, files = null) {
     const fd = new FormData();
     for (const [k, v] of Object.entries(files)) fd.append(k, v);
     for (const [k, v] of Object.entries(params)) fd.append(k, String(v));
-    res = await fetch(url, { method: "POST", body: fd });
+    res = await fetch(url, { method: "POST", body: fd, signal: AbortSignal.timeout(15000) });
   } else {
     res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(params),
+      signal: AbortSignal.timeout(15000),
     });
   }
   let data = {};
@@ -44,7 +45,7 @@ export async function vkCall(env, method, params = {}) {
     v: VK_VERSION,
     ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
   });
-  const res = await fetch(VK_API + method, { method: "POST", body });
+  const res = await fetch(VK_API + method, { method: "POST", body, signal: AbortSignal.timeout(15000) });
   let data = {};
   try {
     data = await res.json();
@@ -123,6 +124,12 @@ export function answerCallbackQuery(env, id, text) {
   return tgCall(env, "answerCallbackQuery", { callback_query_id: id, text });
 }
 
+// Число подписчиков чата/канала (для отчётов студии). Бот должен быть
+// участником/админом канала, иначе Telegram вернёт ошибку — ловим снаружи.
+export function getChatMemberCount(env, chatId) {
+  return tgCall(env, "getChatMemberCount", { chat_id: chatId });
+}
+
 export function setMyCommands(env, commands) {
   return tgCall(env, "setMyCommands", { commands: JSON.stringify(commands) });
 }
@@ -155,7 +162,7 @@ export async function vkUploadWallPhoto(env, bytes) {
   // доступен групповым токенам, в отличие от getWallUploadServer (error 27).
   // VK upload-сервер транзиентно отклоняет картинку («пустой photo») — ретраим
   // с экспоненциальным бэкоффом и пере-запросом upload_url, как в GH-контуре.
-  const MAX_ATTEMPTS = 5;
+  const MAX_ATTEMPTS = 3;
   let lastErr = null;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const upload = await vkCall(env, "photos.getMessagesUploadServer");
@@ -179,7 +186,7 @@ export async function vkUploadWallPhoto(env, bytes) {
     }
     lastErr = `VK: upload-сервер вернул пустой photo (${JSON.stringify(up).slice(0, 200)})`;
     if (attempt < MAX_ATTEMPTS - 1) {
-      await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
     }
   }
   throw new Error(lastErr);
@@ -200,13 +207,13 @@ export async function vkPostWall(env, message, attachment) {
 // токену недоступны photos.save* (error 27), поэтому docs-путь — единственный
 // рабочий способ показать картинку в посте токеном сообщества.
 export async function vkUploadWallGif(env, gifBytes) {
-  const MAX_ATTEMPTS = 4;
+  const MAX_ATTEMPTS = 3;
   let lastErr = null;
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
     const dws = await vkCall(env, "docs.getWallUploadServer", { group_id: env.VK_GROUP_ID });
     if (!dws || !dws.upload_url) {
       lastErr = "VK: docs.getWallUploadServer не вернул upload_url";
-      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       continue;
     }
     const fd = new FormData();
@@ -225,14 +232,14 @@ export async function vkUploadWallGif(env, gifBytes) {
     } catch (e) {
       bodyText = "";
       lastErr = `VK: gif upload fetch error: ${e.message}`;
-      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       continue;
     }
     let ur = null;
     try { ur = JSON.parse(bodyText); } catch (e) { ur = null; }
     if (!ur || !ur.file) {
       lastErr = `VK: gif upload вернул без file (${bodyText.slice(0, 120)})`;
-      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       continue;
     }
     const saved = await vkCall(env, "docs.save", { file: ur.file });
@@ -240,7 +247,7 @@ export async function vkUploadWallGif(env, gifBytes) {
     const doc = (wrap && (wrap.doc || wrap)) || null;
     if (!doc || !doc.id) {
       lastErr = `VK: docs.save вернул без doc (${JSON.stringify(saved).slice(0, 200)})`;
-      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)));
+      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       continue;
     }
     return `doc${doc.owner_id}_${doc.id}`;

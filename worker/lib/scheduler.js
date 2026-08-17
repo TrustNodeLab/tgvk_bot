@@ -1,6 +1,6 @@
 // Планировщик: каждый крон выполняет полный цикл —
-// скан+дедуп -> накопление кандидатов -> сборка дайджестов по окнам
-// (утро/день/вечер: сводка 3-5 новостей) -> авто-отложка черновиков ->
+// скан+дедуп -> накопление кандидатов -> публикация по окнам
+// (утро/день/вечер: 1 новость = 1 пост) -> авто-отложка черновиков ->
 // публикация из «склада» по слотам -> догонка недостающей платформы.
 
 import {
@@ -11,15 +11,45 @@ import {
 } from "./config.js";
 import * as kv from "./kv.js";
 import { scanFeeds } from "./feeds.js";
+import { mainTopic } from "./nlp.js";
+import { renderCard } from "./cardgen.js";
 import { renderCardBytes, sourceDomain, approveButtons } from "./preview.js";
-import { generateDigestText, digestFreshScore } from "./llm.js";
+import { generateDigestText, digestFreshScore, generatePostData, generateByRules } from "./llm.js";
+import { getWindows, windowBySlug, currentWindow as schedCurrentWindow } from "./schedule.js";
 import {
   publishToTelegram, publishToVk, sendMessage, vkCall, sendCard,
 } from "./telegram.js";
 import { fmtTime, escHtml, fitCaption } from "./text.js";
+import { maybeSendReports } from "./analytics.js";
 
 const CHUNK_COUNT = 2; // скан делится на 2 части (лимит подзапросов free-плана)
 const TICK_LOCK_TTL_MS = 10 * 60 * 1000; // анти-перекрытие крон: не чаще 1 тика
+
+// Хард-бюджет тика. Free-план Cloudflare душит тяжёлые крон-запуски: тик,
+// который не успел завершиться за отведённый wall-clock лимит, «молча» убивается
+// (в tail — ноль логов и exceededCpu). Поэтому каждый тик жёстко застрахован
+// возвратом "timeout" с громким логом, а тяжёлые шаги (LLM/рендер) получают свои
+// короткие бюджеты с фолбэком на правила / JS-рендер, чтобы тик почти всегда
+// укладывался в бюджет и «не дожимался» там.
+const TICK_BUDGET_MS = 26000;
+const LLM_BUDGET_MS = 8000;
+const RENDER_BUDGET_MS = 7000;
+const SCAN_BUDGET_MS = 16000;
+
+// Запускает promise с жёстким бюджетом: по истечении ms реджектит (промис при
+// этом продолжает жить в фоне, но результат уже никому не нужен — тик не ждёт).
+function bounded(ms, label, promise) {
+  let timer;
+  return new Promise((resolve, reject) => {
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+    timer = setTimeout(() => {
+      reject(new Error(`${label} превысил бюджет ${ms}ms`));
+    }, ms);
+  });
+}
 
 // png в черновике хранится base64 (KV умеет только строки) — превращаем в байты.
 function decodePng(b64) {
@@ -88,6 +118,11 @@ export function currentWindow(minuteOfDay) {
   return NEWS_WINDOWS.find((w) => minuteOfDay >= w.start && minuteOfDay < w.end) || null;
 }
 
+// Текущее окно по динамическому расписанию (см. lib/schedule.js).
+export async function dynamicCurrentWindow(env, minuteOfDay) {
+  return schedCurrentWindow(env, minuteOfDay);
+}
+
 // Сколько новостей/дайджестов уже опубликовано в этом окне сегодня. Дайджест и
 // одиночная новость занимают «вместимость» окна одинаково (cap=1 за окно).
 async function countInWindow(env, win, now) {
@@ -105,14 +140,17 @@ async function countInWindow(env, win, now) {
 }
 
 // Следующий свободный слот для поста (epoch ms).
-// Строгое расписание: один пост в начале окна. Окна — дайджесты 3-5 новостей:
-// 09:00, 13:00, 18:00 МСК. Без рандома внутри окна.
+// Строгое расписание: один пост в начале окна. Окна по умолчанию — дайджесты
+// 3-5 новостей: 09:00, 13:00, 18:00 МСК. Адаптивное расписание (lib/schedule.js)
+// может добавить или убрать слоты по охватам — здесь учитываются динамические
+// окна. Без рандома внутри окна.
 export async function nextFreeSlot(env, now = new Date()) {
   const nowMs = now.getTime();
+  const wins = await getWindows(env);
   for (let dayOffset = 0; dayOffset < 8; dayOffset++) {
     const t = new Date(nowMs + dayOffset * 86400000);
     const m2 = mskNow(t);
-    for (const w of NEWS_WINDOWS) {
+    for (const w of wins) {
       const slot = mskToUtcMs(m2.dow, w.start, new Date(t));
       if (slot < nowMs) continue; // слот уже прошёл
       const used = await countInWindow(env, w, new Date(slot));
@@ -183,10 +221,14 @@ export async function publishPackage(env, pkg, dry, target = "all") {
     let vkErr = null;
     let vkPost = null;
     let vkAttach = null;
+    let tgMessageId = null;
+    let tgDigestMessageId = null;
     if (mode !== "vk") {
       try {
-        await publishToTelegram(env, pkg, dry);
+        const tgRes = await publishToTelegram(env, pkg, dry);
         tgOk = true;
+        tgMessageId = tgRes && tgRes.message_id;
+        tgDigestMessageId = tgRes && tgRes.digest_message_id;
       } catch (e) {
         tgErr = e.message;
       }
@@ -224,9 +266,24 @@ export async function publishPackage(env, pkg, dry, target = "all") {
       vk_ok: vkOk,
       vk_post_id: vkPost,
       vk_attachment: vkAttach,
+      tg_message_id: tgMessageId,
+      tg_digest_message_id: tgDigestMessageId,
       tg_err: tgErr || null,
       vk_err: vkErr || null,
       target: mode,
+      // Атрибуты для статистики: схема мошенничества / жанр / тема / провайдер.
+      scheme_id: (pkg.data && pkg.data.scheme_id) || pkg.scheme_id || null,
+      style_id: (pkg.data && pkg.data.style_id) || pkg.style_id || null,
+      topic_id: (pkg.data && pkg.data.topic_id) || pkg.topic_id || null,
+      llm_provider: (pkg.data && pkg.data.llm_provider) || pkg.llm_provider || null,
+      // Контекст для следующего поста: сетка и типы карточек предыдущего,
+      // чтобы LLM не повторял layout и не клеил подряд одинаковые посты.
+      card_types: (pkg.data && pkg.data.cards && pkg.data.cards.length)
+        ? pkg.data.cards.map((c) => c && c.type || "stat").slice(0, 4)
+        : [],
+      layout: (pkg.data && pkg.data.cards && pkg.data.cards.length)
+        ? pkg.data.cards.map((c) => c && c.type || "stat").slice(0, 4).join("-")
+        : "",
     });
     return { tgOk, vkOk, vkPost };
   }
@@ -399,6 +456,10 @@ async function autoDeferDrafts(env, state, now = new Date()) {
       scheduled_for: slot,
       created_at: new Date().toISOString(),
       from_admin: false,
+      scheme_id: d.scheme_id || null,
+      style_id: d.style_id || null,
+      topic_id: d.topic_id || null,
+      llm_provider: d.llm_provider || null,
     });
     const when = fmtTime(new Date(slot).toISOString());
     try {
@@ -410,6 +471,161 @@ async function autoDeferDrafts(env, state, now = new Date()) {
       );
     } catch (e) { /* ignore */ }
   }
+}
+
+// ---------- одиночные новости по окнам (1 новость = 1 пост) ----------
+
+// Топ-1 свежайший кандидат для одиночного поста (pickDigestItems(1) уже сделал
+// сортировку по свежести + буст темы). Пусто — новость не выйдет.
+async function pickSingleItem(env) {
+  const items = await pickDigestItems(env, 1);
+  return items[0] || null;
+}
+
+// Бюджетная сборка карточки: текст через LLM (или правила при недоступности/
+// перерасходе бюджета), картинка через рендер-сервис (или JS-фолбэк). Ничего
+// не публикует и не потребляет — только готовит. Возвращает pkg или null.
+async function finalizeNewsPkg(env, cand, opts) {
+  const { slug, date, slot } = opts;
+  const link = cand.link || "";
+  const source = sourceDomain(link) || cand.source || "";
+  const src = String(cand.text || cand.title || "");
+
+  let data = null;
+  try {
+    data = await bounded(LLM_BUDGET_MS, "[scheduler] LLM",
+      generatePostData(src, env, { link, source, guid: cand.guid || "" }));
+  } catch (e) {
+    console.log("[scheduler] LLM превысил бюджет, использую правила:", e.message);
+  }
+  if (!data) data = generateByRules(src, { link, source });
+
+  let b64 = "";
+  try {
+    const bytes = await bounded(RENDER_BUDGET_MS, "[scheduler] render",
+      renderCardBytes(env, data, { link, source }));
+    if (bytes && bytes.length > 100) b64 = bytesToBase64(bytes);
+  } catch (e) {
+    console.log("[scheduler] рендер превысил бюджет, JS-фолбэк:", e.message);
+  }
+  if (!b64) {
+    try {
+      const bytes = await renderCard(data, { format: "png" });
+      if (bytes && bytes.length > 100) b64 = bytesToBase64(bytes);
+    } catch (e) {
+      console.log("[scheduler] JS-рендер не сработал:", e.message);
+    }
+  }
+  if (!b64) return null;
+
+  const id = `n${date.replace(/-/g, "")}${slug}`;
+  return {
+    pkg: {
+      id,
+      kind: "news",
+      title: data.headline || cleanRssTitle(cand.title || ""),
+      caption: data.caption || "",
+      png: b64,
+      data,
+      link,
+      guid: cand.guid || id,
+      source,
+      tags: cand.tags || [],
+      items: cand.items || [],
+      scheduled_for: slot,
+      created_at: new Date().toISOString(),
+      from_admin: false,
+      window_slug: slug,
+      no_rereder: true,
+      scheme_id: data.scheme_id || null,
+      style_id: data.style_id || null,
+      topic_id: data.topic_id || null,
+      llm_provider: data.llm_provider || null,
+    },
+  };
+}
+
+// Автопосты ВКЛ: топ-1 кандидат активного окна -> одиночный пост на склад.
+// Окно занимается маркером — второй пост в то же окно не собирается.
+export async function assembleNewsPosts(env, now = new Date()) {
+  const msk = mskNow(now);
+  const made = [];
+  for (const w of await getWindows(env)) {
+    if (msk.minuteOfDay < w.start || msk.minuteOfDay >= w.end) continue;
+    if (await kv.getDigestDone(env, msk.date, w.slug)) continue;
+    const cand = await pickSingleItem(env);
+    if (!cand) continue;
+    const res = await finalizeNewsPkg(env, cand, {
+      slug: w.slug,
+      date: msk.date,
+      slot: mskToUtcMs(msk.dow, w.start, now),
+    });
+    if (!res) continue;
+    await kv.addStock(env, res.pkg);
+    await commitSingle(env, msk.date, w.slug, cand);
+    made.push(res.pkg.guid);
+    console.log("[scheduler] одиночная новость собрана:", res.pkg.title, "→", new Date(res.pkg.scheduled_for).toISOString());
+  }
+  return made;
+}
+
+// Потребляет топ-1 кандидата и ставит маркер окна — пост выйдет один раз.
+async function commitSingle(env, date, slug, cand) {
+  const rest = (await kv.getCandidates(env)).filter((c) => c.guid !== cand.guid);
+  await kv.setCandidates(env, rest);
+  await kv.setDigestDone(env, date, slug, { assembled_at: new Date().toISOString(), kind: "news", guid: cand.guid });
+}
+
+// Автопосты ВЫКЛ: вместо публикации админу приходит превью новости на одобрение
+// (кнопки 🌐/🔵/🟢/🔄/❌) — тот же контракт, что у дайджест-превью.
+async function sendNewsPreview(env, adminChat, pkg) {
+  const bytes = decodePng(pkg.png);
+  const sent = await sendCard(env, adminChat, bytes, pkg.caption, {
+    parse_mode: "HTML",
+    reply_markup: { inline_keyboard: approveButtons(pkg.id) },
+  });
+  await kv.saveDraft(env, {
+    id: pkg.id,
+    kind: "news",
+    status: "pending",
+    title: pkg.title,
+    caption: pkg.caption,
+    png: pkg.png,
+    link: pkg.link,
+    source: pkg.source,
+    guid: pkg.guid,
+    items: pkg.items,
+    admin_chat_id: adminChat,
+    preview_message_id: sent && sent.message_id,
+    created_at: new Date().toISOString(),
+    scheme_id: pkg.scheme_id,
+    style_id: pkg.style_id,
+    topic_id: pkg.topic_id,
+    llm_provider: pkg.llm_provider,
+  });
+}
+
+export async function assembleNewsDrafts(env, now = new Date()) {
+  const msk = mskNow(now);
+  const adminChat = env.TELEGRAM_ADMIN_CHAT_ID;
+  let sent = 0;
+  for (const w of await getWindows(env)) {
+    if (msk.minuteOfDay < w.start || msk.minuteOfDay >= w.end) continue;
+    if (await kv.getDigestDone(env, msk.date, w.slug)) continue;
+    const cand = await pickSingleItem(env);
+    if (!cand) continue;
+    const res = await finalizeNewsPkg(env, cand, {
+      slug: w.slug,
+      date: msk.date,
+      slot: mskToUtcMs(msk.dow, w.start, now),
+    });
+    if (!res) continue;
+    if (adminChat) await sendNewsPreview(env, adminChat, res.pkg);
+    await commitSingle(env, msk.date, w.slug, cand);
+    sent++;
+    console.log("[scheduler] превью новости админу:", res.pkg.title);
+  }
+  return sent;
 }
 
 // ---------- публикация из склада по слотам ----------
@@ -433,7 +649,7 @@ async function publishDueStock(env, now = new Date()) {
     }
     if (pkg.kind === "news" || pkg.kind === "digest") {
       const msk = mskNow(new Date(pkg.scheduled_for || now.getTime()));
-      const win = currentWindow(msk.minuteOfDay);
+      const win = await dynamicCurrentWindow(env, msk.minuteOfDay);
       if (win) {
         const used = await countInWindow(env, win, new Date(pkg.scheduled_for || now.getTime()));
         if (used >= win.cap) {
@@ -456,8 +672,9 @@ async function publishDueStock(env, now = new Date()) {
     // Свежая карточка в момент публикации: небо рисуется под реальное время
     // выхода поста (рендер-сервис считает МСК сам), а не под время генерации.
     // Формат — по настройке card_format (auto/gif/png); дайджест-обложка — PNG
-    // и без плашки цитаты (обычные новости).
-    if (!dry && pkg.data && pkg.kind !== "event") {
+    // и без плашки цитаты (обычные новости). Автопост из окна (no_rereder) уже
+    // несёт готовую карточку — не тратим тяжёлый рендер ещё раз на тике.
+    if (!dry && pkg.data && pkg.kind !== "event" && !pkg.no_rereder) {
       try {
         const fresh = await renderCardBytes(env, pkg.data, {
           link: pkg.link || "",
@@ -513,15 +730,35 @@ async function publishDueStock(env, now = new Date()) {
 // ---------- сборка дайджестов по окнам ----------
 
 // Свежих кандидатов на выпуск: не протухшие, свежайшие первыми, не больше
-// DIGEST_MAX_ITEMS. Пусто -> дайджест не выйдет (кандидаты могли прийти позже
-// в окне — маркер не ставим).
+// DIGEST_MAX_ITEMS. Приоритет темам, которые сейчас лучше всего залетают у
+// аудитории: вес темы-лидера (из статов) сдвигает кандидата вверх по свежести
+// (1 балл веса ~ 45 минут), чтобы выпуск «делал подобные» успешным постам.
+// Пусто -> дайджест не выйдет (кандидаты могли прийти позже в окне — маркер
+// не ставим).
 async function pickDigestItems(env, count) {
   const nowMs = Date.now();
   const list = ((await kv.getCandidates(env)) || []).filter((c) => !isStaleItem(c, nowMs));
-  list.sort((a, b) => digestFreshScore(b) - digestFreshScore(a));
-  return list.slice(0, count).map((c) => ({
-    ...c,
-    title: cleanRssTitle(c.title || ""),
+  let topicBoost = null;
+  try {
+    const { getContentWeights } = await import("./stats.js");
+    const cw = await getContentWeights(env);
+    if (cw && cw.topic && Object.keys(cw.topic).length) topicBoost = cw.topic;
+  } catch (e) { /* без буста тем */ }
+  const boostOf = (c) => {
+    if (!topicBoost) return 0;
+    try {
+      const t = mainTopic(String(c.title || "") + " " + String(c.text || c.excerpt || ""));
+      if (t && topicBoost[t.id]) return topicBoost[t.id];
+    } catch (e) { /* нет темы */ }
+    return 0;
+  };
+  const scored = list.map((c) => ({ c, fresh: digestFreshScore(c), boost: boostOf(c) }));
+  // Каждый балл веса темы ≈ 45 минут «свежести»: лидер темы обгоняет соседние
+  // по времени, но не переворачивает выпуск для старых кандидатов.
+  scored.sort((a, b) => (b.fresh + (b.boost || 0) * 45 * 60 * 1000) - (a.fresh + (a.boost || 0) * 45 * 60 * 1000));
+  return scored.slice(0, count).map((x) => ({
+    ...x.c,
+    title: cleanRssTitle(x.c.title || ""),
   }));
 }
 
@@ -557,6 +794,9 @@ async function finalizeDigestPkg(env, items, opts) {
     ],
     tier: "news",
     source: "TrustNode",
+    scheme_id: null,
+    style_id: "digest",
+    topic_id: "digest",
   };
 
   // Одна обложка на весь выпуск (рендер по данным пакета, пере-рисуется и в
@@ -630,7 +870,7 @@ async function commitDigest(env, date, win, items) {
 export async function assembleDigests(env, now = new Date()) {
   const msk = mskNow(now);
   const made = [];
-  for (const w of NEWS_WINDOWS) {
+  for (const w of await getWindows(env)) {
     if (msk.minuteOfDay < w.start || msk.minuteOfDay >= w.end) continue;
     const res = await buildDigestForWindow(env, w, now);
     if (!res) continue;
@@ -679,7 +919,7 @@ export async function assembleDigestDrafts(env, now = new Date()) {
   const msk = mskNow(now);
   const adminChat = env.TELEGRAM_ADMIN_CHAT_ID;
   let sent = 0;
-  for (const w of NEWS_WINDOWS) {
+  for (const w of await getWindows(env)) {
     if (msk.minuteOfDay < w.start || msk.minuteOfDay >= w.end) continue;
     const res = await buildDigestForWindow(env, w, now);
     if (!res) continue;
@@ -697,9 +937,10 @@ export async function assembleDigestDrafts(env, now = new Date()) {
 export async function sendDigestTestPreview(env) {
   const msk = mskNow();
   const now = new Date();
+  const wins = await getWindows(env);
   const win =
-    NEWS_WINDOWS.find((w) => msk.minuteOfDay >= w.start && msk.minuteOfDay < w.end) ||
-    NEWS_WINDOWS[0];
+    wins.find((w) => msk.minuteOfDay >= w.start && msk.minuteOfDay < w.end) ||
+    wins[0];
 
   const items = await pickDigestItems(env, DIGEST_MAX_ITEMS);
   if (!items.length) {
@@ -726,7 +967,7 @@ export async function sendDigestTestPreview(env) {
 // { ok: true } или { ok: false, reason }.
 export async function rebuildDigestPreview(env, draft) {
   const slug = String(draft.id || "").replace(/^dg\d{8}/, "");
-  const win = NEWS_WINDOWS.find((w) => w.slug === slug);
+  const win = windowBySlug(slug);
   const date = String(draft.guid || "").split(":")[1] || "";
   if (!win || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     return { ok: false, reason: "не распознан выпуск дайджеста" };
@@ -753,74 +994,152 @@ export async function rebuildDigestPreview(env, draft) {
 
 export async function tick(env, opts = {}) {
   const now = opts.now ? new Date(opts.now) : new Date();
+  const started = Date.now();
+  const marks = [];
+  const mark = (name, from) => marks.push(`${name}=${Date.now() - from}ms`);
+  let currentStep = "lock";
 
-  // Анти-перекрытие крон: Cloudflare не ждёт завершения предыдущего запуска,
-  // если крон раз в 5 минут «не успевает». Два параллельных тика читают одну и
-  // ту же очередь и могут опубликовать один пост дважды — KV-лок не даёт им
-  // бежать одновременно (TTL страхует от зависшего тика).
-  try {
-    if (env.BOT_KV) {
-      const raw = await env.BOT_KV.get("scheduler_lock");
-      let lock = null;
-      try { lock = raw ? JSON.parse(raw) : null; } catch (e) { lock = null; }
-      if (lock && Date.now() - lock.at < TICK_LOCK_TTL_MS) {
-        return "busy";
+  const run = async () => {
+    // Анти-перекрытие крон: Cloudflare не ждёт завершения предыдущего запуска,
+    // если крон раз в 5 минут «не успевает». Два параллельных тика читают одну
+    // и ту же очередь и могут опубликовать один пост дважды — KV-лок не даёт им
+    // бежать одновременно (TTL страхует от зависшего тика).
+    currentStep = "lock";
+    try {
+      if (env.BOT_KV) {
+        const raw = await env.BOT_KV.get("scheduler_lock");
+        let lock = null;
+        try { lock = raw ? JSON.parse(raw) : null; } catch (e) { lock = null; }
+        if (lock && Date.now() - lock.at < TICK_LOCK_TTL_MS) {
+          return "busy";
+        }
+        await env.BOT_KV.put("scheduler_lock", JSON.stringify({ at: Date.now() }), {
+          expirationTtl: Math.floor(TICK_LOCK_TTL_MS / 1000),
+        });
       }
-      await env.BOT_KV.put("scheduler_lock", JSON.stringify({ at: Date.now() }), {
-        expirationTtl: Math.floor(TICK_LOCK_TTL_MS / 1000),
-      });
+    } catch (e) {
+      console.log("[scheduler] lock error:", e.message);
     }
-  } catch (e) {
-    console.log("[scheduler] lock error:", e.message);
-  }
 
-  const state = await kv.loadState(env);
+    const state = await kv.loadState(env);
 
-  // 1. скан (часть лент) + дедуп + кандидаты в очередь
-  const offset = state.meta.scan_chunk || 0;
-  try {
-    await scanFeeds(env, offset, CHUNK_COUNT);
-  } catch (e) {
-    console.log("[scheduler] scan error:", e.message);
-  }
-  state.meta.scan_chunk = (offset + 1) % CHUNK_COUNT;
-
-  // 2. накопление кандидатов и сборка дайджестов по окнам.
-  // Автопостинг ВКЛ: выпуск (сводка 3-5 новостей + обложка) ложится на склад и
-  // уходит в TG+VK тем же тиком. ВЫКЛ: админу приходит дайджест-превью на
-  // одобрение. GitHub (workflow_dispatch) для автопостинга больше не нужен —
-  // остался только для ручных постов админа.
-  try {
-    const nowMs = now.getTime();
-    // выкидываем протухшие кандидаты, чтобы они не ждали выпуска до лучших времён
-    const candList = await kv.getCandidates(env);
-    const freshCands = candList.filter((c) => !isStaleItem(c, nowMs));
-    if (freshCands.length !== candList.length) await kv.setCandidates(env, freshCands);
-    if (await kv.getAutopost(env)) {
-      await assembleDigests(env, now);
-    } else {
-      await assembleDigestDrafts(env, now);
+    // 1. скан (часть лент) + дедуп + кандидаты в очередь
+    currentStep = "scan";
+    let t = Date.now();
+    const offset = state.meta.scan_chunk || 0;
+    let scanFound = 0;
+    try {
+      scanFound = await bounded(SCAN_BUDGET_MS, "[scheduler] scan",
+        scanFeeds(env, offset, CHUNK_COUNT).then((list) => list.length));
+    } catch (e) {
+      console.log("[scheduler] scan ошибка/превышен бюджет:", e.message);
     }
-  } catch (e) {
-    console.log("[scheduler] digest error:", e.message);
+    state.meta.scan_chunk = (offset + 1) % CHUNK_COUNT;
+    state.meta.last_scan = {
+      at: new Date().toISOString(),
+      chunk: offset,
+      found: scanFound,
+      took_ms: Date.now() - t,
+    };
+    mark("scan", t);
+
+    // 2. накопление кандидатов и сборка одиночных постов по окнам.
+    // Автопостинг ВКЛ: топ-1 свежая новость активного окна -> карточка на склад,
+    // публикуется тем же тиком (слот уже наступил). ВЫКЛ: админу приходит превью
+    // на одобрение. Многотемные дайджесты остались только в ручном режиме
+    // (/digesttest, пересборка, approve).
+    currentStep = "assemble";
+    t = Date.now();
+    try {
+      const nowMs = now.getTime();
+      // выкидываем протухшие кандидаты, чтобы они не ждали выпуска до лучших времён
+      const candList = await kv.getCandidates(env);
+      const freshCands = candList.filter((c) => !isStaleItem(c, nowMs));
+      if (freshCands.length !== candList.length) await kv.setCandidates(env, freshCands);
+      if (await kv.getAutopost(env)) {
+        await assembleNewsPosts(env, now);
+      } else {
+        await assembleNewsDrafts(env, now);
+      }
+    } catch (e) {
+      console.log("[scheduler] assemble error:", e.message);
+    }
+    mark("assemble", t);
+
+    // 5. авто-отложка черновиков (нет ответа админа 30 мин)
+    currentStep = "defer";
+    t = Date.now();
+    try {
+      await autoDeferDrafts(env, state, now);
+    } catch (e) {
+      console.log("[scheduler] defer error:", e.message);
+    }
+    mark("defer", t);
+
+    // 6. публикация из склада
+    currentStep = "publish";
+    t = Date.now();
+    try {
+      await publishDueStock(env, now);
+    } catch (e) {
+      console.log("[scheduler] publish error:", e.message);
+    }
+    mark("publish", t);
+
+    // 6b. догонка недостающей платформы (строгий пул VK/TG)
+    currentStep = "vkretry";
+    t = Date.now();
+    try {
+      await processVkRetries(env);
+    } catch (e) {
+      console.log("[scheduler] vk-retry error:", e.message);
+    }
+    mark("vkretry", t);
+
+    currentStep = "save";
+    t = Date.now();
+    await kv.saveState(env, state);
+    mark("save", t);
+
+    // 7. отчёты студии: вечерняя сводка (20:00), отчёт за день (23:30),
+    // недельная (вс 20:30), месячная (1-го 20:30). Маркеры анти-дубля.
+    currentStep = "reports";
+    t = Date.now();
+    try {
+      await maybeSendReports(env, { now });
+    } catch (e) {
+      console.log("[scheduler] reports error:", e.message);
+    }
+    mark("reports", t);
+
+    console.log("[scheduler] tick:", marks.join(" "),
+      `cands=${((await kv.getCandidates(env)) || []).length}`,
+      `stock=${((await kv.getStock(env)) || []).length}`,
+      `total=${Date.now() - started}ms`);
+    return "ok";
+  };
+
+  // Хард-бюджет: даже если что-то внешнее зависло, тик обязан вернуться до
+  // того, как free-план убьёт его молча. Возвращаем "timeout" с логом и
+  // снимаем lock, чтобы следующий крон мог идти дальше.
+  const TIMEOUT = Symbol("tick-timeout");
+  let timer;
+  const timeoutPromise = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(TIMEOUT), TICK_BUDGET_MS);
+  });
+  const result = await Promise.race([run(), timeoutPromise]);
+  clearTimeout(timer);
+  if (result === TIMEOUT) {
+    console.log(`[scheduler] tick HARD BUDGET (${TICK_BUDGET_MS}ms) превышен на шаге "${currentStep}", lock снимаю`);
+    try {
+      if (env.BOT_KV) await env.BOT_KV.delete("scheduler_lock");
+    } catch (e) { /* ignore */ }
+    try {
+      await notifyAdmin(env,
+        `⚠️ <b>Тик не успел завершиться</b> (бюджет ${TICK_BUDGET_MS} мс, шаг «${currentStep}»).\n` +
+        `Слотов/публикаций сегодня может не быть — следите за логами (<code>wrangler tail</code>).`);
+    } catch (e) { /* ignore */ }
+    return "timeout";
   }
-
-  // 5. авто-отложка черновиков (нет ответа админа 30 мин)
-  try {
-    await autoDeferDrafts(env, state, now);
-  } catch (e) {
-    console.log("[scheduler] defer error:", e.message);
-  }
-
-  // 6. публикация из склада
-  try {
-    await publishDueStock(env, now);
-  } catch (e) {
-    console.log("[scheduler] publish error:", e.message);
-  }
-
-  // 6b. догонка недостающей платформы (строгий пул VK/TG)
-
-  await kv.saveState(env, state);
-  return "ok";
+  return result;
 }

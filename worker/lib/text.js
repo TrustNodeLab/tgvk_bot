@@ -53,8 +53,17 @@ export function fitCaption(caption, limit = TG_CAPTION_LIMIT) {
       body = body.slice(0, blockStart).trimEnd();
     }
   }
-  const budget = limit - footer.length - 2; // -2 разделитель "\n\n"
-  if (budget <= 30) return footer ? "\n\n" + footer : caption.slice(0, limit - 1) + "…";
+  // Строку «Источник: <a…>» тоже бережём: она завершает пост и терять её нельзя.
+  // Отделяем её от тела и прикрепляем к футеру — при нехватке места режется
+  // середина (абзацы), а не подпись источника.
+  let source = "";
+  const srcMatch = body.match(/\n\s*\n(Источник:\s*<a[^>]*>.*)$/s);
+  if (srcMatch) {
+    source = srcMatch[1];
+    body = body.slice(0, srcMatch.index).trimEnd();
+  }
+  const budget = limit - footer.length - source.length - 2; // -2 разделитель "\n\n"
+  if (budget <= 30) return footer ? "\n\n" + (source ? source + "\n\n" + footer : footer) : caption.slice(0, limit - 1) + "…";
   // Режем по абзацам (двойной перенос), а не по символу — HTML-теги (<a href>, <b>)
   // целиком сохраняются, ссылки не рвутся. Неуместившиеся абзацы отбрасываются;
   // многоточие НЕ ставим — перед футером оно выглядит как обрыв по вине бота.
@@ -72,7 +81,8 @@ export function fitCaption(caption, limit = TG_CAPTION_LIMIT) {
     out = candidate;
   }
   if (!out.trim()) out = body.slice(0, budget - 1).trimEnd();
-  return (out + "\n\n" + footer).trimEnd().slice(0, limit);
+  const tail = source ? "\n\n" + source + "\n\n" + footer : "\n\n" + footer;
+  return (out + tail).trimEnd().slice(0, limit);
 }
 
 // Простое экранирование HTML для Telegram parse_mode=HTML.

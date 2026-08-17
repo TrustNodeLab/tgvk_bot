@@ -7,6 +7,10 @@ import { getCandidates, addCandidate, loadState } from "./kv.js";
 
 const REQUEST_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; TrustNodeBot/1.0)" };
 
+// Сколько лент опрашиваем параллельно за один заход (потолок — лимит
+// подзапросов free-плана; при 4 пачками закрываем и 37 лент за 3 захода).
+const MAX_FEEDS_PARALLEL = 4;
+
 // Многие русские RSS-ленты отдают windows-1251 и не указывают charset в заголовке;
 // res.text() в Workers всегда считает UTF-8 — из-за этого выходили «кракозябры».
 function decodeFeedBytes(bytes) {
@@ -62,6 +66,7 @@ async function fetchJson(env, path) {
         Accept: "application/vnd.github+json",
         "User-Agent": "tgvk-bot-webhook",
       },
+      signal: AbortSignal.timeout(15000),
     }
   );
   if (!res.ok) return null;
@@ -133,7 +138,7 @@ export function isRussianText(text) {
 
 export async function fetchArticleExcerpt(url, maxChars = 2500) {
   try {
-    const res = await fetch(url, { headers: REQUEST_HEADERS });
+    const res = await fetch(url, { headers: REQUEST_HEADERS, signal: AbortSignal.timeout(10000) });
     if (!res.ok) return "";
     const html = await res.text();
     const pRe = /<p[^>]*>(.*?)<\/p>/gis;
@@ -176,24 +181,38 @@ export async function scanFeeds(env, chunkOffset = 0, chunkCount = 2) {
   const raw = [];
   const fetched = [];
 
-  for (const feedUrl of slice) {
-    try {
-      const res = await fetch(feedUrl, { headers: REQUEST_HEADERS });
-      if (!res.ok) continue;
-      const xml = decodeFeedBytes(new Uint8Array(await res.arrayBuffer()));
-      for (const item of parseRSS(xml)) {
-        if (seenGuids.has(item.guid) || queueGuids.has(item.guid)) continue;
-        const pd = parsePubDate(item.pub_date);
-        if (!pd || now - pd.getTime() > MAX_AGE_MS) continue;
-        const haystack = item.title + " " + item.description;
-        if (!hasAny(haystack, keywords)) continue;
-        if (hasAny(haystack, exclude)) continue;
-        if (isPoliticalText(haystack, politicsKeywords, keywords)) continue;
-        if (!isRussianText(haystack)) continue;
-        raw.push(item);
+  // Фиды тянутся параллельно (малыми группами), чтобы очередь десятка медленных
+  // лент не съедала бюджет тика последовательными ожиданиями (10 с × N). Каждая
+  // лента ограничена таймаутом, общая пачка — SCAN_STEP_BUDGET_MS.
+  const STEP_BUDGET_MS = 18000;
+  const stepStarted = Date.now();
+  for (let i = 0; i < slice.length; i += MAX_FEEDS_PARALLEL) {
+    if (Date.now() - stepStarted > STEP_BUDGET_MS) break;
+    const batch = slice.slice(i, i + MAX_FEEDS_PARALLEL);
+    const results = await Promise.allSettled(
+      batch.map(async (feedUrl) => {
+        const res = await fetch(feedUrl, { headers: REQUEST_HEADERS, signal: AbortSignal.timeout(10000) });
+        if (!res.ok) return [];
+        const xml = decodeFeedBytes(new Uint8Array(await res.arrayBuffer()));
+        const items = [];
+        for (const item of parseRSS(xml)) {
+          if (seenGuids.has(item.guid) || queueGuids.has(item.guid)) continue;
+          const pd = parsePubDate(item.pub_date);
+          if (!pd || now - pd.getTime() > MAX_AGE_MS) continue;
+          const haystack = item.title + " " + item.description;
+          if (!hasAny(haystack, keywords)) continue;
+          if (hasAny(haystack, exclude)) continue;
+          if (isPoliticalText(haystack, politicsKeywords, keywords)) continue;
+          if (!isRussianText(haystack)) continue;
+          items.push(item);
+        }
+        return items;
+      })
+    );
+    for (const r of results) {
+      if (r.status === "fulfilled") {
+        for (const item of r.value) raw.push(item);
       }
-    } catch (e) {
-      /* feed error: не роняем весь скан */
     }
   }
 
