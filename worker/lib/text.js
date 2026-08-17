@@ -1,7 +1,7 @@
 // Обработка текста поста: нормализация блоков, подгонка под лимит caption TG,
 // футер с логотипом. Портировано из bot/main.py.
 
-import { POST_FOOTER, TG_CAPTION_LIMIT } from "./config.js";
+import { POST_FOOTER, TG_CAPTION_LIMIT, MSK_OFFSET_MIN } from "./config.js";
 
 const BLOCK_HEADS = ["🔍", "📌", "⚠", "🛡", "💡"];
 
@@ -122,12 +122,15 @@ export function stripMarkdown(src) {
     .trim();
 }
 
-// Форматирование timestamp для сводок.
+// Форматирование timestamp для сводок. Все метки в боте — UTC (ISO),
+// но админу показываем всегда в МСК: на воркере (UTC) локальные геттеры
+// сдвигали время на −3 часа и «следующий слот 18:00» выглядел как «15:00».
 export function fmtTime(iso, withYear = false) {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return String(iso);
+  const msk = new Date(d.getTime() + MSK_OFFSET_MIN * 60 * 1000);
   const p = (n) => String(n).padStart(2, "0");
-  const date = `${p(d.getDate())}.${p(d.getMonth() + 1)}${withYear ? "." + d.getFullYear() : ""}`;
-  return `${date} ${p(d.getHours())}:${p(d.getMinutes())}`;
+  const date = `${p(msk.getUTCDate())}.${p(msk.getUTCMonth() + 1)}${withYear ? "." + msk.getUTCFullYear() : ""}`;
+  return `${date} ${p(msk.getUTCHours())}:${p(msk.getUTCMinutes())}`;
 }
