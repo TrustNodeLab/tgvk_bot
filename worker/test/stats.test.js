@@ -89,7 +89,7 @@ test("recordReaction: неизвестный message_id не пишет", async 
   assert.equal(ok, false, "нет поста — нет записи");
 });
 
-test("collectVkMetrics: опрашивает wall.getById и пишет views/likes", async () => {
+test("collectVkMetrics: опрашивает wall.get и пишет views/likes", async () => {
   const { collectVkMetrics } = await import(STATS);
   const env = makeEnv();
   const stock = await import(KV);
@@ -100,9 +100,12 @@ test("collectVkMetrics: опрашивает wall.getById и пишет views/li
     calls.url = String(url);
     return new Response(
       JSON.stringify({
-        response: [
-          { id: 42, views: { count: 123 }, likes: { count: 7 }, reposts: { count: 1 }, comments: { count: 2 } },
-        ],
+        response: {
+          items: [
+            { id: 42, views: { count: 123 }, likes: { count: 7 }, reposts: { count: 1 }, comments: { count: 2 } },
+          ],
+          count: 1,
+        },
       }),
       { status: 200, headers: { "Content-Type": "application/json" } }
     );

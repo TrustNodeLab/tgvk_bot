@@ -60,7 +60,7 @@ export async function vkCall(env, method, params = {}) {
       throw new Error("VK access token недействителен или истёк (error 5)");
     }
     if (code === 27) {
-      throw new Error("VK access token не имеет необходимых прав для загрузки фото/публикации (error 27)");
+      throw new Error(`VK access token не имеет необходимых прав для загрузки фото/публикации (error 27, ${msg})`);
     }
     if (code === 9 || code === 6) {
       throw new Error(`VK rate limit (error ${code}): ${msg}`);

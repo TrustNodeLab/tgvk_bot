@@ -56,8 +56,10 @@ export async function recordReaction(env, reaction) {
   return true;
 }
 
-// VK: views/likes/reposts/comments по vk_post_id, батчами wall.getById.
-// Обновляет entry.stats.vk. Повторный замер — не чаще VK_METRICS_TTL_MS.
+// VK: views/likes/reposts/comments по vk_post_id.
+// wall.getById недоступен групповому токену (error 27), поэтому читаем стену
+// wall.get (extended=1) одним запросом — там есть views/likes/reposts/comments
+// по каждому посту группы. Повторный замер — не чаще VK_METRICS_TTL_MS.
 export async function collectVkMetrics(env) {
   const log = await kv.getLog(env);
   const now = Date.now();
@@ -69,16 +71,19 @@ export async function collectVkMetrics(env) {
   const batch = due.slice(0, MAX_METRICS_PER_TICK);
   if (!batch.length) return { fetched: 0, pending: 0 };
 
-  // wall.getById принимает до 100 постов одной строкой: -<ownerId>_<postId>,…
-  const posts = batch
-    .map((e) => `-${env.VK_GROUP_ID}_${e.vk_post_id}`)
-    .join(",");
-
   let fetched = 0;
   try {
-    const list = await vkCall(env, "wall.getById", { posts, v: "5.199" });
+    // wall.get отдаёт до 100 постов группы со стены, extended=1 добавляет
+    // views/likes/reposts/comments. Если постов в стене больше 100 — хватит
+    // самых свежих; наш бот постит 3-5 раз в день, так что хватает с запасом.
+    const list = await vkCall(env, "wall.get", {
+      owner_id: -env.VK_GROUP_ID,
+      count: 100,
+      extended: 1,
+    });
+    const items = Array.isArray(list) ? list : (list && list.items) || [];
     const map = new Map();
-    for (const p of Array.isArray(list) ? list : []) {
+    for (const p of items) {
       map.set(String(p.id), p);
     }
     for (const e of batch) {
@@ -100,7 +105,7 @@ export async function collectVkMetrics(env) {
       fetched++;
     }
   } catch (e) {
-    console.log("[stats] wall.getById недоступен:", e.message);
+    console.log("[stats] VK метрики недоступны:", e.message);
   }
   return { fetched, pending: due.length - batch.length };
 }
