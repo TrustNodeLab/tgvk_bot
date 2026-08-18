@@ -89,34 +89,36 @@ test("recordReaction: неизвестный message_id не пишет", async 
   assert.equal(ok, false, "нет поста — нет записи");
 });
 
-test("collectVkMetrics: опрашивает wall.get и пишет views/likes", async () => {
+test("collectVkMetrics: опрашивает stats.getPostReach и пишет охват/лайки", async () => {
   const { collectVkMetrics } = await import(STATS);
   const env = makeEnv();
   const stock = await import(KV);
   await stock.addLog(env, { id: "v1", vk_post_id: 42, tg_ok: true, vk_ok: true });
-  const calls = {};
+  const calls = [];
   const orig = globalThis.fetch;
   globalThis.fetch = async (url) => {
-    calls.url = String(url);
+    calls.push(String(url));
+    if (String(url).includes("groups.getTokenPermissions")) {
+      return new Response(JSON.stringify({ response: { mask: 134623237, permissions: [{ name: "wall", setting: 8192 }] } }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    assert.ok(String(url).includes("stats.getPostReach"), "вызов stats.getPostReach");
     return new Response(
       JSON.stringify({
-        response: {
-          items: [
-            { id: 42, views: { count: 123 }, likes: { count: 7 }, reposts: { count: 1 }, comments: { count: 2 } },
-          ],
-          count: 1,
-        },
+        response: [{ post_id: 42, reach_total: 456, reach_subscribers: 400, like_add: 7 }],
       }),
       { status: 200, headers: { "Content-Type": "application/json" } }
     );
   };
   try {
     const res = await collectVkMetrics(env);
-    assert.ok(calls.url.includes("api.vk.com"), "вызов VK API");
+    assert.ok(calls.some((u) => u.includes("api.vk.com")), "вызов VK API");
     assert.equal(res.fetched, 1, "один пост обработан");
     const log = await stock.getLog(env);
-    assert.equal(log[0].stats.vk.views, 123, "просмотры");
-    assert.equal(log[0].stats.vk.likes, 7, "лайки");
+    assert.equal(log[0].stats.vk.views, 456, "охват как views");
+    assert.equal(log[0].stats.vk.likes, 7, "лайки из reach-карты");
   } finally {
     globalThis.fetch = orig;
   }

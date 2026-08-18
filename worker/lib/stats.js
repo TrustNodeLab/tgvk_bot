@@ -57,9 +57,9 @@ export async function recordReaction(env, reaction) {
 }
 
 // VK: views/likes/reposts/comments по vk_post_id.
-// wall.getById недоступен групповому токену (error 27), поэтому читаем стену
-// wall.get (extended=1) одним запросом — там есть views/likes/reposts/comments
-// по каждому посту группы. Повторный замер — не чаще VK_METRICS_TTL_MS.
+// wall.getById И wall.get недоступны групповому токену (error 27 "unavailable
+// with group auth"), поэтому пытаемся stats.getPostReach (статистика записи,
+// один пост на вызов). Повторный замер — не чаще VK_METRICS_TTL_MS.
 export async function collectVkMetrics(env) {
   const log = await kv.getLog(env);
   const now = Date.now();
@@ -71,32 +71,43 @@ export async function collectVkMetrics(env) {
   const batch = due.slice(0, MAX_METRICS_PER_TICK);
   if (!batch.length) return { fetched: 0, pending: 0 };
 
+  // Диагностика прав токена — печатаем маску, чтобы понять, что групповому
+  // ключу реально доступно (одна строка, один раз за тик).
+  try {
+    const tp = await vkCall(env, "groups.getTokenPermissions");
+    const perms = (tp.permissions || [])
+      .map((p) => `${p.name}=${p.setting}`)
+      .join(",");
+    console.log(`[stats] vk token mask=${tp.mask} perms=${perms}`);
+  } catch (e) {
+    console.log("[stats] getTokenPermissions:", e.message);
+  }
+
   let fetched = 0;
   try {
-    // wall.get отдаёт до 100 постов группы со стены, extended=1 добавляет
-    // views/likes/reposts/comments. Если постов в стене больше 100 — хватит
-    // самых свежих; наш бот постит 3-5 раз в день, так что хватает с запасом.
-    const list = await vkCall(env, "wall.get", {
-      owner_id: -env.VK_GROUP_ID,
-      count: 100,
-      extended: 1,
-    });
-    const items = Array.isArray(list) ? list : (list && list.items) || [];
-    const map = new Map();
-    for (const p of items) {
-      map.set(String(p.id), p);
-    }
+    // stats.getPostReach даёт охват одного поста (reach/videos/likes-карта).
+    // Берём первые посты батча последовательно, чтобы не упереться в лимит
+    // запросов/сек; каждый вызов лёгкий, в стену ходит VK.
     for (const e of batch) {
-      const p = map.get(String(e.vk_post_id));
-      if (!p) continue;
+      const r = await vkCall(env, "stats.getPostReach", {
+        owner_id: -env.VK_GROUP_ID,
+        post_id: e.vk_post_id,
+      });
+      const stats = Array.isArray(r) ? r[0] : r && r.items ? r.items[0] : r;
+      if (!stats) continue;
+      // В ответе нет сырых счётчиков лайков/репостов — есть reach (охват) и
+      // карта реакций (like_add). Сохраняем то, что есть: охват как views,
+      // лайки из reach-карты; лайки/репосты из wall-объекта тут недоступны.
+      const likes = stats.like_add != null ? stats.like_add : 0;
       const patch = {
         stats: {
           ...(e.stats || {}),
           vk: {
-            views: (p.views && p.views.count) || 0,
-            likes: (p.likes && p.likes.count) || 0,
-            reposts: (p.reposts && p.reposts.count) || 0,
-            comments: (p.comments && p.comments.count) || 0,
+            views: stats.reach_total != null ? stats.reach_total : 0,
+            likes: likes,
+            reposts: 0,
+            comments: 0,
+            reach: stats.reach_total != null ? stats.reach_total : null,
             at: now,
           },
         },
