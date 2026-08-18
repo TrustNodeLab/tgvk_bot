@@ -89,36 +89,45 @@ test("recordReaction: неизвестный message_id не пишет", async 
   assert.equal(ok, false, "нет поста — нет записи");
 });
 
-test("collectVkMetrics: опрашивает stats.getPostReach и пишет охват/лайки", async () => {
+test("collectVkMetrics: при отсутствии VK_USER_TOKEN логирует причину и не падает", async () => {
   const { collectVkMetrics } = await import(STATS);
   const env = makeEnv();
+  delete env.VK_USER_TOKEN;
   const stock = await import(KV);
   await stock.addLog(env, { id: "v1", vk_post_id: 42, tg_ok: true, vk_ok: true });
-  const calls = [];
+  const res = await collectVkMetrics(env);
+  assert.equal(res.fetched, 0, "ничего не собрано");
+  assert.equal(res.pending, 1, "пост в очереди");
+});
+
+test("collectVkMetrics: опрашивает wall.getById через VK_USER_TOKEN и пишет views/likes", async () => {
+  const { collectVkMetrics } = await import(STATS);
+  const env = makeEnv();
+  env.VK_USER_TOKEN = "user-token";
+  const stock = await import(KV);
+  await stock.addLog(env, { id: "v1", vk_post_id: 42, tg_ok: true, vk_ok: true });
+  const calls = { urls: [], bodies: [] };
   const orig = globalThis.fetch;
-  globalThis.fetch = async (url) => {
-    calls.push(String(url));
-    if (String(url).includes("groups.getTokenPermissions")) {
-      return new Response(JSON.stringify({ response: { mask: 134623237, permissions: [{ name: "wall", setting: 8192 }] } }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-    assert.ok(String(url).includes("stats.getPostReach"), "вызов stats.getPostReach");
+  globalThis.fetch = async (url, init) => {
+    calls.urls.push(String(url));
+    calls.bodies.push(String(init && init.body));
     return new Response(
       JSON.stringify({
-        response: [{ post_id: 42, reach_total: 456, reach_subscribers: 400, like_add: 7 }],
+        response: [
+          { id: 42, views: { count: 123 }, likes: { count: 7 }, reposts: { count: 1 }, comments: { count: 2 } },
+        ],
       }),
       { status: 200, headers: { "Content-Type": "application/json" } }
     );
   };
   try {
     const res = await collectVkMetrics(env);
-    assert.ok(calls.some((u) => u.includes("api.vk.com")), "вызов VK API");
+    assert.ok(calls.urls.some((u) => u.includes("api.vk.com")), "вызов VK API");
+    assert.ok(calls.bodies.some((b) => b.includes("user-token")), "запрос идёт с user-токеном");
     assert.equal(res.fetched, 1, "один пост обработан");
     const log = await stock.getLog(env);
-    assert.equal(log[0].stats.vk.views, 456, "охват как views");
-    assert.equal(log[0].stats.vk.likes, 7, "лайки из reach-карты");
+    assert.equal(log[0].stats.vk.views, 123, "просмотры");
+    assert.equal(log[0].stats.vk.likes, 7, "лайки");
   } finally {
     globalThis.fetch = orig;
   }
