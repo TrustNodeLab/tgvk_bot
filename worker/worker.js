@@ -1362,19 +1362,13 @@ async function handleCommand(env, state, chatId, text) {
       const lines = Object.entries(byKind)
         .map(([k, v]) => `• ${KIND_LABELS[k] || k}: ${v}`)
         .join("\n");
-      // Вовлечённость: две отдельные сводки — VK (просмотры/лайки/репосты/
-      // комменты по wall.getById) и TG (реакции из webhook message_reaction).
+      // Вовлечённость: TG-реакции из webhook message_reaction. VK-метрики не
+      // собираются — групповой токен не читает стену (wall.getById/wall.get/
+      // stats.* недоступны ключу сообщества, error 27), поэтому блок опущен.
       let engagement = "";
       try {
         const agg = aggregateStats(log);
         const fmt = (b) => (b ? `${b.key}: ${b.posts} пост., ~${b.avg_views} просм., ${b.reactions} реакций` : "—");
-        // VK-метрики.
-        const vkPosts = (log || []).filter((e) => e && e.stats && e.stats.vk && e.stats.vk.views > 0);
-        const vkViews = vkPosts.reduce((a, e) => a + (e.stats.vk.views || 0), 0);
-        const vkLikes = vkPosts.reduce((a, e) => a + (e.stats.vk.likes || 0), 0);
-        const vkReposts = vkPosts.reduce((a, e) => a + (e.stats.vk.reposts || 0), 0);
-        const vkComments = vkPosts.reduce((a, e) => a + (e.stats.vk.comments || 0), 0);
-        const vkAvg = vkPosts.length ? Math.round(vkViews / vkPosts.length) : 0;
         // TG-метрики (реакции).
         const tgPosts = (log || []).filter((e) => e && e.stats && e.stats.reactions_total > 0);
         const tgReactions = tgPosts.reduce((a, e) => a + (e.stats.reactions_total || 0), 0);
@@ -1391,10 +1385,6 @@ async function handleCommand(env, state, chatId, text) {
         const bestStyle = agg.style[0], bestScheme = agg.scheme[0], bestTopic = agg.topic[0];
         engagement =
           "\n\n📊 <b>Вовлечённость</b>\n" +
-          "🔵 <b>ВКонтакте</b>\n" +
-          `Постов с охватом: <b>${vkPosts.length}/${log.length}</b>\n` +
-          `Просмотров: <b>${vkViews}</b> (в среднем ~${vkAvg} на пост)\n` +
-          `Лайков: <b>${vkLikes}</b> · Репостов: <b>${vkReposts}</b> · Комментариев: <b>${vkComments}</b>\n` +
           "🟢 <b>Telegram</b>\n" +
           `Постов с реакциями: <b>${tgPosts.length}/${log.length}</b>\n` +
           `Реакций всего: <b>${tgReactions}</b> · Топ: ${topReactionLine}\n` +
