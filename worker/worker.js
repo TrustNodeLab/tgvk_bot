@@ -1812,8 +1812,12 @@ async function handleUpdate(env, update) {
   } else if (update.message_reaction) {
     // Реакции на посты канала — источник метрик вовлечённости (TG-сторона).
     // Фиксируются в publish_log по tg_message_id для агрегации в /stats.
+    const mr = update.message_reaction || {};
+    const counts = (mr.new_reaction || []).length - (mr.old_reaction || []).length;
+    console.log(`[webhook] message_reaction: msg=${mr.message_id} delta=${counts}`);
     try {
-      await recordReaction(env, update.message_reaction);
+      const ok = await recordReaction(env, update.message_reaction);
+      console.log(`[webhook] recordReaction msg=${mr.message_id} found=${ok}`);
     } catch (e) {
       console.log("record reaction error:", e.message);
     }
