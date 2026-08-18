@@ -31,10 +31,11 @@ const TICK_LOCK_TTL_MS = 10 * 60 * 1000; // анти-перекрытие кро
 // возвратом "timeout" с громким логом, а тяжёлые шаги (LLM/рендер) получают свои
 // короткие бюджеты с фолбэком на правила / JS-рендер, чтобы тик почти всегда
 // укладывался в бюджет и «не дожимался» там.
-const TICK_BUDGET_MS = 26000;
-const LLM_BUDGET_MS = 8000;
-const RENDER_BUDGET_MS = 7000;
-const SCAN_BUDGET_MS = 16000;
+const TICK_BUDGET_MS = 28000;
+const LLM_BUDGET_MS = 6000;
+const RENDER_BUDGET_MS = 5000;
+const SCAN_BUDGET_MS = 8000;
+const ASSEMBLE_BUDGET_MS = 9000;
 
 // Запускает promise с жёстким бюджетом: по истечении ms реджектит (промис при
 // этом продолжает жить в фоне, но результат уже никому не нужен — тик не ждёт).
@@ -1056,10 +1057,14 @@ export async function tick(env, opts = {}) {
       const candList = await kv.getCandidates(env);
       const freshCands = candList.filter((c) => !isStaleItem(c, nowMs));
       if (freshCands.length !== candList.length) await kv.setCandidates(env, freshCands);
+      // Сборка поста не должна съедать остаток тика: у неё собственный бюджет.
+      // При перерасходе кандидат не тратится — его подхватит следующий тик.
       if (await kv.getAutopost(env)) {
-        await assembleNewsPosts(env, now);
+        await bounded(ASSEMBLE_BUDGET_MS, "[scheduler] assemble",
+          assembleNewsPosts(env, now));
       } else {
-        await assembleNewsDrafts(env, now);
+        await bounded(ASSEMBLE_BUDGET_MS, "[scheduler] assemble",
+          assembleNewsDrafts(env, now));
       }
     } catch (e) {
       console.log("[scheduler] assemble error:", e.message);
@@ -1070,7 +1075,7 @@ export async function tick(env, opts = {}) {
     currentStep = "defer";
     t = Date.now();
     try {
-      await autoDeferDrafts(env, state, now);
+      await bounded(ASSEMBLE_BUDGET_MS, "[scheduler] defer", autoDeferDrafts(env, state, now));
     } catch (e) {
       console.log("[scheduler] defer error:", e.message);
     }
@@ -1080,7 +1085,7 @@ export async function tick(env, opts = {}) {
     currentStep = "publish";
     t = Date.now();
     try {
-      await publishDueStock(env, now);
+      await bounded(ASSEMBLE_BUDGET_MS, "[scheduler] publish", publishDueStock(env, now));
     } catch (e) {
       console.log("[scheduler] publish error:", e.message);
     }
@@ -1090,7 +1095,7 @@ export async function tick(env, opts = {}) {
     currentStep = "vkretry";
     t = Date.now();
     try {
-      await processVkRetries(env);
+      await bounded(ASSEMBLE_BUDGET_MS, "[scheduler] vkretry", processVkRetries(env));
     } catch (e) {
       console.log("[scheduler] vk-retry error:", e.message);
     }

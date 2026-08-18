@@ -136,9 +136,9 @@ export function isRussianText(text) {
   return cyr / t.length >= 0.35;
 }
 
-export async function fetchArticleExcerpt(url, maxChars = 2500) {
+export async function fetchArticleExcerpt(url, maxChars = 2500, timeoutMs = 10000) {
   try {
-    const res = await fetch(url, { headers: REQUEST_HEADERS, signal: AbortSignal.timeout(10000) });
+    const res = await fetch(url, { headers: REQUEST_HEADERS, signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return "";
     const html = await res.text();
     const pRe = /<p[^>]*>(.*?)<\/p>/gis;
@@ -179,7 +179,6 @@ export async function scanFeeds(env, chunkOffset = 0, chunkCount = 2) {
 
   const now = Date.now();
   const raw = [];
-  const fetched = [];
 
   // Фиды тянутся параллельно (малыми группами), чтобы очередь десятка медленных
   // лент не съедала бюджет тика последовательными ожиданиями (10 с × N). Каждая
@@ -218,27 +217,40 @@ export async function scanFeeds(env, chunkOffset = 0, chunkCount = 2) {
 
   // Дедуп одинаковых новостей из разных лент в один кластер.
   const clusters = clusterDuplicates(raw);
-  for (const cl of clusters) {
-    const bestPd = parsePubDate(cl.best.pub_date);
-    const cand = {
-      guid: cl.best.guid,
-      cluster_id: cl.cluster_id,
-      title: cl.best.title,
-      link: cl.best.link,
-      links: cl.items.map((i) => i.link),
-      description: cl.best.description,
-      pub_ts: bestPd ? bestPd.getTime() : null,
-      fresh: bestPd ? now - bestPd.getTime() <= FRESH_MS : false,
-      found_at: new Date().toISOString(),
-    };
-    // Текст подкачиваем только для лучшего источника кластера (экономия подзапросов).
-    if (cand.fresh || true) {
-      cand.excerpt = await fetchArticleExcerpt(cand.link);
+
+  // Эксцерпты подкачиваем параллельно (по 4), а не последовательно: раньше
+  // каждый fetchArticleExcerpt с таймаутом 10с шёл по очереди, и при десятке
+  // свежих кандидатов скан молча съедал весь бюджет тика (16с), оставляя
+  // шагу assemble секунды — тик умирал на «assemble» и ничего не публиковал.
+  const MAX_EXCERPTS = 8;
+  const cands = [];
+  for (let i = 0; i < Math.min(clusters.length, MAX_EXCERPTS); i += MAX_FEEDS_PARALLEL) {
+    const batch = clusters.slice(i, i + MAX_FEEDS_PARALLEL).map(async (cl) => {
+      const pd = parsePubDate(cl.best.pub_date);
+      const cand = {
+        guid: cl.best.guid,
+        cluster_id: cl.cluster_id,
+        title: cl.best.title,
+        link: cl.best.link,
+        links: cl.items.map((i) => i.link),
+        description: cl.best.description,
+        pub_ts: pd ? pd.getTime() : null,
+        fresh: pd ? now - pd.getTime() <= FRESH_MS : false,
+        found_at: new Date().toISOString(),
+      };
+      // Текст подкачиваем только для лучшего источника кластера (экономия подзапросов).
+      cand.excerpt = await fetchArticleExcerpt(cand.link, 2500, 6000);
       cand.text = buildClusterText(cl, cand.excerpt);
+      return cand;
+    });
+    const settled = await Promise.allSettled(batch);
+    for (const r of settled) {
+      if (r.status === "fulfilled") {
+        await addCandidate(env, r.value);
+        cands.push(r.value);
+      }
     }
-    await addCandidate(env, cand);
-    fetched.push(cand);
   }
 
-  return fetched;
+  return cands;
 }
