@@ -290,7 +290,7 @@ async function handleApi(env, request, url) {
         body: JSON.stringify({
           url: `${origin}/`,
           secret_token: env.WEBHOOK_SECRET,
-          allowed_updates: ["message", "callback_query", "edited_message"],
+          allowed_updates: ["message", "callback_query", "edited_message", "message_reaction"],
           drop_pending_updates: false,
         }),
       });
@@ -1362,21 +1362,42 @@ async function handleCommand(env, state, chatId, text) {
       const lines = Object.entries(byKind)
         .map(([k, v]) => `• ${KIND_LABELS[k] || k}: ${v}`)
         .join("\n");
-      // Вовлечённость: views из VK + реакции из TG по уже опубликованным постам.
+      // Вовлечённость: две отдельные сводки — VK (просмотры/лайки/репосты/
+      // комменты по wall.getById) и TG (реакции из webhook message_reaction).
       let engagement = "";
       try {
         const agg = aggregateStats(log);
-        const bestStyle = agg.style[0];
-        const bestScheme = agg.scheme[0];
-        const bestTopic = agg.topic[0];
         const fmt = (b) => (b ? `${b.key}: ${b.posts} пост., ~${b.avg_views} просм., ${b.reactions} реакций` : "—");
-        const withViews = log.filter((e) => e && e.stats && e.stats.vk && e.stats.vk.views > 0);
-        const avgViews = withViews.length
-          ? Math.round(withViews.reduce((a, e) => a + e.stats.vk.views, 0) / withViews.length)
-          : 0;
+        // VK-метрики.
+        const vkPosts = (log || []).filter((e) => e && e.stats && e.stats.vk && e.stats.vk.views > 0);
+        const vkViews = vkPosts.reduce((a, e) => a + (e.stats.vk.views || 0), 0);
+        const vkLikes = vkPosts.reduce((a, e) => a + (e.stats.vk.likes || 0), 0);
+        const vkReposts = vkPosts.reduce((a, e) => a + (e.stats.vk.reposts || 0), 0);
+        const vkComments = vkPosts.reduce((a, e) => a + (e.stats.vk.comments || 0), 0);
+        const vkAvg = vkPosts.length ? Math.round(vkViews / vkPosts.length) : 0;
+        // TG-метрики (реакции).
+        const tgPosts = (log || []).filter((e) => e && e.stats && e.stats.reactions_total > 0);
+        const tgReactions = tgPosts.reduce((a, e) => a + (e.stats.reactions_total || 0), 0);
+        const topReactions = {};
+        for (const e of tgPosts) {
+          const r = e.stats.reactions || {};
+          for (const [emoji, n] of Object.entries(r)) topReactions[emoji] = (topReactions[emoji] || 0) + n;
+        }
+        const topReactionLine = Object.entries(topReactions)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 3)
+          .map(([emoji, n]) => `${emoji}×${n}`)
+          .join(" · ") || "—";
+        const bestStyle = agg.style[0], bestScheme = agg.scheme[0], bestTopic = agg.topic[0];
         engagement =
           "\n\n📊 <b>Вовлечённость</b>\n" +
-          `Средние просмотры: <b>${avgViews}</b>\n` +
+          "🔵 <b>ВКонтакте</b>\n" +
+          `Постов с охватом: <b>${vkPosts.length}/${log.length}</b>\n` +
+          `Просмотров: <b>${vkViews}</b> (в среднем ~${vkAvg} на пост)\n` +
+          `Лайков: <b>${vkLikes}</b> · Репостов: <b>${vkReposts}</b> · Комментариев: <b>${vkComments}</b>\n` +
+          "🟢 <b>Telegram</b>\n" +
+          `Постов с реакциями: <b>${tgPosts.length}/${log.length}</b>\n` +
+          `Реакций всего: <b>${tgReactions}</b> · Топ: ${topReactionLine}\n` +
           `• Лучший жанр: ${fmt(bestStyle)}\n` +
           `• Лучшая схема: ${fmt(bestScheme)}\n` +
           `• Лучшая тема: ${fmt(bestTopic)}\n` +
@@ -1863,22 +1884,30 @@ export default {
     // Статистика вовлечённости: опрос VK по опубликованным постам + обновление
     // весов ротации (жанр/тема/схема) по интересам аудитории — чтобы следующие
     // посты «делались под» то, что сейчас лучше всего залетает.
-    try {
-      await collectVkMetrics(env);
-      await refreshContentWeights(env);
-      // Адаптивное расписание: если охваты низкие — публикуем чаще, высокие —
-      // реже. Уведомление админу шлём, только когда расписание реально поменялось.
-      try {
-        const note = await maybeAdjustSchedule(env);
-        if (note && env.TELEGRAM_ADMIN_CHAT_ID) {
-          await sendMessage(env, env.TELEGRAM_ADMIN_CHAT_ID, note, { parse_mode: "HTML" });
+    // Вызываем в фоне через waitUntil, а не ПОСЛЕ тика: тик может занять до
+    // TICK_BUDGET_MS (28с), и на free-плане wall-clock ~30с — последовательный
+    // вызов молча резался, и метрики VK не собирались вовсе. В waitUntil опрос
+    // стартует сразу параллельно с тиком и успевает уложиться в лимит.
+    ctx.waitUntil(
+      (async () => {
+        try {
+          await collectVkMetrics(env);
+          await refreshContentWeights(env);
+          // Адаптивное расписание: если охваты низкие — публикуем чаще, высокие —
+          // реже. Уведомление админу шлём, только когда расписание реально поменялось.
+          try {
+            const note = await maybeAdjustSchedule(env);
+            if (note && env.TELEGRAM_ADMIN_CHAT_ID) {
+              await sendMessage(env, env.TELEGRAM_ADMIN_CHAT_ID, note, { parse_mode: "HTML" });
+            }
+          } catch (e) {
+            console.log("adjust schedule error:", e.message);
+          }
+        } catch (e) {
+          console.log("collect metrics error:", e.message);
         }
-      } catch (e) {
-        console.log("adjust schedule error:", e.message);
-      }
-    } catch (e) {
-      console.log("collect metrics error:", e.message);
-    }
+      })()
+    );
     // Диагностика канала: резолвим chat_id и кэшируем в KV на каждом тике,
     // чтобы всегда знать целевой канал и не терять его при смене секрета.
     try {
