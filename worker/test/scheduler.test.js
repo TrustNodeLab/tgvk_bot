@@ -53,7 +53,8 @@ const CONFIG_JSON = {
 
 // Глобальный мок fetch: GitHub API, Telegram API, пустые RSS.
 // dispatchStatus: HTTP-статус для workflow_dispatch (по умолчанию 204 — успех).
-export function installFetchMock(dispatchStatus = 204) {
+// mixOptions: ответы /mix (format) и /poll (question/options) для авто-микса.
+export function installFetchMock(dispatchStatus = 204, mixOptions = {}) {
   const calls = { tg: [], github: [], feeds: [] };
   globalThis.fetch = async (url, opts = {}) => {
     const u = String(url);
@@ -72,6 +73,18 @@ export function installFetchMock(dispatchStatus = 204) {
         headline: "Мошенничество: главное",
         bullets,
         advice: ["Не платите предоплату незнакомцам."],
+      });
+    }
+    if (u.includes("render.test/mix")) {
+      return jsonResp({
+        format: mixOptions.format || "digest",
+        reason: "тестовая заглушка",
+      });
+    }
+    if (u.includes("render.test/poll")) {
+      return jsonResp({
+        question: mixOptions.question || "Сталкивались ли вы с этой схемой?",
+        options: mixOptions.options || ["Да", "Нет", "Не уверен"],
       });
     }
     if (u.includes("api.github.com")) {
@@ -1389,4 +1402,134 @@ test("generateDigestText: полный caption с футером и лимито
   assert.ok(out.caption.includes("TrustNode"), "футер");
   assert.ok(out.caption.length <= 1024, `caption в лимите TG: ${out.caption.length}`);
   assert.equal(out.items.length, items.length, "мета новостей совпадает");
+});
+
+test("sendPoll: шлёт вопрос и варианты через TG sendPoll (is_anonymous по умолчанию)", async () => {
+  const calls = installFetchMock();
+  const { sendPoll } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/telegram.js");
+  const env = makeEnv();
+  const res = await sendPoll(env, "-1001", "Ваш вопрос?", ["Да", "Нет", "Не уверен"]);
+  assert.ok(res, "ответ Telegram");
+  const call = calls.tg.find((c) => c.url.includes("/sendPoll"));
+  assert.ok(call, "вызван sendPoll");
+  const body = typeof call.body === "string" ? call.body : JSON.stringify(call.body);
+  assert.ok(body.includes("Ваш вопрос?"), "вопрос ушёл");
+  assert.ok(body.includes("Да") && body.includes("Не уверен"), "варианты ушли");
+  assert.ok(body.includes('"is_anonymous":true'), "опрос анонимный по умолчанию");
+});
+
+test("assembleMix: /mix=single -> одиночная новость на склад, решение в mix_plan", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { assembleMix } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  installFetchMock(204, { format: "single" });
+  const env = makeEnv();
+  await kv.setAutopost(env, true);
+  const now = new Date("2026-08-07T06:00:00Z"); // 11:00 ЕКБ — утро
+  for (const i of ["a", "b", "c"]) {
+    await kv.addCandidate(env, {
+      guid: `pg${i}`,
+      title: `Новость ${i}`,
+      link: `http://x/${i}`,
+      text: "МВД советует виртуальную карту. Мошенники похитили миллиарды рублей.",
+      found_at: new Date().toISOString(),
+    });
+  }
+  const made = await assembleMix(env, now);
+  assert.equal(made.length, 1, "одно активное окно — один пакет");
+  const stock = await kv.getStock(env);
+  assert.equal(stock.filter((p) => p.kind === "news").length, 1, "одиночная новость на складе");
+  assert.equal(stock.filter((p) => p.kind === "digest").length, 0, "дайджест не собран");
+  assert.equal((await kv.getCandidates(env)).length, 2, "потреблён только топ-1");
+  const plan = await kv.getMixPlan(env);
+  assert.equal(plan["2026-08-07:morning"], "news", "решение формата записано в mix_plan");
+  await assembleMix(env, now);
+  assert.equal((await kv.getStock(env)).length, 1, "повторно окно не собирается (маркер)");
+});
+
+test("assembleMix: /mix=digest -> дайджест на склад, кандидаты потреблены", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { assembleMix } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  installFetchMock(204, { format: "digest" });
+  const env = makeEnv();
+  await kv.setAutopost(env, true);
+  const now = new Date("2026-08-07T06:00:00Z"); // 11:00 ЕКБ — утро
+  for (const i of ["a", "b", "c"]) {
+    await kv.addCandidate(env, {
+      guid: `dg${i}`,
+      title: `Новость ${i}`,
+      link: `http://x/${i}`,
+      text: "МВД советует виртуальную карту. Мошенники похитили миллиарды рублей.",
+      found_at: new Date().toISOString(),
+    });
+  }
+  const made = await assembleMix(env, now);
+  assert.equal(made.length, 1, "один дайджест");
+  const stock = await kv.getStock(env);
+  assert.equal(stock.filter((p) => p.kind === "digest").length, 1, "дайджест на складе");
+  assert.equal(stock.filter((p) => p.kind === "news").length, 0, "одиночных нет");
+  assert.equal((await kv.getCandidates(env)).length, 0, "кандидаты потреблены выпуском");
+  const planMix = await kv.getMixPlan(env);
+  assert.equal(planMix["2026-08-07:morning"], "digest", "решение формата = digest");
+});
+
+test("assembleMix: /mix=poll -> новость с данными опроса на складе", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { assembleMix } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  installFetchMock(204, {
+    format: "poll",
+    question: "Сталкивались ли вы с такой схемой?",
+    options: ["Да", "Нет", "Не знаю"],
+  });
+  const env = makeEnv();
+  await kv.setAutopost(env, true);
+  const now = new Date("2026-08-07T06:00:00Z"); // 11:00 ЕКБ — утро
+  for (const i of ["a", "b"]) {
+    await kv.addCandidate(env, {
+      guid: `pp${i}`,
+      title: `Новость ${i}`,
+      link: `http://x/${i}`,
+      text: "МВД советует виртуальную карту. Мошенники похитили миллиарды рублей.",
+      found_at: new Date().toISOString(),
+    });
+  }
+  const made = await assembleMix(env, now);
+  assert.equal(made.length, 1, "новость собрана");
+  const stock = await kv.getStock(env);
+  const n = stock.find((p) => p.kind === "news");
+  assert.ok(n, "новость на складе");
+  assert.ok(n.poll && n.poll.question && Array.isArray(n.poll.options) && n.poll.options.length >= 2,
+    "опросные данные прикреплены к пакету");
+  assert.equal(n.poll.question, "Сталкивались ли вы с такой схемой?", "вопрос из LLM /poll");
+});
+
+test("assembleMix: без LLM_PROXY_URL решение по правилам — ровно один пакет за окно", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { assembleMix } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  installFetchMock(204);
+  const env = makeEnv();
+  env.LLM_PROXY_URL = ""; // без прокси — чистые правила
+  await kv.setAutopost(env, true);
+  const now = new Date("2026-08-07T06:00:00Z"); // 11:00 ЕКБ — утро
+  await kv.addCandidate(env, {
+    guid: "rb1",
+    title: "Новость 1",
+    link: "http://x/r1",
+    text: "МВД советует виртуальную карту. Мошенники похитили миллиарды рублей.",
+    found_at: new Date().toISOString(),
+  });
+  await kv.addCandidate(env, {
+    guid: "rb2",
+    title: "Новость 2",
+    link: "http://x/r2",
+    text: "МВД советует виртуальную карту. Мошенники похитили миллиарды рублей.",
+    found_at: new Date().toISOString(),
+  });
+  const made = await assembleMix(env, now);
+  assert.equal(made.length, 1, "один пакет по правилам");
+  assert.equal((await kv.getStock(env)).length, 1, "ровно один пакет на складе");
+  const plan = await kv.getMixPlan(env);
+  const f = plan["2026-08-07:morning"];
+  assert.ok(f === "news" || f === "digest" || f === "poll", `формат из правил: ${f}`);
+  await assembleMix(env, now);
+  assert.equal((await kv.getStock(env)).length, 1, "повтор не дублирует");
 });

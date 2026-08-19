@@ -299,6 +299,19 @@ export async function removeVkRetry(env, id) {
   return next.length !== list.length;
 }
 
+// ---------- mix_plan (авто-микс форматов по окнам) ----------
+// Решение «какой формат выйдет в окне»: { "<date>:<slug>": "news"|"digest"|"poll" }.
+// Держим стабильным в течение окна, чтобы каждый крон не дёргал LLM заново.
+
+export async function getMixPlan(env) {
+  const plan = await kvGet(env, "mix_plan", {});
+  return plan && typeof plan === "object" ? plan : {};
+}
+
+export async function setMixPlan(env, plan) {
+  await kvSet(env, "mix_plan", plan);
+}
+
 // ---------- digest_done (маркер «дайджест окна собран» — анти-дубль) ----------
 
 // Маркер на дату+окно (date = "YYYY-MM-DD", slug = "morning|day|evening"):

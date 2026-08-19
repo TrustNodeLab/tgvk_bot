@@ -11,7 +11,7 @@ import {
 } from "./config.js";
 import * as kv from "./kv.js";
 import { scanFeeds } from "./feeds.js";
-import { mainTopic } from "./nlp.js";
+import { mainTopic, analyzePost } from "./nlp.js";
 import { renderCard } from "./cardgen.js";
 import { renderCardBytes, sourceDomain, approveButtons } from "./preview.js";
 import { generateDigestText, digestFreshScore, generatePostData, generateByRules } from "./llm.js";
@@ -19,6 +19,7 @@ import { getWindows, windowBySlug, currentWindow as schedCurrentWindow } from ".
 import {
   publishToTelegram, publishToVk, sendMessage, vkCall, sendCard,
 } from "./telegram.js";
+import { sendPoll } from "./telegram.js";
 import { fmtTime, escHtml, fitCaption, htmlToPlain } from "./text.js";
 
 const CHUNK_COUNT = 2; // СЃРєР°РЅ РґРµР»РёС‚СЃСЏ РЅР° 2 С‡Р°СЃС‚Рё (Р»РёРјРёС‚ РїРѕРґР·Р°РїСЂРѕСЃРѕРІ free-РїР»Р°РЅР°)
@@ -1001,6 +1002,171 @@ export async function rebuildDigestPreview(env, draft) {
 
 // ---------- РіР»Р°РІРЅС‹Р№ С‚РёРє ----------
 
+// ---------- авто-микс форматов (одиночная / дайджест / опрос) ----------
+
+// Стабильный мэппинг «день:окно -> формат»: rotate-хэш + LLM (/mix) с
+// фолбэком на правила. Решение хранится в KV (mix_plan), чтобы каждый крон
+// не переспрашивал LLM и окно не «прыгало» между форматами.
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  return h;
+}
+
+// LLM-решение формата через прокси (/mix). Недоступно — правила.
+async function llmMixFormat(env, date, slug, count) {
+  const base = String(env.LLM_PROXY_URL || "").replace(/\/+$/, "");
+  if (base) {
+    try {
+      const res = await fetch(`${base}/mix`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ window: slug, date, count, provider: "gigachat" }),
+        signal: AbortSignal.timeout(15000),
+      });
+      if (res.ok) {
+        const data = JSON.parse(await res.text());
+        const f = String((data && data.format) || "").toLowerCase();
+        if (f === "single") return "news";
+        if (f === "digest") return "digest";
+        if (f === "poll") return "poll";
+      }
+    } catch (e) {
+      console.log("[mix] LLM /mix недоступен, беру правила:", e.message);
+    }
+  }
+  // Ротация по правилам: главная новость ~20%, дайджест ~60%, опрос ~20%.
+  // Детерминированно от дня и окна — стабильно в течение всего окна.
+  const r = hashStr(`${date}:${slug}`) % 10;
+  if (r < 2) return "news";
+  if (r < 8) return "digest";
+  return "poll";
+}
+
+// Решает формат окна и кеширует в mix_plan. count — число свежих кандидатов.
+// С одним кандидатом всегда одиночная новость (дайджест из одного — мусор).
+async function decideMixFormat(env, date, slug, count) {
+  const plan = await kv.getMixPlan(env);
+  const key = `${date}:${slug}`;
+  const cached = plan[key];
+  if (cached === "news" || cached === "digest" || cached === "poll") return cached;
+  if (count < 1) return null;
+  const res = count === 1 ? "news" : await llmMixFormat(env, date, slug, count);
+  if (res) {
+    plan[key] = res;
+    await kv.setMixPlan(env, plan);
+  }
+  return res;
+}
+
+// Опрос по правилам: вопрос привязываем к теме топ-новости, варианты —
+// стандартные для кибербезопасности. /poll (LLM) может переписать их.
+function pollByRules(items) {
+  let subject = "этой схемой";
+  try {
+    const top = items[0];
+    const a = analyzePost(String(top.text || "") + " " + String(top.title || ""));
+    if (a && a.subject) subject = a.subject;
+  } catch (e) { /* дефолтная тема */ }
+  return {
+    question: `Сталкивались ли вы с «${subject}»?`,
+    options: [
+      "Да, было такое",
+      "Слышал о таком",
+      "Впервые слышу",
+      "Не знаю, как защититься",
+    ],
+  };
+}
+
+// Живые вопрос+варианты через прокси (/poll). Недоступно — правила.
+async function llmPollData(env, items) {
+  const base = String(env.LLM_PROXY_URL || "").replace(/\/+$/, "");
+  if (!base) return null;
+  const top = items[0];
+  const text = String(top.text || top.title || "").slice(0, 2000);
+  const res = await fetch(`${base}/poll`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text, provider: "gigachat" }),
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) return null;
+  const data = JSON.parse(await res.text());
+  const question = String((data && data.question) || "").trim();
+  const options = Array.isArray(data && data.options)
+    ? data.options.map((o) => String(o).trim()).filter(Boolean).slice(0, 4)
+    : [];
+  if (!question || options.length < 2) return null;
+  return { question: question.slice(0, 255), options };
+}
+
+async function generatePollData(env, items) {
+  try {
+    const live = await bounded(LLM_BUDGET_MS, "[scheduler] poll LLM", llmPollData(env, items));
+    if (live) return live;
+  } catch (e) {
+    console.log("[scheduler] вопрос опроса превысил бюджет, беру правила:", e.message);
+  }
+  return pollByRules(items);
+}
+
+// Собирает пост для одного активного окна в выбранном формате
+// (одиночная новость / дайджест / новость + опрос). Возвращает guid или null.
+async function assembleMixWindow(env, now, w) {
+  const ekb = ekbNow(now);
+  const date = ekb.date;
+  if (await kv.getDigestDone(env, date, w.slug)) return null;
+  const items = await pickDigestItems(env, DIGEST_MAX_ITEMS);
+  if (!items.length) return null;
+  const format = await decideMixFormat(env, date, w.slug, items.length);
+  if (format === "digest") {
+    const res = await buildDigestForWindow(env, w, now);
+    if (res) {
+      await kv.addStock(env, res.pkg);
+      await commitDigest(env, date, w, res.items);
+      console.log("[scheduler] микс: дайджест собран:", res.pkg.title);
+      return res.pkg.guid;
+    }
+    // Дайджест не собрался (живой LLM/рендер недоступны) — окно не теряем,
+    // опускаемся до одиночной новости.
+  }
+  // news / poll — база одна: одиночная карточка топ-1 кандидата.
+  const cand = items[0];
+  const res = await finalizeNewsPkg(env, cand, {
+    slug: w.slug,
+    date,
+    slot: ekbToUtcMs(ekb.dow, w.start, now),
+  });
+  if (!res) return null;
+  if (format === "poll") {
+    const poll = await generatePollData(env, items);
+    if (poll && poll.question) res.pkg.poll = poll;
+    await kv.addStock(env, res.pkg);
+    await commitSingle(env, date, w.slug, cand);
+    console.log("[scheduler] микс: новость + опрос собраны:", res.pkg.title);
+    return res.pkg.guid;
+  }
+  await kv.addStock(env, res.pkg);
+  await commitSingle(env, date, w.slug, cand);
+  console.log("[scheduler] микс: одиночная новость собрана:", res.pkg.title);
+  return res.pkg.guid;
+}
+
+// Авто-микс: для каждого активного окна в узком формате (одиночная / дайджест /
+// опрос) собирается пакет и попадает на склад. Возвращает массив guid.
+// ВЫКЛ-режим (превью админу) по-прежнему собирает только одиночные превью.
+export async function assembleMix(env, now = new Date()) {
+  const made = [];
+  for (const w of await getWindows(env)) {
+    const ekb = ekbNow(now);
+    if (ekb.minuteOfDay < w.start || ekb.minuteOfDay >= w.end) continue;
+    const g = await assembleMixWindow(env, now, w);
+    if (g) made.push(g);
+  }
+  return made;
+}
+
 export async function tick(env, opts = {}) {
   const now = opts.now ? new Date(opts.now) : new Date();
   const started = Date.now();
@@ -1069,7 +1235,7 @@ export async function tick(env, opts = {}) {
       // РџСЂРё РїРµСЂРµСЂР°СЃС…РѕРґРµ РєР°РЅРґРёРґР°С‚ РЅРµ С‚СЂР°С‚РёС‚СЃСЏ вЂ” РµРіРѕ РїРѕРґС…РІР°С‚РёС‚ СЃР»РµРґСѓСЋС‰РёР№ С‚РёРє.
       if (await kv.getAutopost(env)) {
         await bounded(ASSEMBLE_BUDGET_MS, "[scheduler] assemble",
-          assembleNewsPosts(env, now));
+          assembleMix(env, now));
       } else {
         await bounded(ASSEMBLE_BUDGET_MS, "[scheduler] assemble",
           assembleNewsDrafts(env, now));

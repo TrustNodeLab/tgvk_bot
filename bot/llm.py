@@ -380,6 +380,90 @@ def extract_critique(draft: str, provider: str = None) -> dict:
         return {"issues": [], "fixed_caption": ""}
 
 
+MIX_SYSTEM_PROMPT = (
+    "Ты — программный продюсер канала TrustNode о кибербезопасности. По контексту "
+    "окна публикации выбери формат поста:\n"
+    '- "single" — одна главная новость с карточкой;\n'
+    '- "digest" — сводка 2-4 новостей одним выпуском;\n'
+    '- "poll" — пост с опросом для вовлечения аудитории.\n'
+    "Считай число count. Если count < 2 — всегда single (дайджест из одной "
+    "новости не собираем). Чередуй форматы, чтобы соседние окна не выглядели "
+    "одинаково, и не ставь poll чаще, чем каждое 4-е окно.\n"
+    "Верни ТОЛЬКО валидный JSON без пояснений: "
+    '{"format":"single|digest|poll","reason":"одна короткая фраза"}'
+)
+
+
+def extract_mix(count: int, window: str = None, date: str = None, provider: str = None) -> dict:
+    """Решение формата окна: {"format": "single|digest|poll", "reason": "..."}.
+    При сбое/невалидном JSON — правила-фолбэк по count."""
+    try:
+        if count < 2:
+            return {"format": "single", "reason": "мало кандидатов для дайджеста"}
+        win_line = f" Окно: {window} ({date})." if window else ""
+        messages = [
+            {"role": "system", "content": MIX_SYSTEM_PROMPT},
+            {"role": "user", "content": f"count={count}.{win_line} Выбери формат."},
+        ]
+        content = _complete(messages, provider)
+        text = _strip_code_fence(content)
+        m = re.search(r"\{[\s\S]*\}", text or "")
+        if not m:
+            raise ValueError("mix: не JSON")
+        data = json.loads(m.group(0))
+        fmt = str(data.get("format") or "").lower()
+        if fmt not in ("single", "digest", "poll"):
+            raise ValueError(f"mix: формат {fmt}")
+        return {
+            "format": fmt,
+            "reason": str(data.get("reason") or "")[:120],
+        }
+    except Exception as e:  # noqa: BLE001
+        print(f"[llm] mix недоступен: {e}")
+        return {"format": ("digest" if count >= 2 else "single"), "reason": "фолбэк"}
+
+
+POLL_SYSTEM_PROMPT = (
+    "Ты — редактор канала TrustNode о кибербезопасности. По тексту новости "
+    "придумай опрос для аудитории.\n"
+    "Верни ТОЛЬКО валидный JSON без пояснений: "
+    '{"question":"вопрос до 100 символов, понятный без текста новости", '
+    '"options":["2-4 коротких варианта до 60 символов каждым"]}.\n'
+    "Варианты должны читаться сами по себе. Без markdown и смайликов в вариантах."
+)
+
+
+def extract_poll(raw_text: str, provider: str = None) -> dict:
+    """Вопрос+варианты опроса по тексту новости: {"question", "options"}.
+    При сбое/невалидном JSON — стандартные правила-фолбэк."""
+    fallback = {
+        "question": "Сталкивались ли вы с этой схемой?",
+        "options": ["Да, было такое", "Слышал о таком", "Впервые слышу", "Не знаю, как защититься"],
+    }
+    try:
+        messages = [
+            {"role": "system", "content": POLL_SYSTEM_PROMPT},
+            {"role": "user", "content": str(raw_text or "")[:3000]},
+        ]
+        content = _complete(messages, provider)
+        text = _strip_code_fence(content)
+        m = re.search(r"\{[\s\S]*\}", text or "")
+        if not m:
+            raise ValueError("poll: не JSON")
+        data = json.loads(m.group(0))
+        question = str(data.get("question") or "").strip()
+        options = [str(o).strip() for o in (data.get("options") or []) if str(o).strip()]
+        if not question or len(options) < 2:
+            raise ValueError("poll: пустые question/options")
+        return {
+            "question": question[:100],
+            "options": options[:4],
+        }
+    except Exception as e:  # noqa: BLE001
+        print(f"[llm] poll недоступен: {e}")
+        return fallback
+
+
 def _complete(messages: list, provider: str = None) -> str:
     """Вызывает LLM (GigaChat / Gemini / OpenAI-совместимый) по готовому списку
     сообщений и возвращает сырой текст ответа."""

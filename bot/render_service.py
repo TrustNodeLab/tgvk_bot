@@ -19,6 +19,9 @@ certifi и urllib3 (см. requirements.txt), поэтому легко депл�
                            format?: "png"|"gif", frames?: 12} -> PNG либо анимированный GIF
     POST /llm     — JSON: {text, prev_post?, style?, best_posts?} -> структурированный JSON GigaChat
     POST /opinion — JSON: {text} -> {"opinion": "1-2 предложения мнения редакции"}
+    POST /mix     — JSON: {count, window?, date?} -> {"format": "single|digest|poll", "reason"}
+    POST /poll    — JSON: {text} -> {"question", "options": ["..."]}
+    POST /critique — JSON: {draft} -> {"issues": [...], "fixed_caption": "..."}
     GET  /health  — {"ok": true}
 """
 import json
@@ -31,7 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from card_generator import render_card, render_card_gif  # noqa: E402
-from llm import extract_post_data, extract_digest, extract_opinion, extract_critique  # noqa: E402
+from llm import extract_post_data, extract_digest, extract_opinion, extract_critique, extract_mix, extract_poll  # noqa: E402
 
 PORT = int(os.environ.get("PORT", "8000"))
 YEAR = datetime.now().year
@@ -121,6 +124,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/critique":
             self._handle_critique()
             return
+        if self.path == "/mix":
+            self._handle_mix()
+            return
+        if self.path == "/poll":
+            self._handle_poll()
+            return
         if self.path != "/render":
             self._send(404, json.dumps({"error": "not found"}).encode("utf-8"))
             return
@@ -193,7 +202,6 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             self._send(500, json.dumps({"error": str(e)}).encode("utf-8"))
 
-
     def _handle_opinion(self):
         """«Мнение студии»: лёгкий вызов LLM по тексту новости -> {opinion: "..."
         }. Используется правиловым генератором вместо шаблонного мнения."""
@@ -215,8 +223,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as e:  # noqa: BLE001
             self._send(500, json.dumps({"error": str(e)}).encode("utf-8"))
 
-
-def _handle_critique(self):
+    def _handle_critique(self):
         """Самокритика черновика поста: {draft} -> {issues, fixed_caption}.
         Строгий второй проход LLM перед публикацией, чтобы вычистить клише."""
         if not (os.environ.get("LLM_API_KEY") or os.environ.get("GIGACHAT_API_KEY") or os.environ.get("GEMINI_API_KEY")):
@@ -231,6 +238,46 @@ def _handle_critique(self):
                 return
             provider = str(payload.get("provider") or "").strip() or None
             result = extract_critique(draft, provider)
+            self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        except KeyError as e:
+            self._send(503, json.dumps({"error": f"нет секрета: {e}"}).encode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            self._send(500, json.dumps({"error": str(e)}).encode("utf-8"))
+
+    def _handle_mix(self):
+        """Решение формата окна (single/digest/poll): {count, window, date} ->
+        {format, reason}. Фолбэк на правила при недоступности LLM."""
+        if not (os.environ.get("LLM_API_KEY") or os.environ.get("GIGACHAT_API_KEY") or os.environ.get("GEMINI_API_KEY")):
+            self._send(503, json.dumps({"error": "LLM_API_KEY не задан"}).encode("utf-8"))
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            count = int(payload.get("count") or 0)
+            window = str(payload.get("window") or "").strip() or None
+            date = str(payload.get("date") or "").strip() or None
+            provider = str(payload.get("provider") or "").strip() or None
+            result = extract_mix(count, window, date, provider)
+            self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"))
+        except KeyError as e:
+            self._send(503, json.dumps({"error": f"нет секрета: {e}"}).encode("utf-8"))
+        except Exception as e:  # noqa: BLE001
+            self._send(500, json.dumps({"error": str(e)}).encode("utf-8"))
+
+    def _handle_poll(self):
+        """Вопрос+варианты опроса по тексту новости: {text} -> {question, options}."""
+        if not (os.environ.get("LLM_API_KEY") or os.environ.get("GIGACHAT_API_KEY") or os.environ.get("GEMINI_API_KEY")):
+            self._send(503, json.dumps({"error": "LLM_API_KEY не задан"}).encode("utf-8"))
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            payload = json.loads(self.rfile.read(length).decode("utf-8"))
+            text = str(payload.get("text") or "").strip()
+            if not text:
+                self._send(400, json.dumps({"error": "пустой text"}).encode("utf-8"))
+                return
+            provider = str(payload.get("provider") or "").strip() or None
+            result = extract_poll(text, provider)
             self._send(200, json.dumps(result, ensure_ascii=False).encode("utf-8"))
         except KeyError as e:
             self._send(503, json.dumps({"error": f"нет секрета: {e}"}).encode("utf-8"))

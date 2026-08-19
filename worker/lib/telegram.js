@@ -120,6 +120,21 @@ export function editMessageReplyMarkup(env, chatId, messageId, markup = []) {
   });
 }
 
+// Нативный Telegram-опрос (kind="poll"-пост: вопрос + 2-10 вариантов).
+// Telegram не прикрепляет опрос к фото — шлём отдельным сообщением после поста.
+export function sendPoll(env, chatId, question, options, opts = {}) {
+  const params = {
+    chat_id: chatId,
+    question: String(question || "").trim().slice(0, 255),
+    options: JSON.stringify(
+      (options || []).slice(0, 10).map((o) => String(o).trim().slice(0, 100))
+    ),
+    is_anonymous: opts.is_anonymous !== false,
+    allows_multiple_answers: !!opts.allows_multiple_answers,
+  };
+  return tgCall(env, "sendPoll", params);
+}
+
 export function answerCallbackQuery(env, id, text) {
   return tgCall(env, "answerCallbackQuery", { callback_query_id: id, text });
 }
@@ -516,12 +531,23 @@ export async function publishToTelegram(env, pkg, dry) {
     const msg = await sendMessage(env, chatId, fitCaption(pkg.digest_text, 4096), { parse_mode: "HTML" });
     digestMsgId = msg && msg.message_id;
   }
+  // Опрос (kind="poll"): нативный Telegram-poll отдельным сообщением после поста.
+  // В VK нативный опрос недоступен групповому токену — там уходит просто пост.
+  let pollMsgId = null;
+  if (!dry && pkg.poll && pkg.poll.question) {
+    try {
+      const pmsg = await sendPoll(env, chatId, pkg.poll.question, pkg.poll.options);
+      pollMsgId = pmsg && pmsg.message_id;
+    } catch (e) {
+      console.log(`[tg] опрос не ушёл: ${e.message}`);
+    }
+  }
   if (dedupKey && res && res.message_id) {
     try {
-      await env.BOT_KV.put(`tg_posted:${dedupKey}`, JSON.stringify({ message_id: res.message_id, digest_message_id: digestMsgId, at: new Date().toISOString() }));
+      await env.BOT_KV.put(`tg_posted:${dedupKey}`, JSON.stringify({ message_id: res.message_id, digest_message_id: digestMsgId, poll_message_id: pollMsgId, at: new Date().toISOString() }));
     } catch (e) { /* ignore */ }
   }
-  return { ok: true, target: "tg", message_id: res && res.message_id, digest_message_id: digestMsgId };
+  return { ok: true, target: "tg", message_id: res && res.message_id, digest_message_id: digestMsgId, poll_message_id: pollMsgId };
 }
 
 export async function publishToVk(env, pkg, dry) {
