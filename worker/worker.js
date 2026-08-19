@@ -33,7 +33,7 @@ import {
   vkCall,
 } from "./lib/telegram.js";
 import { fmtTime, escHtml } from "./lib/text.js";
-import { DIGEST_MIN_ITEMS, DIGEST_MAX_ITEMS, mskNow, plural } from "./lib/config.js";
+import { mskNow, plural } from "./lib/config.js";
 import { sendGeneratedPreview, approveButtons } from "./lib/preview.js";
 import { renderCard } from "./lib/cardgen.js";
 import { eveningSummaryText, dayReportText, weekReportText, monthReportText, maybeSendReports } from "./lib/analytics.js";
@@ -1277,7 +1277,7 @@ async function handleCommand(env, state, chatId, text) {
     case "/schedule": {
       const sched = await getSchedule(env);
       const wins = sched.windows.map(
-        (w) => `• <b>${w.label}</b> — ${minutesToClock(w.start)} МСК: сводка ${DIGEST_MIN_ITEMS}–${DIGEST_MAX_ITEMS} свежих новостей`
+        (w) => `• <b>${w.label}</b> — ${minutesToClock(w.start)} МСК: 1 пост — одна свежая новость`
       ).join("\n");
       const modeLabel = sched.mode === "auto" ? "авто" : "ручной";
       const schedLine =
@@ -1292,8 +1292,8 @@ async function handleCommand(env, state, chatId, text) {
         "\n" +
         wins +
         "\n\nСледующий слот: <b>" + next + "</b>\n\n" +
-        "Авто-режим: бот смотрит на средние охваты и сам добавляет/убирает слоты — публикует чаще, когда охваты низкие, и реже, когда высокие.\n" +
-        "Ручной режим: вы управляете частотой сами.";
+        "<b>1 окно = 1 пост.</b> В каждом окне публикуется один пост — свежая новость. Без сводок и без многопостовых выпусков.\n" +
+        "Ручной режим: вы сами управляете числом окон кнопками ниже.";
       const kb = {
         inline_keyboard: [
           [
