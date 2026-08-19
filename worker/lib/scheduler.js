@@ -20,7 +20,6 @@ import {
   publishToTelegram, publishToVk, sendMessage, vkCall, sendCard,
 } from "./telegram.js";
 import { fmtTime, escHtml, fitCaption, htmlToPlain } from "./text.js";
-import { maybeSendReports } from "./analytics.js";
 
 const CHUNK_COUNT = 2; // скан делится на 2 части (лимит подзапросов free-плана)
 const TICK_LOCK_TTL_MS = 10 * 60 * 1000; // анти-перекрытие крон: не чаще 1 тика
@@ -1105,17 +1104,6 @@ export async function tick(env, opts = {}) {
     t = Date.now();
     await kv.saveState(env, state);
     mark("save", t);
-
-    // 7. отчёты студии: вечерняя сводка (20:00), отчёт за день (23:30),
-    // недельная (вс 20:30), месячная (1-го 20:30). Маркеры анти-дубля.
-    currentStep = "reports";
-    t = Date.now();
-    try {
-      await maybeSendReports(env, { now });
-    } catch (e) {
-      console.log("[scheduler] reports error:", e.message);
-    }
-    mark("reports", t);
 
     console.log("[scheduler] tick:", marks.join(" "),
       `cands=${((await kv.getCandidates(env)) || []).length}`,

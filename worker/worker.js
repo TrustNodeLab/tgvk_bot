@@ -36,7 +36,7 @@ import { fmtTime, escHtml } from "./lib/text.js";
 import { DIGEST_MIN_ITEMS, DIGEST_MAX_ITEMS, mskNow, plural } from "./lib/config.js";
 import { sendGeneratedPreview, approveButtons } from "./lib/preview.js";
 import { renderCard } from "./lib/cardgen.js";
-import { eveningSummaryText, dayReportText, weekReportText, monthReportText } from "./lib/analytics.js";
+import { eveningSummaryText, dayReportText, weekReportText, monthReportText, maybeSendReports } from "./lib/analytics.js";
 import {
   handleUserStart,
   handleUserCallback,
@@ -1772,6 +1772,15 @@ export default {
       ctx.waitUntil(keepRenderWarm(env).catch((e) => console.log("keepRenderWarm error:", e.message)));
     } catch (e) {
       console.log("keepRenderWarm error:", e.message);
+    }
+    // Отчёты студии (вечер/день/неделя/месяц) шлём в фоне, НЕ внутри тика:
+    // раньше они выполнялись последним шагом тика и съедали остаток бюджета —
+    // тик обрезался на «reports», не успев догнать публикации в VK. Теперь
+    // reports идёт параллельно с тиком и не трогает его бюджет.
+    try {
+      ctx.waitUntil(maybeSendReports(env).catch((e) => console.log("reports error:", e.message)));
+    } catch (e) {
+      console.log("reports error:", e.message);
     }
     // Статистика вовлечённости (VK-опрос и TG-реакции) вырезана: групповой
     // токен VK не читает стену (error 27), вебхук реакций не подтверждён
