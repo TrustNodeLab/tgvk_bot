@@ -1,16 +1,19 @@
-// Аналитика студии: ежедневные метрики (посты, охваты, реакции, подписчики
-// TG/VK) копятся в KV day_metrics:<date>. По ним строятся отчёты:
+// Аналитика студии: ежедневные метрики (посты, подписчики TG/VK) копятся в KV
+// day_metrics:<date>. По ним строятся отчёты:
 //   • вечерняя сводка (20:00 МСК)  — «сколько чего получили за день»;
 //   • отчёт за день (23:30 МСК)    — достижения и дельты к вчера;
 //   • недельная сводка (вс 20:30)  — неделя к неделе;
 //   • месячная сводка (1-го 20:30) — месяц к месяцу.
 // Отчёты уходят админу автоматически (maybeSendReports) или вручную /report.
 // Маркеры report_sent:<тип>:<период> гарантируют один отчёт за период.
+//
+// Вовлечённость (просмотры/лайки/реакции VK и TG) вырезана: групповой токен VK
+// не читает стену (error 27), реакции не подтверждены. Отчёты показывают только
+// рабочее — число постов и подписчиков платформ.
 
 import * as kv from "./kv.js";
 import { mskNow, plural } from "./config.js";
 import { vkCall, sendMessage, resolveTelegramChannel, getChatMemberCount } from "./telegram.js";
-import { bestPerformingPosts, aggregateStats } from "./stats.js";
 
 // Время отправки (минуты от полуночи МСК) + окно ожидания (крон раз в 5 мин).
 export const EVENING_TIME = 20 * 60;      // 20:00 — вечерняя сводка
@@ -34,17 +37,6 @@ function fmtInt(n) {
 function signed(n) {
   if (n === null || n === undefined || Number.isNaN(n)) return "—";
   return n > 0 ? `+${fmtInt(n)}` : fmtInt(n);
-}
-
-// Процент изменения cur к prev; null, если база нулевая/нет данных.
-function pct(cur, prev) {
-  if (!prev || !Number.isFinite(prev) || prev <= 0) return null;
-  return Math.round(((cur - prev) / prev) * 100);
-}
-
-function pctLine(cur, prev) {
-  const p = pct(cur, prev);
-  return p === null ? "" : ` · ${p > 0 ? "+" : ""}${p}% к прошлому`;
 }
 
 function russianPlural(n, one, few, many) {
@@ -116,28 +108,10 @@ export async function collectDailyMetrics(env, { now = new Date() } = {}) {
   const date = mskNow(now).date;
   const log = await kv.getLog(env);
   const today = postsForDate(log, date);
-  let views = 0, likes = 0, reactions = 0, reposts = 0, engagement = 0;
-  for (const e of today) {
-    const s = e.stats || {};
-    const v = (s.vk && s.vk.views) || 0;
-    const l = (s.vk && s.vk.likes) || 0;
-    const rp = (s.vk && s.vk.reposts) || 0;
-    const rc = s.reactions_total || 0;
-    views += v;
-    likes += l;
-    reactions += rc;
-    reposts += rp;
-    engagement += v + l * 50 + rp * 80 + rc * 30;
-  }
   const subs = await fetchSubscribers(env);
   const rec = {
     date,
     posts: today.length,
-    views,
-    likes,
-    reactions,
-    reposts,
-    engagement,
     tg_members: subs.tg_members,
     vk_members: subs.vk_members,
     collected_at: new Date().toISOString(),
@@ -149,15 +123,10 @@ export async function collectDailyMetrics(env, { now = new Date() } = {}) {
 // ---------- агрегация записей day_metrics ----------
 
 function aggregateRecords(records) {
-  const agg = { posts: 0, views: 0, likes: 0, reactions: 0, reposts: 0, engagement: 0, days: 0 };
+  const agg = { posts: 0, days: 0 };
   for (const r of records) {
     if (!r) continue;
     agg.posts += r.posts || 0;
-    agg.views += r.views || 0;
-    agg.likes += r.likes || 0;
-    agg.reactions += r.reactions || 0;
-    agg.reposts += r.reposts || 0;
-    agg.engagement += r.engagement || 0;
     agg.days++;
   }
   return agg;
@@ -193,30 +162,14 @@ async function loadRecords(env, dates) {
   return out;
 }
 
-// ---------- лучший пост и рекомендация ----------
-
-function bestToday(log, date) {
-  const top = bestPerformingPosts(postsForDate(log, date), 1);
-  return top[0] || null;
-}
-
-function recommendationText(log, date) {
-  const agg = aggregateStats(postsForDate(log, date));
-  const topic = agg.topic[0];
-  if (!topic || !topic.posts || !topic.avg_views) return "";
-  return `\n\n💡 <b>Совет студии</b>: тема «${topic.key}» сегодня дала ${fmtInt(topic.avg_views)} просм./пост — завтра делаем в этом же ключе.`;
-}
-
 // ---------- тексты отчётов ----------
 
-// 🌆 Вечерняя сводка: свежие метрики дня + дельты к вчера + подписчики.
+// 🌆 Вечерняя сводка: посты и подписчики дня + дельты к вчера.
 export async function eveningSummaryText(env, { now = new Date() } = {}) {
   try {
     const rec = await collectDailyMetrics(env, { now });
     const prev = await kv.getDayMetrics(env, dateKeyOffset(rec.date, -1));
     const msk = mskNow(now);
-    const log = await kv.getLog(env);
-    const best = bestToday(log, rec.date);
 
     const subsLines = [];
     if (rec.tg_members != null || rec.vk_members != null) {
@@ -229,24 +182,11 @@ export async function eveningSummaryText(env, { now = new Date() } = {}) {
       if (subsLines.length) subsLines.unshift("\n👥 <b>Аудитория</b>");
     }
 
-    let bestLine = "";
-    if (best) {
-      const url = best.vk_post_id && env.VK_GROUP_ID
-        ? ` · <a href="https://vk.com/wall-${env.VK_GROUP_ID}_${best.vk_post_id}">VK</a>`
-        : "";
-      bestLine = `\n\n🏆 <b>Лучший пост</b>: «${escHtml(best.title || best.headline || "")}» — ${fmtInt(best.views)} просмотров${url}`;
-    }
-
     return (
       "🌆 <b>Вечерняя сводка · " + fmtDayRu(rec.date) + "</b>\n\n" +
       "Сегодня за день:\n" +
-      `• Постов: <b>${fmtInt(rec.posts)}</b>${prev && prev.posts ? ` (вчера ${prev.posts})` : ""}\n` +
-      `• Просмотров: <b>${fmtInt(rec.views)}</b>${pctLine(rec.views, prev && prev.views)}\n` +
-      `• Лайков: <b>${fmtInt(rec.likes)}</b>${pctLine(rec.likes, prev && prev.likes)}\n` +
-      `• Реакций: <b>${fmtInt(rec.reactions)}</b>${pctLine(rec.reactions, prev && prev.reactions)}\n` +
-      `• Вовлечённость: <b>${fmtInt(rec.engagement)}</b>${pctLine(rec.engagement, prev && prev.engagement)}` +
+      `• Постов: <b>${fmtInt(rec.posts)}</b>${prev && prev.posts ? ` (вчера ${prev.posts})` : ""}` +
       subsLines.join("\n") +
-      bestLine +
       (msk.hour < 21 ? "\n\nПродолжаем расти — каждый день студия становится сильнее. 💪" : "")
     );
   } catch (e) {
@@ -255,13 +195,11 @@ export async function eveningSummaryText(env, { now = new Date() } = {}) {
   }
 }
 
-// 📋 Отчёт за день: достижения, дельты, лучшее, совет студии.
+// 📋 Отчёт за день: достижения и дельты к вчера.
 export async function dayReportText(env, { now = new Date() } = {}) {
   try {
     const rec = await collectDailyMetrics(env, { now });
     const prev = await kv.getDayMetrics(env, dateKeyOffset(rec.date, -1));
-    const log = await kv.getLog(env);
-    const best = bestToday(log, rec.date);
 
     const subsPart = [];
     const pr = prev ? subscriberRange([prev]) : { total: null };
@@ -271,40 +209,17 @@ export async function dayReportText(env, { now = new Date() } = {}) {
       subsPart.push(`• Подписчиков: <b>${fmtInt(cr.total)}</b>${growth != null ? ` (${signed(growth)} за день)` : ""}`);
     }
 
-    let topLines = [];
-    if (best) {
-      const url = best.vk_post_id && env.VK_GROUP_ID
-        ? ` · <a href="https://vk.com/wall-${env.VK_GROUP_ID}_${best.vk_post_id}">VK</a>`
-        : "";
-      topLines.push(`• Лучший пост: «${escHtml(best.title || best.headline || "")}» — ${fmtInt(best.views)} просм.${url}`);
-    }
-    const agg = aggregateStats(postsForDate(log, rec.date));
-    if (agg.style[0] && agg.style[0].posts) {
-      topLines.push(`• Лучший жанр: ${agg.style[0].key} — ${fmtInt(agg.style[0].avg_views)} просм./пост`);
-    }
-    if (agg.topic[0] && agg.topic[0].posts) {
-      topLines.push(`• Лучшая тема: ${agg.topic[0].key} — ${fmtInt(agg.topic[0].avg_views)} просм./пост`);
-    }
-
     const deltaLine = prev && (rec.posts > 0 || prev.posts > 0)
       ? `\n\nПо сравнению со вчера (${fmtDayRu(prev.date)}):\n` +
-        `• Постов: ${rec.posts} → <b>${signed(rec.posts - prev.posts)}</b>\n` +
-        `• Просмотров: ${fmtInt(prev.views)} → <b>${signed(rec.views - prev.views)}</b>\n` +
-        `• Лайков: ${prev.likes} → <b>${signed(rec.likes - prev.likes)}</b>\n` +
-        `• Реакций: ${prev.reactions} → <b>${signed(rec.reactions - prev.reactions)}</b>`
+        `• Постов: ${rec.posts} → <b>${signed(rec.posts - prev.posts)}</b>`
       : "";
 
     return (
       "📋 <b>Отчёт за день · " + fmtDayRu(rec.date) + "</b>\n\n" +
       "<b>Чего достигли сегодня</b>\n" +
-      `• Опубликовано: ${russianPlural(rec.posts, "пост", "поста", "постов")}\n` +
-      `• Просмотры: <b>${fmtInt(rec.views)}</b>\n` +
-      `• Лайки: <b>${fmtInt(rec.likes)}</b> · Реакции: <b>${fmtInt(rec.reactions)}</b> · Репосты: <b>${fmtInt(rec.reposts)}</b>\n` +
-      `• Вовлечённость: <b>${fmtInt(rec.engagement)}</b>` +
+      `• Опубликовано: ${russianPlural(rec.posts, "пост", "поста", "постов")}` +
       (subsPart.length ? "\n" + subsPart.join("\n") : "") +
       deltaLine +
-      (topLines.length ? "\n\n<b>Что залетало</b>\n" + topLines.join("\n") : "") +
-      recommendationText(log, rec.date) +
       "\n\nКаждый день — шаг вперёд. Завтра сделаем больше! 🚀"
     );
   } catch (e) {
@@ -337,11 +252,7 @@ export async function weekReportText(env, { now = new Date() } = {}) {
     return (
       "🗓 <b>Недельная сводка · " + fmtDayRu(curDates[0]) + " — " + fmtDayRu(curDates[6]) + "</b>\n\n" +
       "За неделю:\n" +
-      `• Постов: <b>${fmtInt(ca.posts)}</b>${pa.posts ? ` (за прошлую: ${pa.posts})` : ""} · в среднем ${perDay} в день\n` +
-      `• Просмотров: <b>${fmtInt(ca.views)}</b>${pa.views ? pctLine(ca.views, pa.views) : ""}\n` +
-      `• Лайков: <b>${fmtInt(ca.likes)}</b>${pa.likes ? pctLine(ca.likes, pa.likes) : ""}\n` +
-      `• Реакций: <b>${fmtInt(ca.reactions)}</b>${pa.reactions ? pctLine(ca.reactions, pa.reactions) : ""}\n` +
-      `• Вовлечённость: <b>${fmtInt(ca.engagement)}</b>${pa.engagement ? pctLine(ca.engagement, pa.engagement) : ""}` +
+      `• Постов: <b>${fmtInt(ca.posts)}</b>${pa.posts ? ` (за прошлую: ${pa.posts})` : ""} · в среднем ${perDay} в день` +
       (subsLines.length ? "\n\n👥 <b>Аудитория</b>\n" + subsLines.join("\n") : "") +
       "\n\nНеделя за неделей — рост к цели. Лучшая студия строится так. 💪"
     );
@@ -373,11 +284,7 @@ export async function monthReportText(env, { now = new Date() } = {}) {
     return (
       "📅 <b>Месячная сводка · " + MONTHS[m - 1] + " " + y + "</b>\n\n" +
       "За месяц:\n" +
-      `• Постов: <b>${fmtInt(ca.posts)}</b>${pa.posts ? ` (за прошлый: ${pa.posts})` : ""}\n` +
-      `• Просмотров: <b>${fmtInt(ca.views)}</b>${pa.views ? pctLine(ca.views, pa.views) : ""}\n` +
-      `• Лайков: <b>${fmtInt(ca.likes)}</b>${pa.likes ? pctLine(ca.likes, pa.likes) : ""}\n` +
-      `• Реакций: <b>${fmtInt(ca.reactions)}</b>${pa.reactions ? pctLine(ca.reactions, pa.reactions) : ""}\n` +
-      `• Вовлечённость: <b>${fmtInt(ca.engagement)}</b>${pa.engagement ? pctLine(ca.engagement, pa.engagement) : ""}` +
+      `• Постов: <b>${fmtInt(ca.posts)}</b>${pa.posts ? ` (за прошлый: ${pa.posts})` : ""}` +
       (subsLines.length ? "\n\n👥 <b>Аудитория</b>\n" + subsLines.join("\n") : "") +
       "\n\nМесяц к месяцу — студия растёт. Впереди лучшие охваты! 🚀"
     );
@@ -449,12 +356,4 @@ export async function maybeSendReports(env, { now = new Date() } = {}) {
   }
 
   return sent;
-}
-
-// Экранирование HTML для безопасной вставки текста поста в отчёт.
-function escHtml(s) {
-  return String(s || "")
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
 }

@@ -1,120 +1,11 @@
-// Сбор и агрегация метрик вовлечённости по уже опубликованным постам.
-// Метрики хранятся прямо в записях publish_log:
+// Агрегация метрик вовлечённости по уже опубликованным постам. Метрики
+// хранятся прямо в записях publish_log:
 //   entry.stats = { vk: { views, likes, reposts, comments, at }, reactions: { emoji: n }, ... }
-// Периодический сбор (тик): VK — wall.getById опросом (views/likes/reposts/
-// comments), TG — реакции приходят в реальном времени через webhook
-// (message_reaction) и накапливаются дельта-обновлениями.
-// Агрегация по scheme/style/topic/provider питает ротацию стилей и выдаёт
-// данные для админ-команды /stats.
+// Сбор метрик (VK-опрос, TG-реакции) вырезан — групповой токен VK не читает
+// стену (error 27), реакции не подтверждены. Оставлены чистые агрегации:
+// они питают ротацию стилей, «что залетает» для промпта LLM и веса тем.
 
 import * as kv from "./kv.js";
-import { vkCall } from "./telegram.js";
-
-// Не опрашиваем VK каждый тик: повторный замер не чаще раза в час.
-const VK_METRICS_TTL_MS = 60 * 60 * 1000;
-// Не больше N постов за тик (бережём rate limit VK и бюджет подзапросов).
-const MAX_METRICS_PER_TICK = 20;
-
-export function reactionEmojiList(reactions = []) {
-  const out = [];
-  for (const r of reactions) {
-    if (r && r.type === "emoji" && r.emoji) out.push(r.emoji);
-  }
-  return out;
-}
-
-// Дельта одного message_reaction update: пользователь убрал old и поставил new.
-// Возвращает новую карту { emoji: count } на основе предыдущей.
-export function applyReactionDelta(prev, oldReaction, newReaction) {
-  const counts = { ...(prev || {}) };
-  for (const emoji of reactionEmojiList(oldReaction)) {
-    counts[emoji] = Math.max(0, (counts[emoji] || 0) - 1);
-    if (counts[emoji] === 0) delete counts[emoji];
-  }
-  for (const emoji of reactionEmojiList(newReaction)) {
-    counts[emoji] = (counts[emoji] || 0) + 1;
-  }
-  return counts;
-}
-
-// Запись реакции из webhook (update.message_reaction) в запись publish_log
-// по tg_message_id. Возвращает true, если запись найдена.
-export async function recordReaction(env, reaction) {
-  const messageId = reaction && reaction.message_id;
-  if (!messageId) return false;
-  const log = await kv.getLog(env);
-  const i = log.findIndex((e) => String(e.tg_message_id) === String(messageId));
-  if (i === -1) return false;
-  const entry = log[i];
-  const prev = (entry.stats && entry.stats.reactions) || {};
-  const reactions = applyReactionDelta(prev, reaction.old_reaction, reaction.new_reaction);
-  const total = Object.values(reactions).reduce((a, b) => a + b, 0);
-  const patch = {
-    stats: { ...(entry.stats || {}), reactions, reactions_total: total, reactions_at: Date.now() },
-  };
-  await kv.updateLog(env, entry.id, patch);
-  return true;
-}
-
-// VK: views/likes/reposts/comments по vk_post_id.
-// Групповой токен (VK_TOKEN) не может читать стену: wall.getById, wall.get и
-// stats.* недоступны ключу сообщества (error 27). Чтение работает только через
-// user-токен владельца группы (VK_USER_TOKEN) с правами wall — по-хорошему
-// получать его в настройках VK: Standalone приложение -> Implicit Flow
-// (scope=wall,groups,offline). Если VK_USER_TOKEN не задан — метрики VK не
-// собираются, вызываемый код логирует причину. Повторный замер — не чаще TTL.
-export async function collectVkMetrics(env) {
-  const log = await kv.getLog(env);
-  const now = Date.now();
-  const due = log.filter((e) => {
-    if (!e.vk_post_id) return false;
-    const at = e.stats && e.stats.vk && e.stats.vk.at;
-    return !at || now - at > VK_METRICS_TTL_MS;
-  });
-  const batch = due.slice(0, MAX_METRICS_PER_TICK);
-  if (!batch.length) return { fetched: 0, pending: 0 };
-
-  if (!env.VK_USER_TOKEN) {
-    console.log("[stats] VK_USER_TOKEN не задан — для чтения метрик стены нужен user-токен владельца группы (standalone приложение, scope wall,groups,offline)");
-    return { fetched: 0, pending: due.length };
-  }
-  // Для чтения используем user-токен (env), постинг остаётся на групповом.
-  const readEnv = { ...env, VK_TOKEN: env.VK_USER_TOKEN };
-
-  let fetched = 0;
-  try {
-    // wall.getById принимает до 100 постов одной строкой: -<ownerId>_<postId>,…
-    const posts = batch
-      .map((e) => `-${readEnv.VK_GROUP_ID}_${e.vk_post_id}`)
-      .join(",");
-    const list = await vkCall(readEnv, "wall.getById", { posts, v: "5.199" });
-    const map = new Map();
-    for (const p of Array.isArray(list) ? list : []) {
-      map.set(String(p.id), p);
-    }
-    for (const e of batch) {
-      const p = map.get(String(e.vk_post_id));
-      if (!p) continue;
-      const patch = {
-        stats: {
-          ...(e.stats || {}),
-          vk: {
-            views: (p.views && p.views.count) || 0,
-            likes: (p.likes && p.likes.count) || 0,
-            reposts: (p.reposts && p.reposts.count) || 0,
-            comments: (p.comments && p.comments.count) || 0,
-            at: now,
-          },
-        },
-      };
-      await kv.updateLog(env, e.id, patch);
-      fetched++;
-    }
-  } catch (e) {
-    console.log("[stats] VK метрики недоступны:", e.message);
-  }
-  return { fetched, pending: due.length - batch.length };
-}
 
 // ---------- агрегация ----------
 
@@ -176,8 +67,8 @@ export function postFlyScore(entry) {
   return raw / (hrs / 24);
 }
 
-// Лучшие посты по «залётности» с их атрибутами (жанр/схема/тема) — основа и для
-// отчёта админу (/top), и для контекста «делай похожие» в промпте LLM.
+// Лучшие посты по «залётности» с их атрибутами (жанр/схема/тема) — основа для
+// контекста «делай похожие» в промпте LLM.
 export function bestPerformingPosts(log, n = 5) {
   const scored = (log || [])
     .filter((e) => e && (e.vk_ok || e.tg_ok))
@@ -274,72 +165,8 @@ export function contentWeightsFromLog(log, opts = {}) {
   };
 }
 
-// Кэшированные веса стилей в KV (обновляются при сборе метрик в тике).
-export async function getStyleWeights(env) {
-  return (await kv.getStyleWeights(env)) || {};
-}
-
-export async function refreshStyleWeights(env) {
-  const log = await kv.getLog(env);
-  const weights = styleWeightsFromLog(log);
-  await kv.setStyleWeights(env, weights);
-  return weights;
-}
-
 // Полные веса ротации (жанр/тема/схема) из KV; style всегда есть (обратная
 // совместимость с refreshStyleWeights), topic/scheme — по мере накопления статов.
 export async function getContentWeights(env) {
   return (await kv.getContentWeights(env)) || {};
-}
-
-// Пересчитывает и кэширует все веса ротации по свежим метрикам.
-export async function refreshContentWeights(env) {
-  const log = await kv.getLog(env);
-  const weights = contentWeightsFromLog(log);
-  await kv.setStyleWeights(env, weights.style);
-  await kv.setContentWeights(env, weights);
-  return weights;
-}
-
-// ---------- данные для дашборда («скриншот» статистики) ----------
-
-// Собирает всё, что нужно для картинки-дашборда в /stats: счётчики, средние
-// охваты, вовлечённость, лидеры по жанру/теме/схеме и топ постов.
-export function dashboardData(log, { now = new Date() } = {}) {
-  const withMetrics = (log || []).filter((e) => e && (e.vk_ok || e.tg_ok));
-  let totalViews = 0, totalLikes = 0, totalReactions = 0;
-  for (const e of withMetrics) {
-    const s = e.stats || {};
-    totalViews += (s.vk && s.vk.views) || 0;
-    totalLikes += (s.vk && s.vk.likes) || 0;
-    totalReactions += s.reactions_total || 0;
-  }
-  const withViews = withMetrics.filter((e) => e && e.stats && e.stats.vk && e.stats.vk.views > 0);
-  const avgViews = withViews.length
-    ? Math.round(withViews.reduce((a, e) => a + e.stats.vk.views, 0) / withViews.length)
-    : 0;
-  const mskNowLocal = new Date(now.getTime() + 3 * 3600 * 1000);
-  const date = mskNowLocal.toISOString().slice(0, 10);
-  const today = (log || []).filter((e) => {
-    const t = new Date(e.published_at);
-    if (Number.isNaN(t.getTime())) return false;
-    const em = new Date(t.getTime() + 3 * 3600 * 1000).toISOString().slice(0, 10);
-    return em === date;
-  }).length;
-  const dim = (list) => (list || []).slice(0, 4).map((b) => ({ key: b.key, posts: b.posts, avg_views: b.avg_views }));
-  const agg = aggregateStats(log || []);
-  return {
-    date,
-    total_posts: (log || []).length,
-    today_posts: today,
-    avg_views: avgViews,
-    total_views: totalViews,
-    total_likes: totalLikes,
-    total_reactions: totalReactions,
-    engagement: totalViews + totalLikes * 50 + totalReactions * 30,
-    styles: dim(agg.style),
-    topics: dim(agg.topic),
-    schemes: dim(agg.scheme),
-    top: bestPerformingPosts(log, 3),
-  };
 }

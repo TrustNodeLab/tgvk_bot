@@ -171,8 +171,8 @@ export async function setStyleWeights(env, weights) {
 
 // ---------- content weights (веса ротации по жанру/теме/схеме) ----------
 
-// Сводные веса ротации по вовлечённости: { style: {...}, topic: {...}, scheme: {...} }.
-// Обновляются refreshContentWeights при сборе метрик в тике.
+// Сводные веса ротации: { style: {...}, topic: {...}, scheme: {...} }.
+// Сбор вовлечённости вырезан, поэтому веса задаются вручную/по умолчанию.
 export async function getContentWeights(env) {
   const cw = await kvGet(env, "content_weights", null);
   if (cw && typeof cw === "object" && Object.keys(cw).length) return cw;

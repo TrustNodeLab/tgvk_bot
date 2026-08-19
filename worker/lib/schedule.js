@@ -23,12 +23,10 @@ export const EXTRA_WINDOWS = [
 export const MIN_SLOTS = 3;
 export const MAX_SLOTS = 5;
 
-// Пороги средних просмотров на пост (7 дней) для авто-корректировки частоты.
-export const LOW_VIEWS = 1200;   // ниже -> публикуем чаще
-export const HIGH_VIEWS = 6000;  // выше -> публикуем реже
+// Расписание постов задаётся вручную: режим «авто»/«ручной» и число слотов.
+// Авто-корректировка по вовлечённости убрана — метрики не собираются.
 
-// Решаем по статистике не чаще раза в сутки, чтобы расписание не дёргалось.
-const ADJUST_COOLDOWN_MS = 24 * 3600 * 1000;
+// Ручное управление: режим авто/ручной и принудительное число слотов в день.
 
 export function defaultScheduleState() {
   return {
@@ -92,59 +90,6 @@ export function windowBySlug(slug) {
   return NEWS_WINDOWS.find((w) => w.slug === slug) ||
     EXTRA_WINDOWS.find((w) => w.slug === slug) ||
     null;
-}
-
-// Адаптивная корректировка частоты по средним охватам за последние 7 дней.
-// Возвращает текст для уведомления админу или null (ничего не менялось).
-// Работает только в режиме «авто» и не чаще раза в сутки.
-export async function maybeAdjustSchedule(env, now = new Date()) {
-  const st = await getSchedule(env);
-  if (st.mode !== "auto") return null;
-  if (st.updated_at && now.getTime() - new Date(st.updated_at).getTime() < ADJUST_COOLDOWN_MS) {
-    return null;
-  }
-  const log = await kv.getLog(env);
-  const since = now.getTime() - 7 * 86400000;
-  const posts = log.filter((e) => {
-    const t = new Date(e.published_at).getTime();
-    if (Number.isNaN(t) || t < since) return false;
-    return e && (e.vk_ok || e.tg_ok) && (e.kind === "news" || e.kind === "digest");
-  });
-  if (posts.length < 3) return null; // мало данных — расписание не трогаем
-
-  let views = 0, likes = 0, reactions = 0;
-  for (const e of posts) {
-    const s = e.stats || {};
-    views += (s.vk && s.vk.views) || 0;
-    likes += (s.vk && s.vk.likes) || 0;
-    reactions += s.reactions_total || 0;
-  }
-  const avgViews = Math.round(views / posts.length);
-  const avgEng = Math.round((views + likes * 50 + reactions * 30) / posts.length);
-  const wins = st.windows;
-
-  if (avgViews < LOW_VIEWS && wins.length < MAX_SLOTS) {
-    const extra = nextExtraWindow(wins);
-    if (!extra) return null;
-    const next = await setSchedule(env, {
-      windows: [...wins, extra],
-      reason: `охваты низкие (~${avgViews} просм./пост) — публикуем чаще`,
-    });
-    return `📈 <b>Расписание обновлено автоматически</b>\nСредние охваты низкие (~${avgViews} просм./пост) — публикую чаще, добавил слот «${extra.label}».\nТеперь ${next.windows.length} ${pluralSlots(next.windows.length)} в день.`;
-  }
-
-  if (avgViews > HIGH_VIEWS && wins.length > MIN_SLOTS) {
-    const nextWindows = removeOneWindow(wins);
-    if (nextWindows.length === wins.length) return null;
-    const removed = wins.find((w) => !nextWindows.some((n) => n.start === w.start));
-    const next = await setSchedule(env, {
-      windows: nextWindows,
-      reason: `охваты высокие (~${avgViews} просм./пост) — публикуем реже`,
-    });
-    return `📉 <b>Расписание обновлено автоматически</b>\nСредние охваты высокие (~${avgViews} просм./пост) — публикую реже, убрал слот «${removed && removed.label}».\nТеперь ${next.windows.length} ${pluralSlots(next.windows.length)} в день.`;
-  }
-
-  return null;
 }
 
 // Ручное управление: режим авто/ручной и принудительное число слотов в день.

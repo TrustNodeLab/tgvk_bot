@@ -21,7 +21,6 @@ import {
   getSchedule,
   setScheduleMode,
   setSlotsPerDay,
-  maybeAdjustSchedule,
   resetSchedule,
 } from "./lib/schedule.js";
 import {
@@ -36,8 +35,7 @@ import {
 import { fmtTime, escHtml } from "./lib/text.js";
 import { DIGEST_MIN_ITEMS, DIGEST_MAX_ITEMS, mskNow, plural } from "./lib/config.js";
 import { sendGeneratedPreview, approveButtons } from "./lib/preview.js";
-import { renderCard, renderDashboard } from "./lib/cardgen.js";
-import { collectVkMetrics, refreshContentWeights, recordReaction, bestPerformingPosts, aggregateStats, dashboardData } from "./lib/stats.js";
+import { renderCard } from "./lib/cardgen.js";
 import { eveningSummaryText, dayReportText, weekReportText, monthReportText } from "./lib/analytics.js";
 import {
   handleUserStart,
@@ -50,7 +48,7 @@ import {
   handleEventDialogMessage,
 } from "./lib/support.js";
 
-const VERSION = "2.5.0";
+const VERSION = "2.6.0";
 
 // ---------- тексты ----------
 
@@ -76,7 +74,7 @@ const HELP_TEXT =
   "<b>Провайдеры карточек:</b>\n" +
   "/gemini &lt;текст&gt; | /gigachat &lt;текст&gt; | /noai &lt;текст&gt;\n" +
   "<b>Обзор:</b>\n" +
-  "/status — статус, /stats — статистика, /top — лучшие посты, /stock — склад\n" +
+  "/status — статус, /stats — состав публикаций, /stock — склад\n" +
   "/report [вечер|день|неделя|месяц] — отчёт студии (автоматически: вечер 20:00, день 23:30, неделя вс, месяц 1-го)\n" +
   "/schedule — расписание слотов, /sources — источники и ключевые слова\n" +
   "/drafts — черновики на одобрении, /export — выгрузка истории\n" +
@@ -104,7 +102,7 @@ const COMMANDS = [
   { command: "pubtg", description: "Опубликовать со склада в TG" },
   { command: "skip", description: "Пропустить кандидата" },
   { command: "event", description: "Создать ивент" },
-  { command: "stats", description: "Статистика" },
+  { command: "stats", description: "Состав публикаций" },
   { command: "report", description: "Отчёт студии: вечер|день|неделя|месяц" },
   { command: "blacklist", description: "Чёрный список" },
   { command: "keyword", description: "Ключевые слова" },
@@ -126,8 +124,7 @@ const BTN_STATUS = "📊 Статус";
 const BTN_NEW_POST = "✍️ Сделать пост";
 const BTN_NOAI = "📝 Пост без ИИ";
 const BTN_STOCK = "🗄 Склад";
-const BTN_STATS = "📜 Статистика";
-const BTN_TOP = "🏆 Топ постов";
+const BTN_STATS = "📜 Публикации";
 const BTN_REPORT = "📈 Отчёт студии";
 const BTN_SCHEDULE = "🗓 Расписание";
 const BTN_SOURCES = "📡 Источники";
@@ -149,10 +146,10 @@ function replyKeyboard(rows) {
 // Мониторинг студии в первую очередь: статистика, топ залётности, отчёты,
 // расписание и источники — в верхних рядах, создание контента — ниже.
 const MAIN_KB = replyKeyboard([
-  [BTN_STATUS, BTN_STATS, BTN_TOP],
-  [BTN_REPORT, BTN_SCHEDULE, BTN_SOURCES],
+  [BTN_STATUS, BTN_STATS, BTN_REPORT],
+  [BTN_SCHEDULE, BTN_SOURCES, BTN_SETTINGS],
   [BTN_NEW_POST, BTN_NOAI, BTN_STOCK],
-  [BTN_EVENT, BTN_SETTINGS, BTN_HELP],
+  [BTN_EVENT, BTN_DRYRUN, BTN_HELP],
 ]);
 
 // Ответ по нажатию reply-кнопки -> команда (кроме «Сделать пост» — там подсказка).
@@ -160,7 +157,6 @@ const BTN_CMDS = {
   [BTN_STATUS]: "/status",
   [BTN_STOCK]: "/stock",
   [BTN_STATS]: "/stats",
-  [BTN_TOP]: "/top",
   [BTN_REPORT]: "/report",
   [BTN_SCHEDULE]: "/schedule",
   [BTN_SOURCES]: "/sources",
@@ -290,7 +286,7 @@ async function handleApi(env, request, url) {
         body: JSON.stringify({
           url: `${origin}/`,
           secret_token: env.WEBHOOK_SECRET,
-          allowed_updates: ["message", "callback_query", "edited_message", "message_reaction"],
+          allowed_updates: ["message", "callback_query", "edited_message"],
           drop_pending_updates: false,
         }),
       });
@@ -1350,7 +1346,6 @@ async function handleCommand(env, state, chatId, text) {
       }).length;
       const byKind = {};
       for (const e of log) byKind[e.kind || "news"] = (byKind[e.kind || "news"] || 0) + 1;
-      // Русские метки типов контента.
       const KIND_LABELS = {
         news: "новости",
         digest: "дайджесты",
@@ -1362,61 +1357,9 @@ async function handleCommand(env, state, chatId, text) {
       const lines = Object.entries(byKind)
         .map(([k, v]) => `• ${KIND_LABELS[k] || k}: ${v}`)
         .join("\n");
-      // Вовлечённость: TG-реакции из webhook message_reaction. VK-метрики не
-      // собираются — групповой токен не читает стену (wall.getById/wall.get/
-      // stats.* недоступны ключу сообщества, error 27), поэтому блок опущен.
-      let engagement = "";
-      try {
-        const agg = aggregateStats(log);
-        const fmt = (b) => (b ? `${b.key}: ${b.posts} пост., ~${b.avg_views} просм., ${b.reactions} реакций` : "—");
-        // TG-метрики (реакции).
-        const tgPosts = (log || []).filter((e) => e && e.stats && e.stats.reactions_total > 0);
-        const tgReactions = tgPosts.reduce((a, e) => a + (e.stats.reactions_total || 0), 0);
-        const topReactions = {};
-        for (const e of tgPosts) {
-          const r = e.stats.reactions || {};
-          for (const [emoji, n] of Object.entries(r)) topReactions[emoji] = (topReactions[emoji] || 0) + n;
-        }
-        const topReactionLine = Object.entries(topReactions)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 3)
-          .map(([emoji, n]) => `${emoji}×${n}`)
-          .join(" · ") || "—";
-        const bestStyle = agg.style[0], bestScheme = agg.scheme[0], bestTopic = agg.topic[0];
-        engagement =
-          "\n\n📊 <b>Вовлечённость</b>\n" +
-          "🟢 <b>Telegram</b>\n" +
-          `Постов с реакциями: <b>${tgPosts.length}/${log.length}</b>\n` +
-          `Реакций всего: <b>${tgReactions}</b> · Топ: ${topReactionLine}\n` +
-          `• Лучший жанр: ${fmt(bestStyle)}\n` +
-          `• Лучшая схема: ${fmt(bestScheme)}\n` +
-          `• Лучшая тема: ${fmt(bestTopic)}\n` +
-          `Детальнее — /top`;
-      } catch (e) {
-        engagement = "";
-      }
-      // Картинка-«скриншот» статистики: дашборд в стиле студии + короткая
-      // подпись. Числовые детали остаются в текстовом сообщении ниже.
-      try {
-        const dash = dashboardData(log, { now: new Date() });
-        const sched = await getSchedule(env);
-        dash.schedule_text = sched && sched.mode === "auto"
-          ? `расписание: авто · ${sched.windows.length} ${plural(sched.windows.length, "слот", "слота", "слотов")} в день`
-          : `расписание: ручное · ${sched ? sched.windows.length : "—"} ${sched ? plural(sched.windows.length, "слот", "слота", "слотов") : ""} в день`;
-        const png = await renderDashboard(dash);
-        const cap =
-          "📈 <b>Статистика канала</b>\n\n" +
-          `Всего: <b>${log.length}</b> · Сегодня: <b>${today}</b>\n` +
-          `Средние просмотры: <b>${dash.avg_views}</b> · Реакций всего: <b>${dash.total_reactions}</b>\n` +
-          `Расписание: ${dash.schedule_text}`;
-        await sendPhoto(env, chatId, png, cap, { parse_mode: "HTML" });
-      } catch (e) {
-        await sendMessage(env, chatId, "⚠️ Не удалось собрать картинку статистики.", { parse_mode: "HTML" });
-      }
       const msg =
         "📊 <b>Состав публикаций</b>\n\n" +
-        `Всего: <b>${log.length}</b>\nСегодня: <b>${today}</b>\n\n${lines || "—"}` +
-        engagement;
+        `Всего: <b>${log.length}</b>\nСегодня: <b>${today}</b>\n\n${lines || "—"}`;
       await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
       break;
     }
@@ -1462,34 +1405,6 @@ async function handleCommand(env, state, chatId, text) {
         break;
       }
       await sendMessage(env, chatId, text, { parse_mode: "HTML" });
-      break;
-    }
-
-    case "/top": {
-      const log = await kv.getLog(env);
-      const top = bestPerformingPosts(log, 6);
-      if (!top.length) {
-        await sendMessage(env, chatId, "Пока нет постов с метриками. Они появятся после публикаций и опроса VK (раз в час) — новые посты уже пишутся «под» лучшие.");
-        break;
-      }
-      const lines = top.map((p, i) => {
-        const dims = [p.style_id, p.scheme_id, p.topic_id].filter(Boolean).join("/");
-        const meta = [
-          p.views ? `👁 ${p.views}` : null,
-          p.likes ? `❤️ ${p.likes}` : null,
-          p.reposts ? `↻ ${p.reposts}` : null,
-          p.reactions ? `⚡ ${p.reactions}` : null,
-        ].filter(Boolean).join(" · ");
-        const url = p.vk_post_id && env.VK_GROUP_ID
-          ? ` · <a href="https://vk.com/wall-${env.VK_GROUP_ID}_${p.vk_post_id}">VK</a>`
-          : "";
-        return `${i + 1}. <b>${escHtml(p.title || p.headline || "")}</b>\n   ${dims ? `[${escHtml(dims)}] ` : ""}${meta}${url}`;
-      });
-      const msg =
-        "🏆 <b>Топ залётности</b>\n(активность с поправкой на возраст)\n\n" +
-        lines.join("\n\n") +
-        "\n\nНовые посты и дайджесты собираются в этом же ключе.";
-      await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
       break;
     }
 
@@ -1809,18 +1724,6 @@ async function handleUpdate(env, update) {
     await handleMessage(env, update.message, state);
   } else if (update.edited_message) {
     await handleMessage(env, update.edited_message, state);
-  } else if (update.message_reaction) {
-    // Реакции на посты канала — источник метрик вовлечённости (TG-сторона).
-    // Фиксируются в publish_log по tg_message_id для агрегации в /stats.
-    const mr = update.message_reaction || {};
-    const counts = (mr.new_reaction || []).length - (mr.old_reaction || []).length;
-    console.log(`[webhook] message_reaction: msg=${mr.message_id} delta=${counts}`);
-    try {
-      const ok = await recordReaction(env, update.message_reaction);
-      console.log(`[webhook] recordReaction msg=${mr.message_id} found=${ok}`);
-    } catch (e) {
-      console.log("record reaction error:", e.message);
-    }
   } else {
     console.log(`[webhook] unknown update ${update.update_id}`);
   }
@@ -1870,32 +1773,9 @@ export default {
     } catch (e) {
       console.log("keepRenderWarm error:", e.message);
     }
-    // Статистика вовлечённости: опрос VK по опубликованным постам + обновление
-    // весов ротации (жанр/тема/схема) по интересам аудитории.
-    // Уже в waitUntil с ПЕРВОЙ секунды (не после тика): у scheduled-хендлера
-    // wall-clock лимит ~30с, тик съедает до 28с — последовательный вызов ПОСЛЕ
-    // тика молча резался, и метрики VK не собирались вообще. Параллельно с тиком
-    // опрос успевает сделать wall.get за оставшийся бюджет.
-    ctx.waitUntil(
-      (async () => {
-        try {
-          await collectVkMetrics(env);
-          await refreshContentWeights(env);
-          // Адаптивное расписание: если охваты низкие — публикуем чаще, высокие —
-          // реже. Уведомление админу шлём, только когда расписание реально поменялось.
-          try {
-            const note = await maybeAdjustSchedule(env);
-            if (note && env.TELEGRAM_ADMIN_CHAT_ID) {
-              await sendMessage(env, env.TELEGRAM_ADMIN_CHAT_ID, note, { parse_mode: "HTML" });
-            }
-          } catch (e) {
-            console.log("adjust schedule error:", e.message);
-          }
-        } catch (e) {
-          console.log("collect metrics error:", e.message);
-        }
-      })()
-    );
+    // Статистика вовлечённости (VK-опрос и TG-реакции) вырезана: групповой
+    // токен VK не читает стену (error 27), вебхук реакций не подтверждён
+    // тестами. Публикация работает напрямую на консенсус платформ.
     try {
       await schedulerTick(env);
     } catch (e) {

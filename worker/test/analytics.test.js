@@ -1,5 +1,6 @@
-// Тесты аналитики студии: дневные метрики (посты/охваты/подписчики),
-// отчёты (вечерняя сводка, день, неделя, месяц) и автопубликация по времени.
+// Тесты аналитики студии: дневные метрики (посты/подписчики), отчёты
+// (вечерняя сводка, день, неделя, месяц) и автопубликация по времени.
+// Вовлечённость вырезана — отчёты считают только посты и подписчиков.
 // Запуск: node --test worker/test/analytics.test.js
 
 import { test } from "node:test";
@@ -93,26 +94,21 @@ function post(id, publishedAt, { views = 0, likes = 0, reposts = 0, reactions = 
   };
 }
 
-test("collectDailyMetrics: считает посты дня, охваты и подписчиков в day_metrics", async () => {
+test("collectDailyMetrics: считает посты дня и подписчиков в day_metrics", async () => {
   const { collectDailyMetrics } = await import(ANALYTICS);
   const kv = makeKV();
   const env = makeEnv(kv);
   const stock = await import(KV);
   const now = new Date("2026-08-15T12:00:00Z"); // МСК 15:00
-  await stock.addLog(env, post("a", "2026-08-15T09:30:00Z", { views: 100, likes: 3, reposts: 1, reactions: 5 }));
-  await stock.addLog(env, post("b", "2026-08-15T11:00:00Z", { views: 200, likes: 7, reactions: 2 }));
-  await stock.addLog(env, post("c", "2026-08-14T09:30:00Z", { views: 999, likes: 99 })); // вчера — не в счёт
+  await stock.addLog(env, post("a", "2026-08-15T09:30:00Z"));
+  await stock.addLog(env, post("b", "2026-08-15T11:00:00Z"));
+  await stock.addLog(env, post("c", "2026-08-14T09:30:00Z")); // вчера — не в счёт
 
   const s = stubFetch();
   try {
     const rec = await collectDailyMetrics(env, { now });
     assert.equal(rec.date, "2026-08-15");
     assert.equal(rec.posts, 2, "посты только за сегодня");
-    assert.equal(rec.views, 300, "просмотры дня");
-    assert.equal(rec.likes, 10, "лайки дня");
-    assert.equal(rec.reactions, 7, "реакции дня");
-    assert.equal(rec.reposts, 1, "репосты дня");
-    assert.equal(rec.engagement, 300 + 10 * 50 + 1 * 80 + 7 * 30, "вовлечённость");
     assert.equal(rec.tg_members, 120, "подписчики TG");
     assert.equal(rec.vk_members, 890, "подписчики VK");
     assert.ok(s.calls.tgCount >= 1, "запрос getChatMemberCount");
@@ -145,9 +141,9 @@ test("eveningSummaryText: сводка дня с дельтами к вчера 
   const env = makeEnv(kv);
   const stock = await import(KV);
   const now = new Date("2026-08-15T12:00:00Z");
-  await stock.setDayMetrics(env, "2026-08-14", { date: "2026-08-14", posts: 1, views: 150, likes: 5, reactions: 3, reposts: 0, engagement: 320 });
-  await stock.addLog(env, post("a", "2026-08-15T09:30:00Z", { views: 100, likes: 3, reactions: 5 }));
-  await stock.addLog(env, post("b", "2026-08-15T11:00:00Z", { views: 200, likes: 7, reactions: 2 }));
+  await stock.setDayMetrics(env, "2026-08-14", { date: "2026-08-14", posts: 1, tg_members: 110, vk_members: 880 });
+  await stock.addLog(env, post("a", "2026-08-15T09:30:00Z"));
+  await stock.addLog(env, post("b", "2026-08-15T11:00:00Z"));
 
   const s = stubFetch();
   try {
@@ -155,7 +151,6 @@ test("eveningSummaryText: сводка дня с дельтами к вчера 
     assert.ok(text.includes("Вечерняя сводка"), "заголовок сводки");
     assert.ok(text.includes("15.08"), "дата в МСК");
     assert.ok(text.includes("<b>2</b>"), "посты дня");
-    assert.ok(text.includes("300"), "просмотры дня");
     assert.ok(text.includes("120"), "подписчики TG");
     assert.ok(text.includes("890"), "подписчики VK");
     assert.ok(/вчера \d+/.test(text), "упоминание вчера");
@@ -164,14 +159,14 @@ test("eveningSummaryText: сводка дня с дельтами к вчера 
   }
 });
 
-test("dayReportText: отчёт за день с достижениями и лучшим постом", async () => {
+test("dayReportText: отчёт за день с достижениями и дельтой к вчера", async () => {
   const { dayReportText } = await import(ANALYTICS);
   const kv = makeKV();
   const env = makeEnv(kv);
   const stock = await import(KV);
   const now = new Date("2026-08-15T12:00:00Z");
-  await stock.setDayMetrics(env, "2026-08-14", { date: "2026-08-14", posts: 1, views: 150, likes: 5, reactions: 3, reposts: 0, engagement: 320 });
-  await stock.addLog(env, post("a", "2026-08-15T09:30:00Z", { views: 100, likes: 3, reactions: 5 }));
+  await stock.setDayMetrics(env, "2026-08-14", { date: "2026-08-14", posts: 1 });
+  await stock.addLog(env, post("a", "2026-08-15T09:30:00Z"));
 
   const s = stubFetch();
   try {
@@ -179,7 +174,6 @@ test("dayReportText: отчёт за день с достижениями и л�
     assert.ok(text.includes("Отчёт за день"), "заголовок");
     assert.ok(text.includes("Чего достигли сегодня"), "блок достижений");
     assert.ok(text.includes("По сравнению со вчера"), "дельты к вчера");
-    assert.ok(text.includes("Лучший пост"), "лучший пост");
   } finally {
     s.restore();
   }
@@ -209,9 +203,7 @@ test("weekReportText: агрегирует неделю и сравнивает 
     assert.ok(text.includes("10.08"), "начало недели");
     assert.ok(text.includes("16.08"), "конец недели");
     assert.ok(text.includes("<b>14</b>"), "сумма постов недели (7 дней × 2)");
-    assert.ok(text.includes("<b>3 500</b>"), "сумма просмотров (7 × 500)");
     assert.ok(text.includes("(+44 за неделю)"), "рост подписчиков за неделю");
-    assert.ok(/к прошлому/.test(text), "сравнение с прошлой неделей");
   } finally {
     s.restore();
   }
@@ -234,7 +226,6 @@ test("monthReportText: агрегирует месяц", async () => {
     assert.ok(text.includes("Месячная сводка"), "заголовок месяца");
     assert.ok(text.includes("август 2026"), "месяц и год");
     assert.ok(text.includes("<b>30</b>"), "сумма постов (15 дней × 2)");
-    assert.ok(text.includes("<b>6 000</b>"), "сумма просмотров (15 × 400)");
   } finally {
     s.restore();
   }

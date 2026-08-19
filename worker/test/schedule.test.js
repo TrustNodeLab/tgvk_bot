@@ -1,5 +1,6 @@
-// Тесты адаптивного расписания (lib/schedule.js), динамических слотов
-// (nextFreeSlot) и данных дашборда статистики (dashboardData).
+// Тесты расписания (lib/schedule.js) и динамических слотов (nextFreeSlot).
+// Авто-корректировка частоты и дашборд статистики вырезаны вместе с
+// вовлечённостью — расписание меняется только вручную.
 // Запуск: node --test worker/test/schedule.test.js
 
 import { test } from "node:test";
@@ -47,19 +48,6 @@ const SCHEDULE = "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/schedule.js"
 const KV = "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js";
 const SCHED = "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js";
 const CONFIG = "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/config.js";
-const STATS = "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/stats.js";
-const CARDGEN = "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/cardgen.js";
-
-function post(id, views, opts = {}) {
-  return {
-    id,
-    kind: opts.kind || "news",
-    vk_ok: true,
-    published_at: new Date(Date.now() - 3600000).toISOString(),
-    stats: { vk: { views } },
-    ...opts,
-  };
-}
 
 test("getSchedule: по умолчанию 3 базовых окна и авто-режим", async () => {
   const { getSchedule } = await import(SCHEDULE);
@@ -91,53 +79,6 @@ test("setSlotsPerDay: добавляет доп. слоты до MAX и убир
   assert.equal((await getWindows(env)).length, MIN_SLOTS);
 });
 
-test("maybeAdjustSchedule: низкие охваты -> добавляет слот (публикуем чаще)", async () => {
-  const { maybeAdjustSchedule, getWindows } = await import(SCHEDULE);
-  const stock = await import(KV);
-  const env = makeEnv();
-  for (let i = 0; i < 3; i++) await stock.addLog(env, post("p" + i, 300));
-  const note = await maybeAdjustSchedule(env);
-  assert.ok(note, "есть уведомление админу");
-  assert.ok(note.includes("публикую чаще"), "причина — низкие охваты");
-  assert.equal((await getWindows(env)).length, 4, "появился четвёртый слот");
-});
-
-test("maybeAdjustSchedule: высокие охваты -> убирает доп. слот (публикуем реже)", async () => {
-  const { maybeAdjustSchedule, getWindows, getSchedule, setSlotsPerDay } = await import(SCHEDULE);
-  const stock = await import(KV);
-  const kvmod = await import(KV);
-  const env = makeEnv();
-  await setSlotsPerDay(env, 4); // база + обеденный слот
-  // сбросим кулдаун (updated_at), чтобы проверка охватов сработала
-  await kvmod.setScheduleState(env, { ...(await getSchedule(env)), updated_at: null });
-  for (let i = 0; i < 3; i++) await stock.addLog(env, post("h" + i, 8000));
-  const note = await maybeAdjustSchedule(env);
-  assert.ok(note, "есть уведомление админу");
-  assert.ok(note.includes("публикую реже"), "причина — высокие охваты");
-  assert.equal((await getWindows(env)).length, 3, "вернулись к базовым трём слотам");
-});
-
-test("maybeAdjustSchedule: кулдаун раз в сутки, ручной режим и мало постов", async () => {
-  const { maybeAdjustSchedule, setScheduleMode } = await import(SCHEDULE);
-  const stock = await import(KV);
-  const env = makeEnv();
-
-  // мало постов — расписание не трогаем
-  await stock.addLog(env, post("solo", 300));
-  assert.equal(await maybeAdjustSchedule(env), null, "одного поста мало для решения");
-
-  // кулдаун: сразу после первой правки вторая не происходит
-  for (let i = 0; i < 3; i++) await stock.addLog(env, post("c" + i, 300));
-  assert.ok(await maybeAdjustSchedule(env), "первая правка произошла");
-  assert.equal(await maybeAdjustSchedule(env), null, "вторая правка в тот же день отменена");
-
-  // ручной режим: бот не трогает расписание
-  const env2 = makeEnv();
-  await setScheduleMode(env2, "manual");
-  for (let i = 0; i < 3; i++) await stock.addLog(env2, post("m" + i, 300));
-  assert.equal(await maybeAdjustSchedule(env2), null, "ручной режим — без авто-правок");
-});
-
 test("nextFreeSlot учитывает доп. окна расписания", async () => {
   const { nextFreeSlot } = await import(SCHED);
   const { setSlotsPerDay } = await import(SCHEDULE);
@@ -148,49 +89,4 @@ test("nextFreeSlot учитывает доп. окна расписания", as
   const slot = await nextFreeSlot(env, now);
   const msk = mskNow(new Date(slot));
   assert.equal(msk.minuteOfDay, 12 * 60, "следующий слот — обеденный 12:00 МСК (доп. окно)");
-});
-
-test("dashboardData: считает счётчики, лидеров и топ", async () => {
-  const { dashboardData } = await import(STATS);
-  const log = [
-    post("a", 5000, {
-      style_id: "warning", topic_id: "call", scheme_id: "safe_account",
-      stats: { vk: { views: 5000, likes: 5 } },
-    }),
-    post("b", 3000, {
-      style_id: "warning", topic_id: "call", scheme_id: "safe_account",
-      stats: { vk: { views: 3000 } },
-    }),
-    post("c", 100, {
-      kind: "digest", style_id: "digest", topic_id: "digest",
-      stats: { vk: { views: 100 }, reactions_total: 2 },
-    }),
-  ];
-  const d = dashboardData(log);
-  assert.equal(d.total_posts, 3);
-  assert.equal(d.avg_views, 2700, "средние просмотры по постам с метриками");
-  assert.equal(d.total_reactions, 2);
-  assert.equal(d.styles[0].key, "warning", "лидер по жанру");
-  assert.ok(d.top.length >= 1, "топ постов не пуст");
-  assert.equal(d.top[0].views, 5000, "топ начинается с самого залётного");
-  assert.ok(/^\d{4}-\d{2}-\d{2}$/.test(d.date), "дата в формате МСК");
-});
-
-test("renderDashboard: рисует PNG-дашборд статистики", async () => {
-  const { renderDashboard } = await import(CARDGEN);
-  const png = await renderDashboard({
-    date: "2026-08-07",
-    total_posts: 10,
-    today_posts: 2,
-    avg_views: 1500,
-    total_reactions: 40,
-    engagement: 50000,
-    schedule_text: "расписание: авто · 4 слота в день",
-    styles: [{ key: "warning", posts: 4, avg_views: 2000 }],
-    topics: [{ key: "call", posts: 3, avg_views: 1800 }],
-    top: [{ title: "Звонки из банка", views: 5000 }],
-  });
-  assert.ok(png && png.length > 1000, "картинка не пустая");
-  assert.equal(png[0], 0x89, "PNG-сигнатура");
-  assert.equal(png[1], 0x50);
 });

@@ -1,5 +1,6 @@
-// Тесты статистики вовлечённости: реакции (дельта), VK-опрос, агрегация,
-// веса жанров для ротации, атрибуты поста в generatePostData.
+// Тесты агрегации статистики: веса жанров для ротации, атрибуты поста в
+// generatePostData, «что залетает» для промпта. Сбор метрик (VK-опрос, реакции)
+// вырезан вместе с вовлечённостью — тестируем только чистые функции.
 // Запуск: node --test worker/test/stats.test.js
 
 import { test } from "node:test";
@@ -48,90 +49,6 @@ const STATS = "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/stats.js";
 const KV = "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js";
 const LLM = "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js";
 const NLP = "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/nlp.js";
-
-test("applyReactionDelta: дельты реакций пересчитывают счётчики", async () => {
-  const { applyReactionDelta, reactionEmojiList } = await import(STATS);
-  assert.deepEqual(
-    reactionEmojiList([
-      { type: "emoji", emoji: "👍" },
-      { type: "emoji", emoji: "❤️" },
-    ]),
-    ["👍", "❤️"]
-  );
-  const prev = { "👍": 2 };
-  const next = applyReactionDelta(prev, [{ type: "emoji", emoji: "👍" }], [{ type: "emoji", emoji: "❤️" }]);
-  assert.equal(next["👍"], 1, "убрали одну лампу");
-  assert.equal(next["❤️"], 1, "поставили сердечко");
-  const cleared = applyReactionDelta(next, [{ type: "emoji", emoji: "👍" }, { type: "emoji", emoji: "❤️" }], []);
-  assert.deepEqual(cleared, {}, "все реакции сняты");
-});
-
-test("recordReaction: находит пост по tg_message_id и пишет реакции в log", async () => {
-  const { recordReaction } = await import(STATS);
-  const env = makeEnv();
-  const stock = await import(KV);
-  await stock.addLog(env, { id: "p1", tg_message_id: 555, tg_ok: true, vk_ok: true });
-  const ok = await recordReaction(env, {
-    message_id: 555,
-    old_reaction: [],
-    new_reaction: [{ type: "emoji", emoji: "👍" }],
-  });
-  assert.ok(ok, "пост найден по tg_message_id");
-  const log = await stock.getLog(env);
-  assert.equal(log[0].stats.reactions["👍"], 1, "реакция зафиксирована");
-  assert.equal(log[0].stats.reactions_total, 1, "сумма реакций");
-});
-
-test("recordReaction: неизвестный message_id не пишет", async () => {
-  const { recordReaction } = await import(STATS);
-  const env = makeEnv();
-  const ok = await recordReaction(env, { message_id: 999, old_reaction: [], new_reaction: [] });
-  assert.equal(ok, false, "нет поста — нет записи");
-});
-
-test("collectVkMetrics: при отсутствии VK_USER_TOKEN логирует причину и не падает", async () => {
-  const { collectVkMetrics } = await import(STATS);
-  const env = makeEnv();
-  delete env.VK_USER_TOKEN;
-  const stock = await import(KV);
-  await stock.addLog(env, { id: "v1", vk_post_id: 42, tg_ok: true, vk_ok: true });
-  const res = await collectVkMetrics(env);
-  assert.equal(res.fetched, 0, "ничего не собрано");
-  assert.equal(res.pending, 1, "пост в очереди");
-});
-
-test("collectVkMetrics: опрашивает wall.getById через VK_USER_TOKEN и пишет views/likes", async () => {
-  const { collectVkMetrics } = await import(STATS);
-  const env = makeEnv();
-  env.VK_USER_TOKEN = "user-token";
-  const stock = await import(KV);
-  await stock.addLog(env, { id: "v1", vk_post_id: 42, tg_ok: true, vk_ok: true });
-  const calls = { urls: [], bodies: [] };
-  const orig = globalThis.fetch;
-  globalThis.fetch = async (url, init) => {
-    calls.urls.push(String(url));
-    calls.bodies.push(String(init && init.body));
-    return new Response(
-      JSON.stringify({
-        response: [
-          { id: 42, views: { count: 123 }, likes: { count: 7 }, reposts: { count: 1 }, comments: { count: 2 } },
-        ],
-      }),
-      { status: 200, headers: { "Content-Type": "application/json" } }
-    );
-  };
-  try {
-    const res = await collectVkMetrics(env);
-    assert.ok(calls.urls.some((u) => u.includes("api.vk.com")), "вызов VK API");
-    assert.ok(calls.bodies.some((b) => b.includes("user-token")), "запрос идёт с user-токеном");
-    assert.equal(res.fetched, 1, "один пост обработан");
-    const log = await stock.getLog(env);
-    assert.equal(log[0].stats.vk.views, 123, "просмотры");
-    assert.equal(log[0].stats.vk.likes, 7, "лайки");
-  } finally {
-    globalThis.fetch = orig;
-  }
-});
 
 test("aggregateStats: считает метрики по жанру/схеме/теме", async () => {
   const { aggregateStats } = await import(STATS);
@@ -264,25 +181,6 @@ test("winningContextText: сводка «что залетает» для про
   assert.ok(txt.includes("жанр: warning"), "жанр-лидер в сводке");
   assert.ok(txt.includes("тема: call"), "тема-лидер в сводке");
   assert.ok(txt.includes("Примеры лучших"), "примеры лучших постов");
-});
-
-test("refreshContentWeights: пишет сводные веса в KV (style + topic + scheme)", async () => {
-  const { refreshContentWeights, getContentWeights } = await import(STATS);
-  const kv = makeKV();
-  const env = makeEnv(kv);
-  const stock = await import(KV);
-  const mk = (style, topic, scheme, views) => ({ style_id: style, topic_id: topic, scheme_id: scheme, stats: { vk: { views } } });
-  await stock.addLog(env, mk("warning", "call", "safe_account", 500));
-  await stock.addLog(env, mk("warning", "call", "safe_account", 400));
-  await stock.addLog(env, mk("warning", "call", "safe_account", 600));
-  const weights = await refreshContentWeights(env);
-  assert.ok(weights.style && weights.style.warning, "веса жанра");
-  assert.ok(weights.topic && weights.topic.call, "веса темы");
-  assert.ok(weights.scheme && weights.scheme.safe_account, "веса схемы");
-  const cached = await getContentWeights(env);
-  assert.ok(cached.style && cached.style.warning, "сводка прочитана из KV");
-  const legacy = await stock.getStyleWeights(env);
-  assert.ok(legacy && legacy.warning, "style_weights обновлены (совместимость)");
 });
 
 test("getContentWeights: фолбэк на legacy style_weights", async () => {
