@@ -1603,6 +1603,31 @@ test("webhook: кнопка «Отложить» ставит черновик �
   assert.ok(!calls.tg.some((c) => c.url.includes("/sendPhoto")), "пост не публиковался");
 });
 
+test("webhook: быстрая кнопка cmd:drafts под статусом вызывает команду админа", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const calls = installFetchMock(500);
+  const env = makeEnv();
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 12,
+      callback_query: {
+        id: "q3",
+        from: { id: 1 },
+        message: { message_id: 5, chat: { id: 1 } },
+        data: "cmd:drafts",
+      },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(
+    calls.tg.some((c) => (c.body || "").includes("Черновик")),
+    "бот ответил командой /drafts"
+  );
+});
+
 // ---------- аналитика по слотам окон ----------
 
 test("analytics: слот-отчёт показывает посты, форматы и пропуски по окнам", async () => {

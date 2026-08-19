@@ -52,7 +52,7 @@ import {
   handleEventDialogMessage,
 } from "./lib/support.js";
 
-const VERSION = "2.8.0";
+const VERSION = "2.9.0";
 
 // ---------- тексты ----------
 
@@ -63,33 +63,30 @@ const WELCOME_TEXT =
   "Как работать:\n" +
   "• Отправьте текст — подготовлю карточку и покажу превью на одобрение\n" +
   "• Новости нахожу сам, с дедупликацией одинаковых сюжетов\n" +
-  "• Кнопки у превью: ✅ опубликовать, 🔄 переделать, ❌ отменить\n" +
+  "• Кнопки у превью: 🌐 везде / 🔵 VK / 🟢 TG, 🔄 переделать, 🕓 отложить, ❌ отменить\n" +
+  "• Меню внизу: 📊 контроль, 📝 черновики, 🗓 расписание\n" +
   "• Полный список — /help\n\n" +
   "Работаю даже при аутэдже GitHub (публикую готовые посты со склада).";
 
 const HELP_TEXT =
   "📖 <b>Команды студии</b>\n\n" +
-  "<b>Публикация:</b>\n" +
-  "/puball | /pubvk | /pubtg — опубликовать пост со склада (везде / VK / TG)\n" +
+  "<b>Контроль:</b>\n" +
+  "/status — статус, /stats — состав публикаций, /analytics — слоты окон\n" +
+  "/report [вечер|день|неделя|месяц] — отчёты студии\n" +
+  "<b>Контент:</b>\n" +
   "/draft &lt;текст&gt; — подготовить карточку (провайдер по расписанию)\n" +
-  "/publish — опубликовать последний пост со склада везде\n" +
-  "/skip &lt;guid&gt; — пропустить кандидата\n" +
-  "/event — создать ивент (текст + время публикации)\n" +
-  "<b>Провайдеры карточек:</b>\n" +
-  "/gemini &lt;текст&gt; | /gigachat &lt;текст&gt; | /noai &lt;текст&gt;\n" +
-  "<b>Обзор:</b>\n" +
-  "/status — статус, /stats — состав публикаций, /stock — склад\n" +
-  "/report [вечер|день|неделя|месяц] — отчёт студии (автоматически: вечер 20:00, день 23:30, неделя вс, месяц 1-го)\n" +
-  "/analytics [день|неделя|месяц] — метрики по слотам окон (форматы, факт-время, пропуски)\n" +
-  "/schedule — расписание слотов, /sources — источники и ключевые слова\n" +
-  "/drafts — черновики на одобрении, /defer [id] — отложить черновик на слот, /export — выгрузка истории\n" +
-  "<b>Настройки:</b>\n" +
-  "/settings — настройки, /autopost on|off — автопостинг\n" +
-  "/cardfmt gif|png|auto — формат карточек (GIF-анимация неба / PNG / авто)\n" +
+  "/gemini | /gigachat | /noai &lt;текст&gt; — карточка конкретным провайдером\n" +
+  "/drafts — черновики на одобрении, /defer [id] — отложить на слот\n" +
+  "/stock — склад, /puball | /pubvk | /pubtg [id] — опубликовать\n" +
+  "/skip &lt;guid&gt; — пропустить кандидата, /event — создать ивент\n" +
+  "<b>Расписание:</b>\n" +
+  "/schedule — окна, мод и AI-план по просадкам, /sources — источники и слова\n" +
+  "<b>Настройки и служебное:</b>\n" +
+  "/settings — настройки, /autopost on|off, /cardfmt gif|png|auto\n" +
   "/dryrun on|off — симуляция публикации\n" +
   "/blacklist add|del kw|src|guid &lt;значение&gt; — чёрный список\n" +
   "/keyword add|remove &lt;слова&gt; — ключевые слова\n" +
-  "/rescan — запустить полный тик, /version — версия";
+  "/rescan — полный тик, /export — история, /version — версия";
 
 const COMMANDS = [
   { command: "start", description: "Главное меню" },
@@ -131,8 +128,10 @@ const BTN_STATUS = "📊 Статус";
 const BTN_NEW_POST = "✍️ Сделать пост";
 const BTN_NOAI = "📝 Пост без ИИ";
 const BTN_STOCK = "🗄 Склад";
+const BTN_DRAFTS = "📝 Черновики";
 const BTN_STATS = "📜 Публикации";
-const BTN_REPORT = "📈 Отчёт студии";
+const BTN_ANALYTICS = "📈 Аналитика";
+const BTN_REPORT = "📉 Отчёты";
 const BTN_SCHEDULE = "🗓 Расписание";
 const BTN_SOURCES = "📡 Источники";
 const BTN_SETTINGS = "⚙️ Настройки";
@@ -150,12 +149,12 @@ function replyKeyboard(rows) {
   };
 }
 
-// Мониторинг студии в первую очередь: статистика, топ залётности, отчёты,
-// расписание и источники — в верхних рядах, создание контента — ниже.
+// Мониторинг и контент — сверху (рабочий поток админа), система — ниже.
+// Строки: контроль, контент/одобрение, расписание, служебное.
 const MAIN_KB = replyKeyboard([
-  [BTN_STATUS, BTN_STATS, BTN_REPORT],
+  [BTN_STATUS, BTN_REPORT, BTN_ANALYTICS],
+  [BTN_DRAFTS, BTN_STOCK, BTN_NEW_POST],
   [BTN_SCHEDULE, BTN_SOURCES, BTN_SETTINGS],
-  [BTN_NEW_POST, BTN_NOAI, BTN_STOCK],
   [BTN_EVENT, BTN_DRYRUN, BTN_HELP],
 ]);
 
@@ -163,7 +162,9 @@ const MAIN_KB = replyKeyboard([
 const BTN_CMDS = {
   [BTN_STATUS]: "/status",
   [BTN_STOCK]: "/stock",
+  [BTN_DRAFTS]: "/drafts",
   [BTN_STATS]: "/stats",
+  [BTN_ANALYTICS]: "/analytics",
   [BTN_REPORT]: "/report",
   [BTN_SCHEDULE]: "/schedule",
   [BTN_SOURCES]: "/sources",
@@ -172,6 +173,28 @@ const BTN_CMDS = {
   [BTN_DRYRUN]: "/dryrun",
   [BTN_NOAI]: "/noai",
   [BTN_EVENT]: "/event",
+};
+
+// Быстрые inline-действия под отчётами/статусом — не выходя из ответа.
+const QUICK_STATUS_KB = {
+  inline_keyboard: [
+    [
+      { text: BTN_DRAFTS, callback_data: "cmd:drafts" },
+      { text: BTN_STOCK, callback_data: "cmd:stock" },
+      { text: BTN_REPORT, callback_data: "cmd:report" },
+    ],
+    [{ text: "🤖 AI-план", callback_data: "sched:ai" }],
+  ],
+};
+
+const QUICK_ANALYTICS_KB = {
+  inline_keyboard: [
+    [
+      { text: BTN_STATUS, callback_data: "cmd:status" },
+      { text: BTN_SCHEDULE, callback_data: "cmd:schedule" },
+      { text: BTN_REPORT, callback_data: "cmd:report" },
+    ],
+  ],
 };
 
 // ---------- утилиты ----------
@@ -1033,6 +1056,19 @@ async function handleCallback(env, cq, state) {
     return;
   }
 
+  // быстрые inline-действия под отчётами/статусом (cmd:<command>)
+  if (action === "cmd") {
+    const command = segs[1] || "";
+    try {
+      if (!/^[a-z]+$/.test(command)) throw new Error("неверная команда");
+      await handleCommand(env, state, chatId, `/${command}`);
+      try { await answerCallbackQuery(env, qid, "Готово"); } catch (e) { /* ignore */ }
+    } catch (e) {
+      try { await answerCallbackQuery(env, qid, `Ошибка: ${e.message.slice(0, 90)}`); } catch (e2) { /* ignore */ }
+    }
+    return;
+  }
+
   // отчёты студии (/report → кнопки): вечер/день/неделя/месяц
   if (action === "report") {
     const which = segs[1] || "evening";
@@ -1341,7 +1377,7 @@ async function handleCommand(env, state, chatId, text) {
         (stockLines ? `На складе:${stockLines}` : "") +
         `Последний пост: ${lastLine}\n\n` +
         "🛡️ TrustNode";
-      await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
+      await sendMessage(env, chatId, msg, { parse_mode: "HTML", reply_markup: QUICK_STATUS_KB });
       break;
     }
 
@@ -1455,7 +1491,7 @@ async function handleCommand(env, state, chatId, text) {
         await sendMessage(env, chatId, "Аналитика слотов пока не собралась: мало данных.", { parse_mode: "HTML" });
         break;
       }
-      await sendMessage(env, chatId, text, { parse_mode: "HTML" });
+      await sendMessage(env, chatId, text, { parse_mode: "HTML", reply_markup: QUICK_ANALYTICS_KB });
       break;
     }
 

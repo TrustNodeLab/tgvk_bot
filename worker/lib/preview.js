@@ -12,9 +12,9 @@ import { sendCard } from "./telegram.js";
 export function approveButtons(id) {
   return [
     [
-      { text: "🌐 Опубликовать везде", callback_data: `approve:${id}:all` },
-      { text: "🔵 В VK", callback_data: `approve:${id}:vk` },
-      { text: "🟢 В TG", callback_data: `approve:${id}:tg` },
+      { text: "🌐 Везде", callback_data: `approve:${id}:all` },
+      { text: "🔵 VK", callback_data: `approve:${id}:vk` },
+      { text: "🟢 TG", callback_data: `approve:${id}:tg` },
     ],
     [
       { text: "🔄 Переделать", callback_data: `redo:${id}` },

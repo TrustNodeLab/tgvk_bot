@@ -205,7 +205,7 @@ function bytesToBase64(bytes) {
 export function suggestionButtons(id) {
   return [
     [
-      { text: "🌐 Опубликовать везде", callback_data: `sugg:approve:all:${id}` },
+      { text: "🌐 Везде", callback_data: `sugg:approve:all:${id}` },
       { text: "🔵 VK", callback_data: `sugg:approve:vk:${id}` },
       { text: "🟢 TG", callback_data: `sugg:approve:tg:${id}` },
     ],
