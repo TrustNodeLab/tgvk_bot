@@ -21,9 +21,11 @@ import {
 } from "./telegram.js";
 import { sendPoll } from "./telegram.js";
 import { fmtTime, escHtml, fitCaption, htmlToPlain } from "./text.js";
+import { collectEngagement, maybeHealthAlert, maybeBackupToGitHub } from "./ops.js";
 
 const CHUNK_COUNT = 2; // СЃРєР°РЅ РґРµР»РёС‚СЃСЏ РЅР° 2 С‡Р°СЃС‚Рё (Р»РёРјРёС‚ РїРѕРґР·Р°РїСЂРѕСЃРѕРІ free-РїР»Р°РЅР°)
 const TICK_LOCK_TTL_MS = 10 * 60 * 1000; // Р°РЅС‚Рё-РїРµСЂРµРєСЂС‹С‚РёРµ РєСЂРѕРЅ: РЅРµ С‡Р°С‰Рµ 1 С‚РёРєР°
+const OPS_BUDGET_MS = 20 * 1000; // Р±СЋРґР¶РµС‚ РѕРїРµСЂР°С†РёРѕРЅРЅС‹С… РґРѕРіРѕРЅСЏР»РѕРє (engagement/health/backup)
 
 // РҐР°СЂРґ-Р±СЋРґР¶РµС‚ С‚РёРєР°. Free-РїР»Р°РЅ Cloudflare РґСѓС€РёС‚ С‚СЏР¶С‘Р»С‹Рµ РєСЂРѕРЅ-Р·Р°РїСѓСЃРєРё: С‚РёРє,
 // РєРѕС‚РѕСЂС‹Р№ РЅРµ СѓСЃРїРµР» Р·Р°РІРµСЂС€РёС‚СЊСЃСЏ Р·Р° РѕС‚РІРµРґС‘РЅРЅС‹Р№ wall-clock Р»РёРјРёС‚, В«РјРѕР»С‡Р°В» СѓР±РёРІР°РµС‚СЃСЏ
@@ -513,8 +515,44 @@ async function autoDeferDrafts(env, state, now = new Date()) {
 // РўРѕРї-1 СЃРІРµР¶Р°Р№С€РёР№ РєР°РЅРґРёРґР°С‚ РґР»СЏ РѕРґРёРЅРѕС‡РЅРѕРіРѕ РїРѕСЃС‚Р° (pickDigestItems(1) СѓР¶Рµ СЃРґРµР»Р°Р»
 // СЃРѕСЂС‚РёСЂРѕРІРєСѓ РїРѕ СЃРІРµР¶РµСЃС‚Рё + Р±СѓСЃС‚ С‚РµРјС‹). РџСѓСЃС‚Рѕ вЂ” РЅРѕРІРѕСЃС‚СЊ РЅРµ РІС‹Р№РґРµС‚.
 async function pickSingleItem(env) {
-  const items = await pickDigestItems(env, 1);
-  return items[0] || null;
+  const pool = await pickDigestItems(env, 8);
+  if (!pool.length) return null;
+  const ranked = await preferWeights(env, pool);
+  return (ranked && ranked.length ? ranked[0] : null) || pool[0];
+}
+
+// A/B-ротация контента: пул свежайших кандидатов рескорим весами вовлечённости.
+// Если победа новейшего кандидата «щадящая» (отрыв < 30 мин) и у лидера темы
+// есть положительный вес (тема собирала стабильную вовлечённость в прошлом),
+// тема-лидер перепрыгивает вперёд. Без весов/данных порядок не меняется.
+async function preferWeights(env, pool) {
+  let cw = null;
+  try {
+    const { getContentWeights } = await import("./stats.js");
+    cw = await getContentWeights(env);
+  } catch (e) { /* без весов ротации */ }
+  const topicW = cw && cw.topic ? cw.topic : {};
+  const hasTopics = Object.keys(topicW).some((k) => topicW[k] > 1.05);
+  if (!hasTopics) return pool;
+
+  const ranked = pool
+    .map((c) => {
+      let t = null;
+      try {
+        t = mainTopic(String(c.title || "") + " " + String(c.text || ""));
+      } catch (e) { /* без темы */ }
+      const w = t && topicW[t.id] ? topicW[t.id] : 0;
+      return { c, fresh: digestFreshScore(c), w };
+    })
+    .sort((a, b) => b.fresh - a.fresh);
+
+  const lead = ranked[0];
+  const gapMs = Math.max(0, lead.fresh - (ranked[1] ? ranked[1].fresh : lead.fresh));
+  if (gapMs < 30 * 60 * 1000) {
+    // Отрыв меньше «щадящего» — даём весу темы право переставить лидера.
+    ranked.sort((a, b) => (b.fresh + b.w * 45 * 60 * 1000) - (a.fresh + a.w * 45 * 60 * 1000));
+  }
+  return ranked.map((x) => x.c);
 }
 
 // Р‘СЋРґР¶РµС‚РЅР°СЏ СЃР±РѕСЂРєР° РєР°СЂС‚РѕС‡РєРё: С‚РµРєСЃС‚ С‡РµСЂРµР· LLM (РёР»Рё РїСЂР°РІРёР»Р° РїСЂРё РЅРµРґРѕСЃС‚СѓРїРЅРѕСЃС‚Рё/
@@ -1313,6 +1351,26 @@ export async function tick(env, opts = {}) {
     t = Date.now();
     await kv.saveState(env, state);
     mark("save", t);
+
+    // 7. операционные догонялки (низкий приоритет): метрики охвата VK + дневные
+    // метрики, ночной алерт здоровья, ночной бэкап в GitHub. Гоняем только в
+    // «ровный» час (минута 0 ЕКБ), чтобы не жечь бюджет каждого тика и не
+    // спорить с хард-бюджетом: вовлечённость и так троттлится на 45 минут.
+    currentStep = "ops";
+    t = Date.now();
+    if (ekbNow(now).minuteOfDay % 60 === 0) {
+      try {
+        await bounded(OPS_BUDGET_MS, "[scheduler] ops",
+          Promise.allSettled([
+            collectEngagement(env, { now }),
+            maybeHealthAlert(env, { now }),
+            maybeBackupToGitHub(env, { now }),
+          ]));
+      } catch (e) {
+        console.log("[scheduler] ops error:", e.message);
+      }
+    }
+    mark("ops", t);
 
     console.log("[scheduler] tick:", marks.join(" "),
       `cands=${((await kv.getCandidates(env)) || []).length}`,

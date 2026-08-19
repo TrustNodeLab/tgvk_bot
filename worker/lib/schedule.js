@@ -128,6 +128,47 @@ function pluralSlots(n) {
   return "слотов";
 }
 
+// ---------- визуальный редактор расписания: перенос окна на ±N минут ----------
+// Границы дня: 07:00–22:00 EKB. Окно не пересекается с соседями (зазор ≥30 мин)
+// и сохраняет длительность. Итог пишется в schedule_state.reason.
+export async function moveWindow(env, slug, deltaMin, { now = new Date() } = {}) {
+  const dayStart = 7 * 60;
+  const dayEnd = 22 * 60;
+  const gap = 30;
+  const windows = (await getWindows(env)).slice();
+  const idx = windows.findIndex((w) => w.slug === slug);
+  if (idx === -1) return { ok: false, reason: "window not found" };
+
+  const w = windows[idx];
+  const dur = Math.max(30, Math.min(720, (w.end || w.start + 60) - (w.start || 0)));
+  const others = windows.filter((x) => x.slug !== slug);
+  const lower = others.filter((x) => x.start < w.start).sort((a, b) => b.start - a.start)[0] || null;
+  const upper = others.filter((x) => x.start > w.start).sort((a, b) => a.start - b.start)[0] || null;
+
+  // Безопасные границы: не врезаемся в соседей (зазор ≥30 мин), не выходим за день.
+  const minStart = lower ? lower.end + gap : dayStart;
+  const maxEnd = upper ? upper.start - gap : dayEnd;
+  const desired = (w.start || 0) + deltaMin;
+  let start = Math.max(minStart, Math.min(desired, dayEnd - dur));
+  let end = Math.min(start + dur, maxEnd);
+
+  // Окно не влезло с полной длительностью — ужимаем, но не меньше 30 минут.
+  if (end - start < 30) {
+    start = Math.max(minStart, maxEnd - 30);
+    end = start + 30;
+  }
+  if (end > dayEnd) {
+    start = Math.max(minStart, dayEnd - 30);
+    end = start + 30;
+  }
+  windows[idx] = { ...w, start, end };
+
+  return setSchedule(env, {
+    windows,
+    reason: `перенос окна «${w.label}» на ${start - w.start >= 0 ? "+" : ""}${Math.round((start - (w.start || 0)) / 60)}ч (${minutesToClock(start)}–${minutesToClock(end)})`,
+  }).then(() => ({ ok: true, start, end }));
+}
+
 // ---------- AI-расписание: здоровье окон и перенос по просадкам ----------
 // Вовлечённость (просмотры) не читается платформами, поэтому «просадка» окна =
 // сколько дней из последних N окно не выдало ни одного поста (пополнение до

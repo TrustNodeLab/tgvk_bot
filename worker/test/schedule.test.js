@@ -90,3 +90,37 @@ test("nextFreeSlot учитывает доп. окна расписания", as
   const ekb = ekbNow(new Date(slot));
   assert.equal(ekb.minuteOfDay, 12 * 60, "следующий слот — обеденный 12:00 ЕКБ (доп. окно)");
 });
+
+test("moveWindow: перенос на −1ч сохраняет длительность и не пересекает соседей", async () => {
+  const { moveWindow, getWindows } = await import(SCHEDULE);
+  const env = makeEnv();
+  const res = await moveWindow(env, "morning", -60); // 09:00-12:00 → 08:00-11:00
+  assert.equal(res.ok, true, "окно найдено и сдвинуто");
+  const wins = await getWindows(env);
+  const morning = wins.find((w) => w.slug === "morning");
+  assert.equal(morning.start, 8 * 60, "утро сдвинуто на час раньше");
+  assert.equal(morning.end - morning.start, 3 * 60, "длительность сохранена (180 мин)");
+  const st = await (await import(KV)).getScheduleState(env);
+  assert.match(st.reason || "", /перенос окна/, "причина записана");
+});
+
+test("moveWindow: перенос упирается в соседнее окно и клэмпится с зазором", async () => {
+  const { moveWindow, getWindows } = await import(SCHEDULE);
+  const env = makeEnv();
+  // evening (18:00-24:00) двигаем раньше до упора: день заканчивается в 17:00
+  await moveWindow(env, "evening", -360);
+  const wins = await getWindows(env);
+  const evening = wins.find((w) => w.slug === "evening");
+  const day = wins.find((w) => w.slug === "day");
+  assert.ok(evening.start >= 7 * 60, "окно не уходит раньше 07:00");
+  assert.ok(evening.start - 30 >= day.end, "зазор ≥30 мин до соседа");
+});
+
+test("moveWindow: неизвестное окно → ok:false и никаких изменений", async () => {
+  const { moveWindow, getWindows } = await import(SCHEDULE);
+  const env = makeEnv();
+  const before = await getWindows(env);
+  const res = await moveWindow(env, "nope", 60);
+  assert.equal(res.ok, false, "не найдено");
+  assert.deepEqual((await getWindows(env)).map((w) => w.start), before.map((w) => w.start), "расписание не изменилось");
+});

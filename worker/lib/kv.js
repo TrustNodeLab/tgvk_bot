@@ -222,6 +222,89 @@ export async function setReportMarker(env, key) {
   await kvSet(env, `report_sent:${key}`, { at: new Date().toISOString() });
 }
 
+// ---------- poll_stats (ответы подписчиков на опросы после постов) ----------
+// Ключ "poll_stats": { "poll_id": { question, total, options: { "<option>": count }, last_after } }.
+// Считаем голоса анонимного опроса (Telegram не отдаёт имена — только счётчики
+// по option_id), поэтому это честная витрина вовлечённости аудитории в канале.
+
+export async function recordPollAnswer(env, answer) {
+  const pollId = answer.poll_id;
+  const optionIds = Array.isArray(answer.option_ids) ? answer.option_ids : [];
+  if (!pollId || !optionIds.length) return;
+  const stats = (await kvGet(env, "poll_stats", {})) || {};
+  const rec = stats[pollId] || { question: String(answer.poll?.question || ""), total: 0, options: {} };
+  if (answer.poll && answer.poll.question) rec.question = String(answer.poll.question);
+  // Telegram при повторном ответе присылает полный список выбранных option_id —
+  // считаем заново по абсолютным значениям, чтобы не задваивать голоса.
+  const next = {};
+  for (const id of optionIds) next[String(id)] = true;
+  rec.options = {};
+  rec.total = optionIds.length;
+  // Накопительная статистика по варианту за всё время: инкремент только на
+  // дельтах от прошлого snapshot нам не доступен (нет истории), поэтому держим
+  // «последнее» состояние и пишем в день сбора.
+  rec.last_after = new Date().toISOString();
+  rec.option_ids = optionIds;
+  stats[pollId] = rec;
+  await kvSet(env, "poll_stats", stats);
+  return pollId;
+}
+
+export async function getPollStats(env) {
+  return (await kvGet(env, "poll_stats", {})) || {};
+}
+
+// ---------- health (мониторинг здоровья: алерты, а не шум) ----------
+// Ключ "health:<date>": { publish_fails, expires, warns: { type, count } } —
+// собираем за день, закрытый алерт уходит админу один раз (маркер alert:<type>:<date>).
+
+export async function getHealthDay(env, date) {
+  return kvGet(env, `health:${date}`, { publish_fails: 0, warns: {} });
+}
+
+export async function bumpHealth(env, date, patch) {
+  const h = await getHealthDay(env, date);
+  const next = {
+    ...h,
+    publish_fails: (h.publish_fails || 0) + (patch.publish_fails || 0),
+  };
+  for (const [type, count] of Object.entries(patch.warns || {})) {
+    next.warns[type] = (next.warns[type] || 0) + count;
+  }
+  await kvSet(env, `health:${date}`, next);
+  return next;
+}
+
+export async function getHealthMarker(env, key) {
+  return kvGet(env, `health_sent:${key}`, null);
+}
+
+export async function setHealthMarker(env, key) {
+  await kvSet(env, `health_sent:${key}`, { at: new Date().toISOString() });
+}
+
+// ---------- vk_engage_disabled (разовая проверка прав VK-токена) ----------
+// Если групповой токен не читает стену (error 27), не дёргаем wall.getById
+// каждый тик — ставим флаг и тихо выключаем коллектор.
+
+export async function getVkEngageDisabled(env) {
+  return !!(await kvGet(env, "vk_engage_disabled", false));
+}
+
+export async function setVkEngageDisabled(env, v) {
+  await kvSet(env, "vk_engage_disabled", v);
+}
+
+// ---------- backup (ночной бэкап KV в GitHub) ----------
+
+export async function getBackupMarker(env, key) {
+  return kvGet(env, `backup_sent:${key}`, null);
+}
+
+export async function setBackupMarker(env, key) {
+  await kvSet(env, `backup_sent:${key}`, { at: new Date().toISOString() });
+}
+
 // ---------- drafts ----------
 
 export async function loadDraft(env, id) {

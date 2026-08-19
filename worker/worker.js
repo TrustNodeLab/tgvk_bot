@@ -26,6 +26,7 @@ import {
   storeProposedSchedule,
   applyProposedSchedule,
   healthLine,
+  moveWindow,
 } from "./lib/schedule.js";
 import {
   sendMessage,
@@ -40,7 +41,8 @@ import { fmtTime, escHtml } from "./lib/text.js";
 import { ekbNow, plural } from "./lib/config.js";
 import { sendGeneratedPreview, approveButtons } from "./lib/preview.js";
 import { renderCard } from "./lib/cardgen.js";
-import { eveningSummaryText, dayReportText, weekReportText, monthReportText, maybeSendReports, slotAnalyticsText } from "./lib/analytics.js";
+import { eveningSummaryText, dayReportText, weekReportText, monthReportText, maybeSendReports, slotAnalyticsText, pollStatsText } from "./lib/analytics.js";
+import { missedWindowsToday } from "./lib/ops.js";
 import {
   handleUserStart,
   handleUserCallback,
@@ -52,7 +54,7 @@ import {
   handleEventDialogMessage,
 } from "./lib/support.js";
 
-const VERSION = "2.9.0";
+const VERSION = "3.0.0";
 
 // ---------- тексты ----------
 
@@ -86,7 +88,8 @@ const HELP_TEXT =
   "/dryrun on|off — симуляция публикации\n" +
   "/blacklist add|del kw|src|guid &lt;значение&gt; — чёрный список\n" +
   "/keyword add|remove &lt;слова&gt; — ключевые слова\n" +
-  "/rescan — полный тик, /export — история, /version — версия";
+  "/rescan — полный тик, /export — история, /version — версия\n" +
+  "/healthcheck — здоровье студии (пропуски окон, срывы, опросы)";
 
 const COMMANDS = [
   { command: "start", description: "Главное меню" },
@@ -120,6 +123,7 @@ const COMMANDS = [
   { command: "rescan", description: "Полный тик" },
   { command: "digesttest", description: "Тестовое превью дайджеста" },
   { command: "version", description: "Версия" },
+  { command: "healthcheck", description: "Здоровье студии" },
 ];
 
 // ---------- меню: reply-клавиатура + инлайн-кнопки ----------
@@ -284,10 +288,71 @@ async function ensureCommands(env) {
 
 // ---------- REST API (для GitHub-контура подготовки и диагностики) ----------
 
+function escHtml2(s) {
+  return String(s == null ? "" : s).replace(/[<>&"']/g, (m) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;", "'": "&#39;" }[m]));
+}
+
+// Лёгкий веб-дашборд без секретов: состояние студии из KV (публично открыт).
+async function dashboardHtml(env, now = new Date()) {
+  const sched = await getSchedule(env);
+  const log = await kv.getLog(env) || [];
+  const ekb = ekbNow();
+  const missed = await missedWindowsToday(env, { now });
+  const pollStats = await kv.getPollStats(env);
+  const pollKeys = Object.keys(pollStats || {});
+  const pollsTotal = pollKeys.reduce((s, k) => s + (pollStats[k].total || 0), 0);
+  const todayCount = log.filter((e) => e && (e.vk_ok || e.tg_ok) && e.published_at && ekbNow(new Date(e.published_at)).date === ekb.date).length;
+
+  const winRows = sched.windows.map((w) => `<tr><td>${escHtml2(w.label)}</td><td>${minutesToClock(w.start)}–${minutesToClock(w.end)}</td></tr>`).join("");
+  const metricRows = [];
+  for (let i = 6; i >= 0; i--) {
+    const t = new Date(Date.UTC(ekb.date.slice(0,4), ekb.date.slice(5,7)-1, ekb.date.slice(8,10) - i));
+    const d = t.toISOString().slice(0, 10);
+    const r = await kv.getDayMetrics(env, d);
+    if (r) metricRows.push(`<tr><td>${escHtml2(d)}</td><td>${r.posts || 0}</td><td>${r.vk_members != null ? r.vk_members : "—"}</td><td>${r.tg_members != null ? r.tg_members : "—"}</td><td>${r.vk_views || 0}</td><td>${r.vk_likes || 0}</td></tr>`);
+  }
+  const postRows = log.slice(-6).reverse().map((e) => `<tr><td>${escHtml2(e.window_slug || "—")}</td><td>${escHtml2(e.kind || "news")}</td><td>${escHtml2(e.published_at ? new Date(e.published_at).toISOString().slice(11, 16) : "—")} ЕКБ</td><td>${e.vk_ok ? "VK" : ""} ${e.tg_ok ? "TG" : ""}</td><td>${e.vk_views != null ? e.vk_views : "—"}</td></tr>`).join("");
+  const cands = await kv.getCandidates(env) || [];
+  const stock = await kv.getStock(env) || [];
+
+  return `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TrustNode · dashboard</title>
+<style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;margin:24px}a{color:#38bdf8}table{border-collapse:collapse;width:100%;max-width:760px;margin:8px 0}th,td{border:1px solid #334155;padding:6px 10px;text-align:left}th{background:#1e293b}.badge{display:inline-block;padding:2px 8px;border-radius:10px;background:#1e293b;font-size:12px}.ok{color:#4ade80}.warn{color:#facc15}.bad{color:#f87171}</style></head>
+<body><h1>🛡️ TrustNode <span style="color:#64748b">в${VERSION}</span></h1>
+<p><span class="badge">Авто: <b>${await kv.getAutopost(env) ? '<span class="ok">вкл</span>' : '<span class="warn">выкл</span>'}</b></span>
+<span class="badge">Постов сегодня: <b>${todayCount}</b></span>
+<span class="badge">Пропущено окон: <b class="${missed.length ? "bad" : "ok"}">${missed.length}</b></span>
+<span class="badge">Ответы на опросы: <b>${pollsTotal}</b></span>
+<span class="badge">Кандидаты: <b>${cands.length}</b></span>
+<span class="badge">Склад: <b>${stock.length}</b></span></p>
+
+<h2>🗓 Расписание (ЕКБ) · ${sched.mode}</h2>
+<table><tr><th>Окно</th><th>Время</th></tr>${winRows}</table>
+${missed.length ? `<p class="bad">Пропущенные окна сегодня: ${missed.map((w) => escHtml2(w.label)).join(", ")}</p>` : `<p class="ok">Пропущенных окон сегодня нет.</p>`}
+
+<h2>📈 Метрики · 7 дней</h2>
+<table><tr><th>Дата</th><th>Посты</th><th>VK</th><th>TG</th><th>Просмотры VK</th><th>Лайки</th></tr>${metricRows.join("") || `<tr><td colspan="6">пока нет данных</td></tr>`}</table>
+
+<h2>📰 Последние публикации</h2>
+<table><tr><th>Окно</th><th>Формат</th><th>Время</th><th>Платформы</th><th>Просмотры</th></tr>${postRows || `<tr><td colspan="5">пока нет постов</td></tr>`}</table>
+
+<p style="color:#64748b">Страница без секретов — защищена только отсутствием публикации в меню. Это мониторинг, не панель управления.</p>
+</body></html>`;
+}
+
 async function handleApi(env, request, url) {
   // Публичный health-чек.
   if (url.pathname === "/health") {
     return jsonResponse({ ok: true, ts: Date.now(), version: VERSION });
+  }
+
+  // Публичный веб-дашборд (read-only, без секретов).
+  if (url.pathname === "/dashboard" && request.method === "GET") {
+    const html = await dashboardHtml(env, new Date());
+    return new Response(html, {
+      status: 200,
+      headers: { "Content-Type": "text/html; charset=utf-8" },
+    });
   }
 
   // Диагностика webhook Telegram (getWebhookInfo; безопасно — токен не выдаётся).
@@ -316,7 +381,7 @@ async function handleApi(env, request, url) {
         body: JSON.stringify({
           url: `${origin}/`,
           secret_token: env.WEBHOOK_SECRET,
-          allowed_updates: ["message", "callback_query", "edited_message"],
+          allowed_updates: ["message", "callback_query", "edited_message", "poll_answer"],
           drop_pending_updates: false,
         }),
       });
@@ -1160,6 +1225,21 @@ async function handleCallback(env, cq, state) {
           parse_mode: "HTML",
         });
         return;
+      } else if (op === "noop") {
+        try { await answerCallbackQuery(env, qid, "Ручной режим: «⬅ −1ч» / «➡ +1ч» переносит окно"); } catch (e) { /* ignore */ }
+        return;
+      } else if (op === "mv") {
+        const slug = segs[2] || "";
+        const delta = Number(segs[3] || 0);
+        if (!slug || !delta) throw new Error("неверные параметры");
+        const res = await moveWindow(env, slug, delta);
+        if (!res.ok) throw new Error(res.reason || "окно не найдено");
+        try { await answerCallbackQuery(env, qid, `«${slug}» → ${minutesToClock(res.start)}`); } catch (e) { /* ignore */ }
+        try { await editMessageReplyMarkup(env, chatId, msgId, []); } catch (e) { /* ignore */ }
+        await sendMessage(env, chatId, `🗓 Окно «${slug}» перенесено на <b>${minutesToClock(res.start)}</b> ЕКБ.\nДетали — /schedule`, {
+          parse_mode: "HTML",
+        });
+        return;
       } else {
         throw new Error("неизвестная операция");
       }
@@ -1422,12 +1502,39 @@ async function handleCommand(env, state, chatId, text) {
             { text: "➖ Слот", callback_data: "sched:minus" },
             { text: "🔄 Сброс", callback_data: "sched:reset" },
           ],
+          ...sched.windows.map((w) => [
+            { text: "⬅ −1ч", callback_data: `sched:mv:${w.slug}:-60` },
+            { text: `${w.label} ${minutesToClock(w.start)}`, callback_data: `sched:noop:${w.slug}` },
+            { text: "➕1ч ➡", callback_data: `sched:mv:${w.slug}:60` },
+          ]),
           [
             { text: "🤖 AI-план по просадкам", callback_data: "sched:ai" },
           ],
         ],
       };
       await sendMessage(env, chatId, msg, { parse_mode: "HTML", reply_markup: kb });
+      break;
+    }
+
+    case "/healthcheck": {
+      const ekb = ekbNow();
+      const log = await kv.getLog(env);
+      const today = (log || []).filter(
+        (e) => e && (e.vk_ok || e.tg_ok) && e.published_at && ekbNow(new Date(e.published_at)).date === ekb.date
+      );
+      const missed = await missedWindowsToday(env, { now: new Date() });
+      const health = await kv.getHealthDay(env, ekb.date);
+      const pollStats = await kv.getPollStats(env);
+      const pollKeys = Object.keys(pollStats || {});
+      const lines = [
+        `Бот: <b>v${VERSION}</b> · авто: <b>${await kv.getAutopost(env) ? "вкл" : "выкл"}</b> · карточки: <b>${(await kv.getCardFormat(env)) || "auto"}</b>`,
+        `Постов сегодня: <b>${today.length}</b>`,
+        `Пропущенных окон сегодня: <b>${missed.length}</b>${missed.length ? " (" + missed.map((w) => w.label).join(", ") + ")" : ""}`,
+        `Срывов публикации за день: <b>${health.publish_fails || 0}</b>`,
+        `Ответов на опросы: <b>${pollKeys.reduce((s, k) => s + (pollStats[k].total || 0), 0)}</b> (${pollKeys.length} ${plural(pollKeys.length, "опрос", "опроса", "опросов")})`,
+        `Кандидатов: <b>${(await kv.getCandidates(env) || []).length}</b> · на складе: <b>${(await kv.getStock(env) || []).length}</b>`,
+      ];
+      await sendMessage(env, chatId, "🩺 <b>Здоровье студии</b>\n\n" + lines.map((l) => "• " + l).join("\n"), { parse_mode: "HTML" });
       break;
     }
 
@@ -1487,11 +1594,13 @@ async function handleCommand(env, state, chatId, text) {
     case "/analytics": {
       const days = args === "месяц" || args === "month" ? 30 : args === "неделя" || args === "week" ? 7 : 7;
       const text = await slotAnalyticsText(env, { days });
-      if (!text) {
+      const polls = await pollStatsText(env);
+      if (!text && !polls) {
         await sendMessage(env, chatId, "Аналитика слотов пока не собралась: мало данных.", { parse_mode: "HTML" });
         break;
       }
-      await sendMessage(env, chatId, text, { parse_mode: "HTML", reply_markup: QUICK_ANALYTICS_KB });
+      const body = [text, polls].filter(Boolean).join("\n\n");
+      await sendMessage(env, chatId, body, { parse_mode: "HTML", reply_markup: QUICK_ANALYTICS_KB });
       break;
     }
 
@@ -1875,6 +1984,13 @@ async function handleUpdate(env, update) {
     await handleMessage(env, update.message, state);
   } else if (update.edited_message) {
     await handleMessage(env, update.edited_message, state);
+  } else if (update.poll_answer) {
+    try {
+      const pid = await kv.recordPollAnswer(env, update.poll_answer);
+      if (pid) console.log(`[webhook] poll_answer: ${String(pid).slice(0, 12)}`);
+    } catch (e) {
+      console.log("[webhook] poll_answer error:", e.message);
+    }
   } else {
     console.log(`[webhook] unknown update ${update.update_id}`);
   }

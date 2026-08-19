@@ -7,9 +7,10 @@
 // Отчёты уходят админу автоматически (maybeSendReports) или вручную /report.
 // Маркеры report_sent:<тип>:<период> гарантируют один отчёт за период.
 //
-// Вовлечённость (просмотры/лайки/реакции VK и TG) вырезана: групповой токен VK
-// не читает стену (error 27), реакции не подтверждены. Отчёты показывают только
-// рабочее — число постов и подписчиков платформ.
+// Вовлечённость — best-effort VK: если групповой токен не читает стену (error 27),
+// коллектор один раз выставляет флаг vk_engage_disabled и больше не дёргает API
+// (см. fetchVkEngagement). Просмотры TG-канала бот-API не отдаёт — их нет,
+// поэтому охваты показываем только по VK + ответам на опросы (poll_stats).
 
 import * as kv from "./kv.js";
 import { ekbNow, plural } from "./config.js";
@@ -101,6 +102,54 @@ async function fetchSubscribers(env) {
   return out;
 }
 
+// ---------- метрики охвата (best-effort VK; TG-просмотры не отдаются боту) ----------
+
+// Group-токен может не читать стену (error 27) — тогда один раз выставляем флаг
+// vk_engage_disabled и больше не дёргаем API. Просмотры/лайки догоняем для
+// свежих постов (до 3 дней, до 10 за тик) и дописываем в publish_log.
+export async function fetchVkEngagement(env, { now = new Date() } = {}) {
+  if (await kv.getVkEngageDisabled(env)) return { ok: false, reason: "disabled" };
+  if (!env.VK_TOKEN || !env.VK_GROUP_ID) return { ok: false, reason: "no vk" };
+  const log = await kv.getLog(env);
+  const recent = (log || [])
+    .filter((e) => e.vk_post_id && !e.vk_views && e.published_at &&
+      now.getTime() - new Date(e.published_at).getTime() < 3 * 86400000)
+    .slice(0, 10);
+  if (!recent.length) return { ok: true, fetched: 0 };
+
+  const owner = -env.VK_GROUP_ID;
+  const posts = recent.map((e) => `${owner}_${e.vk_post_id}`).join(",");
+  let res;
+  try {
+    res = await vkCall(env, "wall.getById", { posts });
+  } catch (e) {
+    const msg = String(e && e.message || "");
+    if (/(error.?27|error.?15|permission|access)/i.test(msg)) {
+      await kv.setVkEngageDisabled(env, true);
+      return { ok: false, reason: "token cannot read wall" };
+    }
+    return { ok: false, reason: msg.slice(0, 120) || "fetch error" };
+  }
+  const items =
+    (res && Array.isArray(res.items) && res.items) ||
+    (Array.isArray(res) && res) ||
+    [];
+  let updated = 0;
+  for (const p of items) {
+    const postId = p && p.id;
+    if (!postId) continue;
+    const e = recent.find((x) => Number(x.vk_post_id) === Number(postId));
+    if (!e) continue;
+    await kv.updateLog(env, e.id, {
+      vk_views: p.views && Number(p.views.count) > 0 ? Number(p.views.count) : null,
+      vk_likes: p.likes && Number(p.likes.count) > 0 ? Number(p.likes.count) : null,
+      vk_reposts: p.reposts && Number(p.reposts.count) > 0 ? Number(p.reposts.count) : null,
+    });
+    updated++;
+  }
+  return { ok: true, fetched: updated };
+}
+
 // ---------- сбор дневных метрик ----------
 
 // Собирает метрики текущего дня (ЕКБ) и кладёт в KV day_metrics:<date>.
@@ -113,6 +162,9 @@ export async function collectDailyMetrics(env, { now = new Date() } = {}) {
   const rec = {
     date,
     posts: today.length,
+    vk_views: today.reduce((s, e) => s + (e.vk_views || 0), 0),
+    vk_likes: today.reduce((s, e) => s + (e.vk_likes || 0), 0),
+    vk_reposts: today.reduce((s, e) => s + (e.vk_reposts || 0), 0),
     tg_members: subs.tg_members,
     vk_members: subs.vk_members,
     collected_at: new Date().toISOString(),
@@ -183,10 +235,15 @@ export async function eveningSummaryText(env, { now = new Date() } = {}) {
       if (subsLines.length) subsLines.unshift("\n👥 <b>Аудитория</b>");
     }
 
+    const engLines = [];
+    if (rec.vk_views) engLines.push(`• Просмотры VK: <b>${fmtInt(rec.vk_views)}</b> (${russianPlural(Math.round((rec.vk_views || 0) / (rec.posts || 1)), "просмотр", "просмотра", "просмотров")} на пост)`);
+    if (rec.vk_likes) engLines.push(`• Лайки VK: <b>${fmtInt(rec.vk_likes)}</b>`);
+
     return (
       "🌆 <b>Вечерняя сводка · " + fmtDayRu(rec.date) + "</b>\n\n" +
       "Сегодня за день:\n" +
       `• Постов: <b>${fmtInt(rec.posts)}</b>${prev && prev.posts ? ` (вчера ${prev.posts})` : ""}` +
+      (engLines.length ? "\n\n🔥 <b>Охват</b>\n" + engLines.join("\n") : "") +
       subsLines.join("\n") +
       (ekb.hour < 21 ? "\n\nПродолжаем расти — каждый день студия становится сильнее. 💪" : "")
     );
@@ -210,15 +267,22 @@ export async function dayReportText(env, { now = new Date() } = {}) {
       subsPart.push(`• Подписчиков: <b>${fmtInt(cr.total)}</b>${growth != null ? ` (${signed(growth)} за день)` : ""}`);
     }
 
+    const engLine = rec.vk_views
+      ? `• Просмотры VK: <b>${fmtInt(rec.vk_views)}</b>${rec.vk_likes ? ` · лайки: <b>${fmtInt(rec.vk_likes)}</b>` : ""}`
+      : "";
     const deltaLine = prev && (rec.posts > 0 || prev.posts > 0)
       ? `\n\nПо сравнению со вчера (${fmtDayRu(prev.date)}):\n` +
-        `• Постов: ${rec.posts} → <b>${signed(rec.posts - prev.posts)}</b>`
+        `• Постов: ${rec.posts} → <b>${signed(rec.posts - prev.posts)}</b>` +
+        (rec.vk_views && prev && prev.vk_views
+          ? `\n• Просмотры VK: ${prev.vk_views} → <b>${signed(rec.vk_views - prev.vk_views)}</b>`
+          : "")
       : "";
 
     return (
       "📋 <b>Отчёт за день · " + fmtDayRu(rec.date) + "</b>\n\n" +
       "<b>Чего достигли сегодня</b>\n" +
       `• Опубликовано: ${russianPlural(rec.posts, "пост", "поста", "постов")}` +
+      (rec.vk_views ? "\n" + engLine : "") +
       (subsPart.length ? "\n" + subsPart.join("\n") : "") +
       deltaLine +
       "\n\nКаждый день — шаг вперёд. Завтра сделаем больше! 🚀"
@@ -342,7 +406,7 @@ export async function slotAnalyticsText(env, { now = new Date(), days = 7 } = {}
     const bySlug = {};
     const deliveredDays = {};
     for (const w of wins) {
-      bySlug[w.slug] = { label: w.label, count: 0, formats: {}, minutes: [] };
+      bySlug[w.slug] = { label: w.label, count: 0, formats: {}, minutes: [], views: 0 };
       deliveredDays[w.slug] = new Set();
     }
 
@@ -357,6 +421,7 @@ export async function slotAnalyticsText(env, { now = new Date(), days = 7 } = {}
       const kind = e.kind || "news";
       b.formats[kind] = (b.formats[kind] || 0) + 1;
       if (e.ekb_minute != null) b.minutes.push(e.ekb_minute);
+      if (e.vk_views != null) b.views += e.vk_views;
       deliveredDays[slug].add(d);
     }
 
@@ -370,8 +435,12 @@ export async function slotAnalyticsText(env, { now = new Date(), days = 7 } = {}
         .join(", ") || "—";
       const miss = daysList.filter((d) => !deliveredDays[w.slug].has(d)).length;
       const health = miss === 0 ? "✅" : miss <= Math.ceil(days / 3) ? "🟡" : "🔴";
+      const viewsLine =
+        b.views > 0
+          ? ` · просмотры VK: <b>${fmtInt(b.views)}</b>${b.count ? ` (${fmtInt(Math.round(b.views / b.count))}/пост)` : ""}`
+          : "";
       return `${health} <b>${b.label}</b> (${minutesToClock(w.start)}–${minutesToClock(w.end)}): <b>${plural(b.count, "пост", "поста", "постов")}</b>\n` +
-        `   • форматы: ${fmt} · факт: ${first}–${last} · пропущено дней: <b>${miss}</b>/${days}`;
+        `   • форматы: ${fmt}${viewsLine} · факт: ${first}–${last} · пропущено дней: <b>${miss}</b>/${days}`;
     });
 
     const total = wins.reduce((s, w) => s + bySlug[w.slug].count, 0);
@@ -383,6 +452,29 @@ export async function slotAnalyticsText(env, { now = new Date(), days = 7 } = {}
     );
   } catch (e) {
     console.log("[analytics] слот-аналитика не собралась:", e.message);
+    return "";
+  }
+}
+
+// 🗳 Охват опросов: сколько раз аудитория отвечала на вопросы под постами.
+// Это максимально «честная» метрика вовлечённости, которую отдаёт TG-бот.
+export async function pollStatsText(env) {
+  try {
+    const stats = await kv.getPollStats(env);
+    const keys = Object.keys(stats || {});
+    if (!keys.length) return "";
+    const rows = keys
+      .slice(-8)
+      .reverse()
+      .map((pid) => {
+        const r = stats[pid];
+        const q = String(r.question || "Опрос").slice(0, 60);
+        const total = r.total || 0;
+        return `• ${q}\n   <b>${total}</b> ${plural(total, "ответ", "ответа", "ответов")}`;
+      });
+    return `🗳 <b>Охват опросов · последние ${Math.min(keys.length, 8)}</b>\n\n` + rows.join("\n");
+  } catch (e) {
+    console.log("[analytics] poll-статы не собрались:", e.message);
     return "";
   }
 }
