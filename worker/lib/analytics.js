@@ -13,6 +13,7 @@
 
 import * as kv from "./kv.js";
 import { ekbNow, plural } from "./config.js";
+import { getWindows } from "./schedule.js";
 import { vkCall, sendMessage, resolveTelegramChannel, getChatMemberCount } from "./telegram.js";
 
 // Время отправки (минуты от полуночи ЕКБ) + окно ожидания (крон раз в 5 мин).
@@ -290,6 +291,98 @@ export async function monthReportText(env, { now = new Date() } = {}) {
     );
   } catch (e) {
     console.log("[analytics] месячная сводка не собралась:", e.message);
+    return "";
+  }
+}
+
+// ---------- метрики по слотам окон (расширенная аналитика) ----------
+
+// Честное время слота: пробуем сохранённый window_slug (факт публикации),
+// иначе выводим окно из EKB-времени по текущему расписанию (старые записи).
+export function minutesToClock(min) {
+  if (min === null || min === undefined || Number.isNaN(min)) return "—";
+  const m = ((min % 1440) + 1440) % 1440;
+  return `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+}
+
+const KIND_SHORT = {
+  news: "новость",
+  digest: "дайджест",
+  poll: "новость+опрос",
+  generated: "пост",
+  event: "ивент",
+  suggestion: "предложка",
+  retry: "повтор",
+};
+
+export function slugForEntry(wins, e) {
+  if (e && e.window_slug) return e.window_slug;
+  if (!e || !e.published_at) return null;
+  const t = new Date(e.published_at);
+  if (Number.isNaN(t.getTime())) return null;
+  const ekb = ekbNow(t);
+  const w = (wins || []).find((x) => ekb.minuteOfDay >= x.start && ekb.minuteOfDay < x.end);
+  return w ? w.slug : null;
+}
+
+// 📈 Отчёт «как работают окна»: сколько постов вышло в каждом слоте за N дней,
+// какие форматы, в какое время фактически (диапазон), и сколько дней окно
+// проспало. Строится из publish_log — реальных просмотров VK таблиц, поэтому
+// показывает рабочее (каденцию и форматную смесь по слотам).
+export async function slotAnalyticsText(env, { now = new Date(), days = 7 } = {}) {
+  try {
+    const log = await kv.getLog(env);
+    const wins = await getWindows(env);
+    if (!wins.length) return "";
+    const since = dateKeyOffset(ekbNow(now).date, -(days - 1));
+
+    const daysList = [];
+    for (let i = days - 1; i >= 0; i--) daysList.push(dateKeyOffset(ekbNow(now).date, -i));
+
+    const bySlug = {};
+    const deliveredDays = {};
+    for (const w of wins) {
+      bySlug[w.slug] = { label: w.label, count: 0, formats: {}, minutes: [] };
+      deliveredDays[w.slug] = new Set();
+    }
+
+    for (const e of log || []) {
+      if (!e || !(e.vk_ok || e.tg_ok) || !e.published_at) continue;
+      const d = ekbNow(new Date(e.published_at)).date;
+      if (!d || d < since) continue;
+      const slug = slugForEntry(wins, e);
+      if (!slug || !bySlug[slug]) continue;
+      const b = bySlug[slug];
+      b.count++;
+      const kind = e.kind || "news";
+      b.formats[kind] = (b.formats[kind] || 0) + 1;
+      if (e.ekb_minute != null) b.minutes.push(e.ekb_minute);
+      deliveredDays[slug].add(d);
+    }
+
+    const lines = wins.map((w) => {
+      const b = bySlug[w.slug];
+      const mins = b.minutes.slice().sort((a, z) => a - z);
+      const first = mins.length ? minutesToClock(mins[0]) : "—";
+      const last = mins.length ? minutesToClock(mins[mins.length - 1]) : "—";
+      const fmt = Object.entries(b.formats)
+        .map(([k, v]) => `${KIND_SHORT[k] || k} ×${v}`)
+        .join(", ") || "—";
+      const miss = daysList.filter((d) => !deliveredDays[w.slug].has(d)).length;
+      const health = miss === 0 ? "✅" : miss <= Math.ceil(days / 3) ? "🟡" : "🔴";
+      return `${health} <b>${b.label}</b> (${minutesToClock(w.start)}–${minutesToClock(w.end)}): <b>${plural(b.count, "пост", "поста", "постов")}</b>\n` +
+        `   • форматы: ${fmt} · факт: ${first}–${last} · пропущено дней: <b>${miss}</b>/${days}`;
+    });
+
+    const total = wins.reduce((s, w) => s + bySlug[w.slug].count, 0);
+    return (
+      `📈 <b>Слоты окон · последние ${days} ${plural(days, "день", "дня", "дней")}</b>\n\n` +
+      lines.join("\n") +
+      `\n\nВсего постов в окнах: <b>${plural(total, "пост", "поста", "постов")}</b>\n` +
+      "🟥 окно проедало 1/3 дней — кандидат на перенос (см. /schedule)"
+    );
+  } catch (e) {
+    console.log("[analytics] слот-аналитика не собралась:", e.message);
     return "";
   }
 }

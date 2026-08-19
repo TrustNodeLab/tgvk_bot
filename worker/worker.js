@@ -22,6 +22,10 @@ import {
   setScheduleMode,
   setSlotsPerDay,
   resetSchedule,
+  aiSchedulePlan,
+  storeProposedSchedule,
+  applyProposedSchedule,
+  healthLine,
 } from "./lib/schedule.js";
 import {
   sendMessage,
@@ -36,7 +40,7 @@ import { fmtTime, escHtml } from "./lib/text.js";
 import { ekbNow, plural } from "./lib/config.js";
 import { sendGeneratedPreview, approveButtons } from "./lib/preview.js";
 import { renderCard } from "./lib/cardgen.js";
-import { eveningSummaryText, dayReportText, weekReportText, monthReportText, maybeSendReports } from "./lib/analytics.js";
+import { eveningSummaryText, dayReportText, weekReportText, monthReportText, maybeSendReports, slotAnalyticsText } from "./lib/analytics.js";
 import {
   handleUserStart,
   handleUserCallback,
@@ -48,7 +52,7 @@ import {
   handleEventDialogMessage,
 } from "./lib/support.js";
 
-const VERSION = "2.7.0";
+const VERSION = "2.8.0";
 
 // ---------- тексты ----------
 
@@ -76,8 +80,9 @@ const HELP_TEXT =
   "<b>Обзор:</b>\n" +
   "/status — статус, /stats — состав публикаций, /stock — склад\n" +
   "/report [вечер|день|неделя|месяц] — отчёт студии (автоматически: вечер 20:00, день 23:30, неделя вс, месяц 1-го)\n" +
+  "/analytics [день|неделя|месяц] — метрики по слотам окон (форматы, факт-время, пропуски)\n" +
   "/schedule — расписание слотов, /sources — источники и ключевые слова\n" +
-  "/drafts — черновики на одобрении, /export — выгрузка истории\n" +
+  "/drafts — черновики на одобрении, /defer [id] — отложить черновик на слот, /export — выгрузка истории\n" +
   "<b>Настройки:</b>\n" +
   "/settings — настройки, /autopost on|off — автопостинг\n" +
   "/cardfmt gif|png|auto — формат карточек (GIF-анимация неба / PNG / авто)\n" +
@@ -104,6 +109,7 @@ const COMMANDS = [
   { command: "event", description: "Создать ивент" },
   { command: "stats", description: "Состав публикаций" },
   { command: "report", description: "Отчёт студии: вечер|день|неделя|месяц" },
+  { command: "analytics", description: "Аналитика слотов окон (день|неделя|месяц)" },
   { command: "blacklist", description: "Чёрный список" },
   { command: "keyword", description: "Ключевые слова" },
   { command: "settings", description: "Настройки" },
@@ -112,6 +118,7 @@ const COMMANDS = [
   { command: "autopost", description: "Автопостинг вкл/выкл" },
   { command: "stock", description: "Склад постов" },
   { command: "drafts", description: "Черновики" },
+  { command: "defer", description: "Отложить черновик на следующий слот" },
   { command: "export", description: "Экспорт истории" },
   { command: "rescan", description: "Полный тик" },
   { command: "digesttest", description: "Тестовое превью дайджеста" },
@@ -1050,7 +1057,7 @@ async function handleCallback(env, cq, state) {
     return;
   }
 
-  // управление расписанием (/schedule): авто/ручной, +/− слот, сброс
+  // управление расписанием (/schedule): авто/ручной, +/− слот, сброс, AI-план
   if (action === "sched") {
     const op = segs[1] || "";
     try {
@@ -1066,6 +1073,57 @@ async function handleCallback(env, cq, state) {
         await setSlotsPerDay(env, sc.windows.length - 1);
       } else if (op === "reset") {
         await resetSchedule(env);
+      } else if (op === "ai") {
+        // AI-план: здоровье окон за 7 дней + предложение переноса по просадкам
+        const plan = await aiSchedulePlan(env, { days: 7 });
+        if (!plan.health.length) {
+          try { await answerCallbackQuery(env, qid, "Нет расписания"); } catch (e) { /* ignore */ }
+          return;
+        }
+        const healthTxt = plan.health.map((h) => healthLine(h)).join("\n");
+        if (!plan.proposed) {
+          await answerCallbackQuery(env, qid, "Окна здоровы — перенос не нужен");
+          await sendMessage(
+            env,
+            chatId,
+            `🤖 <b>AI-план расписания</b>\n\n${healthTxt}\n\nВсе окна работают — перестановка не требуется.`,
+            { parse_mode: "HTML" }
+          );
+          return;
+        }
+        await storeProposedSchedule(env, plan.proposed, "AI-перенос по просадкам");
+        const proposedTxt = plan.proposed
+          .map((w) => `• <b>${w.label}</b> — ${minutesToClock(w.start)} ЕКБ (1 пост)`)
+          .join("\n");
+        const movedTxt = plan.proposed
+          .filter((w) => plan.windows.some((ow) => ow.slug === w.slug && ow.start !== w.start))
+          .map((w) => `${w.label}: ${minutesToClock(plan.windows.find((ow) => ow.slug === w.slug).start)} → ${minutesToClock(w.start)}`)
+          .join("\n");
+        try { await editMessageReplyMarkup(env, chatId, msgId, []); } catch (e) { /* ignore */ }
+        await sendMessage(
+          env,
+          chatId,
+          `🤖 <b>AI-план расписания</b>\n\n<b>Здоровье окон (7 дней)</b>\n${healthTxt}\n\n<b>Предложение</b>\n${proposedTxt}\n\n<b>Переносы</b>\n${movedTxt || "—"}\n\nПрименить?`,
+          {
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: [[{ text: "✅ Применить план", callback_data: "sched:apply" }]] },
+          }
+        );
+        await answerCallbackQuery(env, qid, "План готов");
+        return;
+      } else if (op === "apply") {
+        const res = await applyProposedSchedule(env);
+        if (!res) {
+          try { await answerCallbackQuery(env, qid, "Нет сохранённого плана — запустите AI-план"); } catch (e) { /* ignore */ }
+          return;
+        }
+        const label = `расписание: ${res.mode === "auto" ? "авто" : "ручной"}, ${res.windows.length} ${plural(res.windows.length, "слот", "слота", "слотов")} в день`;
+        await answerCallbackQuery(env, qid, `✅ ${label}`);
+        try { await editMessageReplyMarkup(env, chatId, msgId, []); } catch (e) { /* ignore */ }
+        await sendMessage(env, chatId, `✅ <b>AI-план применён</b>\n${label}\nДетали — /schedule`, {
+          parse_mode: "HTML",
+        });
+        return;
       } else {
         throw new Error("неизвестная операция");
       }
@@ -1111,6 +1169,29 @@ async function handleCallback(env, cq, state) {
     await kv.deleteDraft(env, draftId);
     try { await editMessageReplyMarkup(env, chatId, msgId, []); } catch (e) { /* ignore */ }
     try { await answerCallbackQuery(env, qid, "Черновик отменён"); } catch (e) { /* ignore */ }
+    return;
+  }
+
+  // 🕓 Отложить: черновик не публикуется сразу, а встаёт в ближайший свободный
+  // слот. Промоушен в склад делает авто-тик (статус deferred, deferred_until).
+  if (action === "defer" && draftId) {
+    const draft = await kv.loadDraft(env, draftId);
+    if (!draft) {
+      try { await answerCallbackQuery(env, qid, "Черновик не найден"); } catch (e) { /* ignore */ }
+      return;
+    }
+    const slot = await nextFreeSlot(env);
+    draft.status = "deferred";
+    draft.deferred_until = new Date(slot).toISOString();
+    await kv.saveDraft(env, draft);
+    try { await editMessageReplyMarkup(env, chatId, msgId, []); } catch (e) { /* ignore */ }
+    try {
+      await answerCallbackQuery(
+        env,
+        qid,
+        `🕓 Отложен до слота ${fmtTime(new Date(slot).toISOString())}`
+      );
+    } catch (e) { /* ignore */ }
     return;
   }
 
@@ -1305,6 +1386,9 @@ async function handleCommand(env, state, chatId, text) {
             { text: "➖ Слот", callback_data: "sched:minus" },
             { text: "🔄 Сброс", callback_data: "sched:reset" },
           ],
+          [
+            { text: "🤖 AI-план по просадкам", callback_data: "sched:ai" },
+          ],
         ],
       };
       await sendMessage(env, chatId, msg, { parse_mode: "HTML", reply_markup: kb });
@@ -1361,6 +1445,17 @@ async function handleCommand(env, state, chatId, text) {
         "📊 <b>Состав публикаций</b>\n\n" +
         `Всего: <b>${log.length}</b>\nСегодня: <b>${today}</b>\n\n${lines || "—"}`;
       await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
+      break;
+    }
+
+    case "/analytics": {
+      const days = args === "месяц" || args === "month" ? 30 : args === "неделя" || args === "week" ? 7 : 7;
+      const text = await slotAnalyticsText(env, { days });
+      if (!text) {
+        await sendMessage(env, chatId, "Аналитика слотов пока не собралась: мало данных.", { parse_mode: "HTML" });
+        break;
+      }
+      await sendMessage(env, chatId, text, { parse_mode: "HTML" });
       break;
     }
 
@@ -1581,6 +1676,26 @@ async function handleCommand(env, state, chatId, text) {
       await sendLong(env, chatId, "📝 <b>Черновики</b>\n\n" + lines.join("\n"), {
         parse_mode: "HTML",
       });
+      break;
+    }
+
+    case "/defer": {
+      const drafts = await kv.listDrafts(env);
+      const draft = args ? drafts.find((d) => d.id === args) : drafts[0];
+      if (!draft) {
+        await sendMessage(env, chatId, "Черновиков для отложки нет. Список — /drafts");
+        break;
+      }
+      const slot = await nextFreeSlot(env);
+      draft.status = "deferred";
+      draft.deferred_until = new Date(slot).toISOString();
+      await kv.saveDraft(env, draft);
+      await sendMessage(
+        env,
+        chatId,
+        `🕓 «${escHtml(draft.title || "")}» отложен до слота ${fmtTime(new Date(slot).toISOString())}`,
+        { parse_mode: "HTML" }
+      );
       break;
     }
 

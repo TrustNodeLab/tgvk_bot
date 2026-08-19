@@ -7,7 +7,8 @@ import { renderCard } from "./cardgen.js";
 import { sendCard } from "./telegram.js";
 
 // Инлайн-кнопки есть ТОЛЬКО на превью постов на одобрение.
-// Публикация: везде / только VK / только TG.
+// Публикация: везде / только VK / только TG. 🕓 Отложить — черновик уходит
+// в отложенные и встаёт в ближайший свободный слот (не публикуется сразу).
 export function approveButtons(id) {
   return [
     [
@@ -17,6 +18,7 @@ export function approveButtons(id) {
     ],
     [
       { text: "🔄 Переделать", callback_data: `redo:${id}` },
+      { text: "🕓 Отложить", callback_data: `defer:${id}` },
       { text: "❌ Отменить", callback_data: `cancel:${id}` },
     ],
   ];

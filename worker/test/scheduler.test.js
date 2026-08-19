@@ -1533,3 +1533,128 @@ test("assembleMix: без LLM_PROXY_URL решение по правилам —
   await assembleMix(env, now);
   assert.equal((await kv.getStock(env)).length, 1, "повтор не дублирует");
 });
+
+// ---------- умные карточки: «отложить» (defer) ----------
+
+test("autoDefer: отложенный черновик тик не трогает до наступления слота", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { tick } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  installFetchMock(500);
+  const env = makeEnv();
+  const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  await kv.saveDraft(env, {
+    id: "dd1", title: "Отложенная", caption: "капшн", png_key: "drafts/dd1.png",
+    status: "deferred", deferred_until: future, created_at: new Date().toISOString(),
+  });
+  await tick(env);
+  assert.equal((await kv.listDrafts(env)).length, 1, "черновик дожидается слота");
+  assert.equal((await kv.getStock(env)).length, 0, "в склад рано");
+});
+
+test("autoDefer: отложенный черновик встаёт в склад, когда слот наступил", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { tick } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
+  installFetchMock(500);
+  const env = makeEnv();
+  const past = Date.now() - 5 * 60 * 1000;
+  await kv.saveDraft(env, {
+    id: "dd2", title: "Созрела", caption: "капшн", png_key: null,
+    png: "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAhklEQVR4nNXOQRHAIBDAwBAh4N9Jq+oQ0Ucnq2DXzLznkLWevSmTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOP8OfHUBEc4FhwzLqggAAAAASUVORK5CYII=",
+    status: "deferred", deferred_until: new Date(past).toISOString(), created_at: new Date().toISOString(),
+  });
+  await tick(env);
+  assert.equal((await kv.listDrafts(env)).length, 0, "черновик ушёл со статуса deferred");
+  const log = await kv.getLog(env);
+  assert.ok(log.some((e) => e.id === "dd2"), "пост опубликован в наступившем слоте");
+  assert.equal((await kv.getStock(env)).length, 0, "склад пуст после публикации");
+});
+
+test("webhook: кнопка «Отложить» ставит черновик в отложенные, не публикуя", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const calls = installFetchMock(500);
+  const env = makeEnv();
+  await env.BOT_KV.put("draft:t1", JSON.stringify({
+    id: "t1", kind: "news", title: "Тест", caption: "Капшн",
+    png: "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAhklEQVR4nNXOQRHAIBDAwBAh4N9Jq+oQ0Ucnq2DXzLznkLWevSmTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOImTOP8OfHUBEc4FhwzLqggAAAAASUVORK5CYII=",
+    png_key: null, link: "", guid: "t1", source: "ria.ru", tags: [],
+    admin_chat_id: 1, preview_message_id: 5, status: "pending",
+    created_at: new Date().toISOString(),
+  }));
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 11,
+      callback_query: {
+        id: "q2",
+        from: { id: 1 },
+        message: { message_id: 5, chat: { id: 1 } },
+        data: "defer:t1",
+      },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const d = await kv.loadDraft(env, "t1");
+  assert.ok(d, "черновик жив");
+  assert.equal(d.status, "deferred", "статус deferred");
+  assert.ok(d.deferred_until, "есть слот отложки");
+  assert.ok(!calls.tg.some((c) => c.url.includes("/sendPhoto")), "пост не публиковался");
+});
+
+// ---------- аналитика по слотам окон ----------
+
+test("analytics: слот-отчёт показывает посты, форматы и пропуски по окнам", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { slotAnalyticsText } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/analytics.js");
+  installFetchMock(500);
+  const env = makeEnv();
+  const now = new Date("2026-08-07T12:00:00Z"); // 17:00 ЕКБ
+  await kv.addLog(env, { id: "a1", kind: "news", title: "N1", published_at: "2026-08-05T10:00:00Z", tg_ok: true, vk_ok: true, window_slug: "morning" });
+  await kv.addLog(env, { id: "a2", kind: "digest", title: "D2", published_at: "2026-08-06T10:00:00Z", tg_ok: true, vk_ok: true, window_slug: "morning" });
+  await kv.addLog(env, { id: "a3", kind: "news", title: "N3", published_at: "2026-08-07T10:00:00Z", tg_ok: true, vk_ok: true, window_slug: "day" });
+  const text = await slotAnalyticsText(env, { now, days: 3 });
+  assert.ok(text.includes("утро"), "в отчёте есть утро");
+  assert.ok(text.includes("новость"), "формат новость упомянут");
+  assert.ok(text.includes("дайджест"), "формат дайджест упомянут");
+  assert.ok(text.includes("пропущено"), "считаются пропуски");
+});
+
+// ---------- AI-расписание: здоровье окон + перенос по просадкам ----------
+
+test("slotHealth: дни доставки и пропуски по окнам за период", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { slotHealth } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/schedule.js");
+  const env = makeEnv();
+  const now = new Date("2026-08-07T12:00:00Z"); // 17:00 ЕКБ
+  // утро: 2 дня из 3; день: 1 из 3 (просадка); вечер: 3 из 3
+  for (const d of ["2026-08-05T10:00:00Z", "2026-08-07T10:00:00Z"]) {
+    await kv.addLog(env, { id: `m-${d}`, kind: "news", published_at: d, tg_ok: true, vk_ok: true, window_slug: "morning" });
+  }
+  await kv.addLog(env, { id: "day-1", kind: "news", published_at: "2026-08-06T10:00:00Z", tg_ok: true, vk_ok: true, window_slug: "day" });
+  for (const d of ["2026-08-05T10:00:00Z", "2026-08-06T10:00:00Z", "2026-08-07T10:00:00Z"]) {
+    await kv.addLog(env, { id: `e-${d}`, kind: "news", published_at: d, tg_ok: true, vk_ok: true, window_slug: "evening" });
+  }
+  const health = await slotHealth(env, { now, days: 3 });
+  const bySlug = (s) => health.find((h) => h.slug === s);
+  assert.equal(bySlug("morning").miss, 1);
+  assert.equal(bySlug("day").miss, 2, "день — просадка");
+  assert.equal(bySlug("evening").miss, 0);
+});
+
+test("proposeSchedule: окна здоровы -> null, есть просадка -> перенос в свободный промежуток", async () => {
+  const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
+  const { proposeSchedule, getWindows } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/schedule.js");
+  const env = makeEnv();
+  const windows = await getWindows(env);
+  const healthy = windows.map((w) => ({ slug: w.slug, label: w.label, start: w.start, end: w.end, days: 3, delivered: 3, miss: 0, pct: 100 }));
+  assert.equal(proposeSchedule(windows, healthy, { days: 3 }), null, "менять нечего");
+  // просадка у «дня» (1 из 3) — переезжает в середину свободного промежутка
+  const weak = healthy.map((h) => (h.slug === "day" ? { ...h, miss: 2, delivered: 1, pct: 33 } : h));
+  const prop = proposeSchedule(windows, weak, { days: 3 });
+  assert.ok(prop, "предложение есть");
+  const dayW = prop.find((w) => w.slug === "day");
+  assert.ok(dayW.start !== 13 * 60, `день переехал с 13:00 на ${dayW.start}`);
+  assert.ok(prop.every((w, i) => i === 0 || w.start > prop[i - 1].start), "окна не пересекаются");
+});

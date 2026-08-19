@@ -253,6 +253,10 @@ export async function publishPackage(env, pkg, dry, target = "all") {
     if (!tgOk && !vkOk) {
       throw new Error(`publish failed tg=[${tgErr}] vk=[${vkErr}]`);
     }
+    // Слот окна (по факту публикации, не по расписанию): слагаем метрики по
+    // временным окнам для расширенной аналитики и AI-расписания.
+    const pubEkb = ekbNow();
+    const pubWin = await schedCurrentWindow(env, pubEkb.minuteOfDay);
     await kv.addLog(env, {
       id: pkg.id,
       kind: pkg.kind || "news",
@@ -262,6 +266,9 @@ export async function publishPackage(env, pkg, dry, target = "all") {
       tags: pkg.tags || [],
       source: pkg.source || "",
       published_at: new Date().toISOString(),
+      ekb_hour: pubEkb.hour,
+      ekb_minute: pubEkb.minuteOfDay,
+      window_slug: (pubWin && pubWin.slug) || "off",
       caption: pkg.caption || "",
       tg_ok: tgOk,
       vk_ok: vkOk,
@@ -418,10 +425,59 @@ export async function processVkRetries(env) {
 
 // ---------- С‡РµСЂРЅРѕРІРёРєРё ----------
 
+// Ставит черновик на склад как отложенный пост. Используется и при авто-таймауте
+// (нет ответа админа 30 минут), и при промоушене «отложенных» (кнопка 🕓).
+async function promoteDraftToStock(env, d, slot) {
+  await kv.deleteDraft(env, d.id);
+  await kv.addStock(env, {
+    id: d.id,
+    kind: d.kind === "digest" ? "digest" : "news",
+    title: d.title || "",
+    caption: d.caption || "",
+    digest_text: d.digest_text || "",
+    png_key: d.png_key || null,
+    png: d.png ? (typeof d.png === "string" ? decodePng(d.png) : d.png) : null,
+    link: d.link || "",
+    guid: d.guid || "",
+    source: d.source || "",
+    tags: d.tags || [],
+    data: d.data || null,
+    items: d.items || [],
+    scheduled_for: slot,
+    created_at: new Date().toISOString(),
+    from_admin: false,
+    scheme_id: d.scheme_id || null,
+    style_id: d.style_id || null,
+    topic_id: d.topic_id || null,
+    llm_provider: d.llm_provider || null,
+  });
+}
+
 async function autoDeferDrafts(env, state, now = new Date()) {
   const drafts = await kv.listDrafts(env);
   const deadline = now.getTime() - DRAFT_TIMEOUT_MIN * 60 * 1000;
   for (const d of drafts) {
+    // Отложенные админом (кнопка 🕓): публикуем, когда наступил их слот.
+    if (d.status === "deferred") {
+      if (!d.deferred_until) {
+        d.status = "pending";
+        delete d.deferred_until;
+        await kv.saveDraft(env, d);
+        continue;
+      }
+      if (now.getTime() < new Date(d.deferred_until).getTime()) continue;
+      await promoteDraftToStock(env, d, new Date(d.deferred_until).getTime());
+      const when = fmtTime(new Date(d.deferred_until).toISOString());
+      try {
+        await sendMessage(
+          env,
+          env.TELEGRAM_ADMIN_CHAT_ID,
+          `🕓 <b>Отложенный пост «${escHtml(d.title || "")}» встал в слот</b> ${when}.`,
+          { parse_mode: "HTML" }
+        );
+      } catch (e) { /* ignore */ }
+      continue;
+    }
     if (d.status && d.status !== "pending") continue;
     // Р§РµСЂРЅРѕРІРёРєРё РѕС‚ GitHub РїСЂРёС…РѕРґСЏС‚ Р±РµР· created_at вЂ” С‚Р°Р№РјРµСЂ 30 РјРёРЅСѓС‚ СЃС‚Р°СЂС‚СѓРµС‚
     // СЃ РјРѕРјРµРЅС‚Р°, РєРѕРіРґР° Worker РІРїРµСЂРІС‹Рµ СѓРІРёРґРµР» С‡РµСЂРЅРѕРІРёРє.
@@ -439,29 +495,7 @@ async function autoDeferDrafts(env, state, now = new Date()) {
     }
     // Р°РґРјРёРЅ РЅРµ РѕС‚РІРµС‚РёР» Р·Р° 30 РјРёРЅСѓС‚ -> РѕС‚Р»РѕР¶РµРЅРЅС‹Р№ РїРѕСЃС‚ РІ Р±Р»РёР¶Р°Р№С€РёР№ СЃРІРѕР±РѕРґРЅС‹Р№ СЃР»РѕС‚
     const slot = await nextFreeSlot(env, now);
-    await kv.deleteDraft(env, d.id);
-    await kv.addStock(env, {
-      id: d.id,
-      kind: d.kind === "digest" ? "digest" : "news",
-      title: d.title || "",
-      caption: d.caption || "",
-      digest_text: d.digest_text || "",
-      png_key: d.png_key || null,
-      png: d.png ? (typeof d.png === "string" ? decodePng(d.png) : d.png) : null,
-      link: d.link || "",
-      guid: d.guid || "",
-      source: d.source || "",
-      tags: d.tags || [],
-      data: d.data || null,
-      items: d.items || [],
-      scheduled_for: slot,
-      created_at: new Date().toISOString(),
-      from_admin: false,
-      scheme_id: d.scheme_id || null,
-      style_id: d.style_id || null,
-      topic_id: d.topic_id || null,
-      llm_provider: d.llm_provider || null,
-    });
+    await promoteDraftToStock(env, d, slot);
     const when = fmtTime(new Date(slot).toISOString());
     try {
       await sendMessage(
