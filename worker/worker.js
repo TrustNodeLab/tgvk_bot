@@ -54,7 +54,7 @@ import {
   handleEventDialogMessage,
 } from "./lib/support.js";
 
-const VERSION = "3.0.0";
+const VERSION = "3.0.1";
 
 // ---------- тексты ----------
 
@@ -1134,6 +1134,31 @@ async function handleCallback(env, cq, state) {
     return;
   }
 
+  // переключатели настроек из /settings (set:autopost | set:cardfmt:<fmt> | set:dryrun)
+  if (action === "set") {
+    const op = segs[1] || "";
+    try {
+      if (op === "autopost") {
+        const on = !(await kv.getAutopost(env));
+        await kv.setAutopost(env, on);
+      } else if (op === "dryrun") {
+        state.dry_run = !state.dry_run;
+        await kv.saveState(env, state);
+      } else if (op === "cardfmt") {
+        const f = ["gif", "png", "auto"].includes(segs[2]) ? segs[2] : "auto";
+        await kv.setCardFormat(env, f);
+      } else {
+        throw new Error("неизвестная настройка");
+      }
+      await answerCallbackQuery(env, qid, "✅ Обновлено");
+      // перерисовываем настройки, чтобы галочки/статусы были свежими
+      await handleCommand(env, state, chatId, "/settings");
+    } catch (e) {
+      try { await answerCallbackQuery(env, qid, `Ошибка: ${e.message.slice(0, 90)}`); } catch (e2) { /* ignore */ }
+    }
+    return;
+  }
+
   // отчёты студии (/report → кнопки): вечер/день/неделя/месяц
   if (action === "report") {
     const which = segs[1] || "evening";
@@ -1700,15 +1725,35 @@ async function handleCommand(env, state, chatId, text) {
       const extra = state.extra_keywords?.length || 0;
       const removed = state.removed_keywords?.length || 0;
       const fmt = await kv.getCardFormat(env);
+      const autopost = await kv.getAutopost(env);
       const fmtLabel = fmt === "gif" ? "GIF (анимация неба)" : fmt === "png" ? "PNG (статик)" : "auto (GIF при наличии рендера)";
+      const schedWins = (await getSchedule(env)).windows;
       const msg =
         "⚙️ <b>Настройки</b>\n\n" +
         `Режим: <b>${dry ? "dry-run" : "боевой"}</b>\n` +
-        `Автопостинг: <b>${(await kv.getAutopost(env)) ? "вкл" : "выкл"}</b>\n` +
-        `Формат карточек: <b>${fmtLabel}</b> (сменить: /cardfmt gif|png|auto)\n` +
+        `Автопостинг: <b>${autopost ? "вкл" : "выкл"}</b>\n` +
+        `Формат карточек: <b>${fmtLabel}</b>\n` +
         `Ключевые слова: +${extra} добавлено, −${removed} убрано\n` +
-        `Окна (ЕКБ): ${NEWS_WINDOWS.map((w) => `${minutesToClock(w.start)}–${minutesToClock(w.end)}`).join(", ")}`;
-      await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
+        `Окна (ЕКБ): ${schedWins.map((w) => `${minutesToClock(w.start)}–${minutesToClock(w.end)}`).join(", ")}\n\n` +
+        "Переключатели — кнопками ниже:";
+      await sendMessage(env, chatId, msg, {
+        parse_mode: "HTML",
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: `Автопостинг: ${autopost ? "✅ вкл" : "⭕ выкл"}`, callback_data: "set:autopost" },
+            ],
+            [
+              { text: fmt === "gif" ? "🖼 GIF ✓" : "🖼 GIF", callback_data: "set:cardfmt:gif" },
+              { text: fmt === "png" ? "🖼 PNG ✓" : "🖼 PNG", callback_data: "set:cardfmt:png" },
+              { text: fmt === "auto" ? "🖼 Auto ✓" : "🖼 Auto", callback_data: "set:cardfmt:auto" },
+            ],
+            [
+              { text: dry ? "🧪 Dry-run: вкл ✓" : "🧪 Dry-run: выкл", callback_data: "set:dryrun" },
+            ],
+          ],
+        },
+      });
       break;
     }
 
