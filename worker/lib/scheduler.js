@@ -636,7 +636,16 @@ async function publishDueStock(env, now = new Date()) {
   const state = await kv.loadState(env);
   const dry = !!state.dry_run;
   const due = stock.filter((p) => (p.scheduled_for || 0) <= nowMs);
+  // Дубли в stock возможны (тик умирал между addStock и commitSingle) —
+  // один и тот же пакет (id) не должен выходить дважды: публикуем только
+  // первую копию в очереди, остальные тихо выкидываем.
+  const seenIds = new Set();
   for (const pkg of due) {
+    if (seenIds.has(pkg.id)) {
+      await kv.removeStock(env, pkg.id);
+      continue;
+    }
+    seenIds.add(pkg.id);
     // Дайджест собран из свежих новостей прямо в окне (маркер digest_done) —
     // проверку свежести не применяем, окно не «переполняем» по cap: оно и есть
     // этот выпуск.
