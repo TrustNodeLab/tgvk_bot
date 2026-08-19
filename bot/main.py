@@ -41,8 +41,8 @@ def _cards_summary(data: dict) -> str:
     return f"{len(cards)} карточки ({', '.join(types) or '—'}), layout {data.get('layout')}"
 
 
-def now_msk() -> datetime:
-    return datetime.utcnow() + timedelta(hours=3)
+def now_ekb() -> datetime:
+    return datetime.utcnow() + timedelta(hours=5)
 
 
 TG_CAPTION_LIMIT = 1024
@@ -181,7 +181,7 @@ def buttons(draft_id: str):
 WELCOME_TEXT = (
     "🛡️ <b>TrustNode — бот-редактор канала</b>\n\n"
     "Привет! Я сам нахожу свежие новости о мошенничестве и "
-    "кибербезопасности, собираю карточку с реальным небом над Москвой "
+    "кибербезопасности, собираю карточку с реальным небом над Екатеринбургом "
     "и готовлю текст поста для VK и Telegram.\n\n"
     "Что умею:\n"
     "🔍 <b>Автопоиск</b> — каждые ~5 минут проверяю RSS-ленты новостей\n"
@@ -282,7 +282,7 @@ def handle_new_text(tg: TelegramAPI, admin_chat_id: str, text: str, auto_found: 
     draft_id = uuid.uuid4().hex[:10]
     png_path = os.path.join(DATA_DIR, "drafts", f"{draft_id}.png")
     os.makedirs(os.path.dirname(png_path), exist_ok=True)
-    render_card(data, png_path, dt_msk=now_msk())
+    render_card(data, png_path, dt_ekb=now_ekb())
     _last_post_summary.clear()
     _last_post_summary.update(_summary(data))
 
@@ -294,7 +294,7 @@ def handle_new_text(tg: TelegramAPI, admin_chat_id: str, text: str, auto_found: 
         send_photo_smart(tg, channel_id, png_path, caption)
         st.archive_draft({
             "id": draft_id,
-            "published_at": now_msk().isoformat(timespec="seconds"),
+            "published_at": now_ekb().isoformat(timespec="seconds"),
             "caption": caption,
             "png_path": png_path,
             "cards_summary": _cards_summary(data),
@@ -378,7 +378,7 @@ def handle_draft_button(tg: TelegramAPI, vk: VKAPI, channel_id: str, admin_chat_
             tg.send_message(channel_id, md_to_html(draft["caption"]), parse_mode="HTML")
         st.archive_draft({
             "id": draft_id,
-            "published_at": now_msk().isoformat(timespec="seconds"),
+            "published_at": now_ekb().isoformat(timespec="seconds"),
             "caption": draft["caption"],
             "png_path": png or draft.get("png_path"),
             "cards_summary": _cards_summary(draft["data"]),

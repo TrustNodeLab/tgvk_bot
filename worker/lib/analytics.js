@@ -1,7 +1,7 @@
 // Аналитика студии: ежедневные метрики (посты, подписчики TG/VK) копятся в KV
 // day_metrics:<date>. По ним строятся отчёты:
-//   • вечерняя сводка (20:00 МСК)  — «сколько чего получили за день»;
-//   • отчёт за день (23:30 МСК)    — достижения и дельты к вчера;
+//   • вечерняя сводка (20:00 ЕКБ)  — «сколько чего получили за день»;
+//   • отчёт за день (23:30 ЕКБ)    — достижения и дельты к вчера;
 //   • недельная сводка (вс 20:30)  — неделя к неделе;
 //   • месячная сводка (1-го 20:30) — месяц к месяцу.
 // Отчёты уходят админу автоматически (maybeSendReports) или вручную /report.
@@ -12,10 +12,10 @@
 // рабочее — число постов и подписчиков платформ.
 
 import * as kv from "./kv.js";
-import { mskNow, plural } from "./config.js";
+import { ekbNow, plural } from "./config.js";
 import { vkCall, sendMessage, resolveTelegramChannel, getChatMemberCount } from "./telegram.js";
 
-// Время отправки (минуты от полуночи МСК) + окно ожидания (крон раз в 5 мин).
+// Время отправки (минуты от полуночи ЕКБ) + окно ожидания (крон раз в 5 мин).
 export const EVENING_TIME = 20 * 60;      // 20:00 — вечерняя сводка
 export const DAY_REPORT_TIME = 23 * 60 + 30; // 23:30 — отчёт за день
 export const WEEK_REPORT_TIME = 20 * 60 + 30; // 20:30 вс — неделя
@@ -43,7 +43,7 @@ function russianPlural(n, one, few, many) {
   return `${fmtInt(n)} ${plural(n, one, few, many)}`;
 }
 
-// Дата сдвинутая на offset дней от "YYYY-MM-DD" (в МСК).
+// Дата сдвинутая на offset дней от "YYYY-MM-DD" (в ЕКБ).
 function dateKeyOffset(date, offsetDays) {
   const [y, m, d] = date.split("-").map(Number);
   const t = new Date(Date.UTC(y, m - 1, d + offsetDays));
@@ -52,7 +52,7 @@ function dateKeyOffset(date, offsetDays) {
 
 // Список N дат, заканчивающийся сегодня (включительно).
 function lastNDates(now, n) {
-  const today = mskNow(now).date;
+  const today = ekbNow(now).date;
   const out = [];
   for (let i = n - 1; i >= 0; i--) out.push(dateKeyOffset(today, -i));
   return out;
@@ -69,7 +69,7 @@ function postsForDate(log, date) {
   return (log || []).filter((e) => {
     if (!e || !(e.vk_ok || e.tg_ok)) return false;
     const t = new Date(e.published_at);
-    return !Number.isNaN(t.getTime()) && mskNow(t).date === date;
+    return !Number.isNaN(t.getTime()) && ekbNow(t).date === date;
   });
 }
 
@@ -102,10 +102,10 @@ async function fetchSubscribers(env) {
 
 // ---------- сбор дневных метрик ----------
 
-// Собирает метрики текущего дня (МСК) и кладёт в KV day_metrics:<date>.
+// Собирает метрики текущего дня (ЕКБ) и кладёт в KV day_metrics:<date>.
 // Повторный вызов в тот же день перезаписывает запись свежими цифрами.
 export async function collectDailyMetrics(env, { now = new Date() } = {}) {
-  const date = mskNow(now).date;
+  const date = ekbNow(now).date;
   const log = await kv.getLog(env);
   const today = postsForDate(log, date);
   const subs = await fetchSubscribers(env);
@@ -169,7 +169,7 @@ export async function eveningSummaryText(env, { now = new Date() } = {}) {
   try {
     const rec = await collectDailyMetrics(env, { now });
     const prev = await kv.getDayMetrics(env, dateKeyOffset(rec.date, -1));
-    const msk = mskNow(now);
+    const ekb = ekbNow(now);
 
     const subsLines = [];
     if (rec.tg_members != null || rec.vk_members != null) {
@@ -187,7 +187,7 @@ export async function eveningSummaryText(env, { now = new Date() } = {}) {
       "Сегодня за день:\n" +
       `• Постов: <b>${fmtInt(rec.posts)}</b>${prev && prev.posts ? ` (вчера ${prev.posts})` : ""}` +
       subsLines.join("\n") +
-      (msk.hour < 21 ? "\n\nПродолжаем расти — каждый день студия становится сильнее. 💪" : "")
+      (ekb.hour < 21 ? "\n\nПродолжаем расти — каждый день студия становится сильнее. 💪" : "")
     );
   } catch (e) {
     console.log("[analytics] вечерняя сводка не собралась:", e.message);
@@ -280,7 +280,7 @@ export async function monthReportText(env, { now = new Date() } = {}) {
     const subsLines = [];
     if (cs.total != null) subsLines.push(`• Подписчиков: <b>${fmtInt(cs.total)}</b>${growth != null ? ` (${growth} за месяц)` : ""}`);
 
-    const [y, m] = mskNow(now).date.split("-").map(Number);
+    const [y, m] = ekbNow(now).date.split("-").map(Number);
     return (
       "📅 <b>Месячная сводка · " + MONTHS[m - 1] + " " + y + "</b>\n\n" +
       "За месяц:\n" +
@@ -302,13 +302,13 @@ export async function monthReportText(env, { now = new Date() } = {}) {
 export async function maybeSendReports(env, { now = new Date() } = {}) {
   const admin = env.TELEGRAM_ADMIN_CHAT_ID;
   if (!admin) return [];
-  const msk = mskNow(now);
-  const minute = msk.minuteOfDay;
+  const ekb = ekbNow(now);
+  const minute = ekb.minuteOfDay;
   const sent = [];
   const within = (start) => minute >= start && minute < start + SEND_WINDOW_MIN;
 
   if (within(EVENING_TIME)) {
-    const key = `evening:${msk.date}`;
+    const key = `evening:${ekb.date}`;
     if (!(await kv.getReportMarker(env, key))) {
       const text = await eveningSummaryText(env, { now });
       if (text) {
@@ -320,7 +320,7 @@ export async function maybeSendReports(env, { now = new Date() } = {}) {
   }
 
   if (within(DAY_REPORT_TIME)) {
-    const key = `day:${msk.date}`;
+    const key = `day:${ekb.date}`;
     if (!(await kv.getReportMarker(env, key))) {
       const text = await dayReportText(env, { now });
       if (text) {
@@ -331,8 +331,8 @@ export async function maybeSendReports(env, { now = new Date() } = {}) {
     }
   }
 
-  if (within(WEEK_REPORT_TIME) && msk.dow === 6) {
-    const key = `week:${msk.date}`;
+  if (within(WEEK_REPORT_TIME) && ekb.dow === 6) {
+    const key = `week:${ekb.date}`;
     if (!(await kv.getReportMarker(env, key))) {
       const text = await weekReportText(env, { now });
       if (text) {
@@ -343,8 +343,8 @@ export async function maybeSendReports(env, { now = new Date() } = {}) {
     }
   }
 
-  if (within(MONTH_REPORT_TIME) && msk.date.endsWith("-01")) {
-    const key = `month:${msk.date.slice(0, 7)}`;
+  if (within(MONTH_REPORT_TIME) && ekb.date.endsWith("-01")) {
+    const key = `month:${ekb.date.slice(0, 7)}`;
     if (!(await kv.getReportMarker(env, key))) {
       const text = await monthReportText(env, { now });
       if (text) {

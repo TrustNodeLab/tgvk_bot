@@ -1,8 +1,9 @@
-// Порт bot/astro.py на JS: реальное небо над Москвой (высота Солнца, звёзды).
-// Вход — Date, чьи UTC-поля равны московскому времени (см. mskDate() в cardgen.js).
+// Порт bot/astro.py на JS: реальное небо над Екатеринбургом (высота Солнца,
+// звёзды). Вход — Date, чьи UTC-поля равны екатеринбургскому времени
+// (см. ekbDate() в cardgen.js). Смещение ЕКБ = UTC+5.
 
-export const MOSCOW_LAT = 55.7558;
-export const MOSCOW_LON = 37.6173;
+export const EKB_LAT = 56.8519;
+export const EKB_LON = 60.6122;
 
 // Bright star catalog: name, RA (hours), Dec (degrees), magnitude, constellation
 // Real astronomical data (J2000), public-domain values.
@@ -119,21 +120,21 @@ function sunPosition(dtUtc) {
   return [ra, dec];
 }
 
-// dtMsk — Date, чьи UTC-поля = московское время (картинка выше).
-export function sunAltitudeMoscow(dtMsk) {
-  const dtUtc = new Date(dtMsk.getTime() - 3 * 3600 * 1000);
-  const lst = lstHours(dtUtc, MOSCOW_LON);
+// dtEkb — Date, чьи UTC-поля = екатеринбургское время (картинка выше).
+export function sunAltitudeEkb(dtEkb) {
+  const dtUtc = new Date(dtEkb.getTime() - 5 * 3600 * 1000);
+  const lst = lstHours(dtUtc, EKB_LON);
   const [ra, dec] = sunPosition(dtUtc);
-  const [alt] = altaz(ra, dec, lst, MOSCOW_LAT);
+  const [alt] = altaz(ra, dec, lst, EKB_LAT);
   return alt;
 }
 
-export function starsMoscow(dtMsk) {
-  const dtUtc = new Date(dtMsk.getTime() - 3 * 3600 * 1000);
-  const lst = lstHours(dtUtc, MOSCOW_LON);
+export function starsEkb(dtEkb) {
+  const dtUtc = new Date(dtEkb.getTime() - 5 * 3600 * 1000);
+  const lst = lstHours(dtUtc, EKB_LON);
   const out = [];
   for (const [name, ra, dec, mag, con] of STARS) {
-    const [alt, az] = altaz(ra, dec, lst, MOSCOW_LAT);
+    const [alt, az] = altaz(ra, dec, lst, EKB_LAT);
     out.push([name, alt, az, mag, con]);
   }
   return out;

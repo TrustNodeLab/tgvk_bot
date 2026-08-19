@@ -1,11 +1,11 @@
 // Генерация текста поста прямо в Worker: без GitHub.
-// Провайдеры выбираются ротацией по времени суток МСК:
+// Провайдеры выбираются ротацией по времени суток ЕКБ:
 //   утро (06-12) — GigaChat, день (12-17) — совместный пост (оба LLM),
 //   вечер (17-22) — Gemini, ночь (22-06) — любой доступный.
 // Если LLM_PROXY_URL не задан — детерминированный генератор по правилам.
 // Возвращает { headline, headline_lines, caption, cards, tier, source }.
 
-import { mskNow } from "./config.js";
+import { ekbNow } from "./config.js";
 import { markdownToHtml, stripMarkdown, fitCaption } from "./text.js";
 import { analyzePost, buildCards, buildAdvice, sanitizeLink, punchFact, stripCliche, clichePenalty } from "./nlp.js";
 import { detectScheme, pickByHash } from "./schemes.js";
@@ -1093,10 +1093,10 @@ function mergeDualPost(a, b) {
 }
 
 // Утро: GigaChat. День: совместный (оба). Вечер: Gemini. Ночь: любой доступный.
-export function providerPlan(env, msk) {
-  const hasProxy = !!(env.LLM_PROXY_URL || "").trim();
+export function providerPlan(env, ekb) {
+  const hasProxy = !!((env.LLM_PROXY_URL || "").trim());
   if (!hasProxy) return { joint: false, order: [] };
-  const h = msk.hour;
+  const h = ekb.hour;
   if (h >= 6 && h < 12) return { joint: false, order: ["gigachat", "gemini"] };
   if (h >= 12 && h < 17) return { joint: true, order: ["gigachat", "gemini"] };
   if (h >= 17 && h < 22) return { joint: false, order: ["gemini", "gigachat"] };
@@ -1181,7 +1181,7 @@ export async function generatePostData(text, env, meta = {}) {
     return { ...generateByRules(text, meta), ...attrs };
   }
 
-  const plan = providerPlan(env, mskNow());
+  const plan = providerPlan(env, ekbNow());
   let order = plan.order;
   let joint = plan.joint;
   if (forced === "gemini" || forced === "gigachat") {

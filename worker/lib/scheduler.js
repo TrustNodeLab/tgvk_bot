@@ -1,13 +1,13 @@
-// Планировщик: каждый крон выполняет полный цикл —
-// скан+дедуп -> накопление кандидатов -> публикация по окнам
-// (утро/день/вечер: 1 новость = 1 пост) -> авто-отложка черновиков ->
-// публикация из «склада» по слотам -> догонка недостающей платформы.
+﻿// РџР»Р°РЅРёСЂРѕРІС‰РёРє: РєР°Р¶РґС‹Р№ РєСЂРѕРЅ РІС‹РїРѕР»РЅСЏРµС‚ РїРѕР»РЅС‹Р№ С†РёРєР» вЂ”
+// СЃРєР°РЅ+РґРµРґСѓРї -> РЅР°РєРѕРїР»РµРЅРёРµ РєР°РЅРґРёРґР°С‚РѕРІ -> РїСѓР±Р»РёРєР°С†РёСЏ РїРѕ РѕРєРЅР°Рј
+// (СѓС‚СЂРѕ/РґРµРЅСЊ/РІРµС‡РµСЂ: 1 РЅРѕРІРѕСЃС‚СЊ = 1 РїРѕСЃС‚) -> Р°РІС‚Рѕ-РѕС‚Р»РѕР¶РєР° С‡РµСЂРЅРѕРІРёРєРѕРІ ->
+// РїСѓР±Р»РёРєР°С†РёСЏ РёР· В«СЃРєР»Р°РґР°В» РїРѕ СЃР»РѕС‚Р°Рј -> РґРѕРіРѕРЅРєР° РЅРµРґРѕСЃС‚Р°СЋС‰РµР№ РїР»Р°С‚С„РѕСЂРјС‹.
 
 import {
   NEWS_WINDOWS,
   DIGEST_MAX_ITEMS,
-  MSK_OFFSET_MIN,
-  DRAFT_TIMEOUT_MIN, mskNow, isStaleItem, cleanRssTitle,
+  EKB_OFFSET_MIN,
+  DRAFT_TIMEOUT_MIN, ekbNow, isStaleItem, cleanRssTitle,
 } from "./config.js";
 import * as kv from "./kv.js";
 import { scanFeeds } from "./feeds.js";
@@ -21,23 +21,23 @@ import {
 } from "./telegram.js";
 import { fmtTime, escHtml, fitCaption, htmlToPlain } from "./text.js";
 
-const CHUNK_COUNT = 2; // скан делится на 2 части (лимит подзапросов free-плана)
-const TICK_LOCK_TTL_MS = 10 * 60 * 1000; // анти-перекрытие крон: не чаще 1 тика
+const CHUNK_COUNT = 2; // СЃРєР°РЅ РґРµР»РёС‚СЃСЏ РЅР° 2 С‡Р°СЃС‚Рё (Р»РёРјРёС‚ РїРѕРґР·Р°РїСЂРѕСЃРѕРІ free-РїР»Р°РЅР°)
+const TICK_LOCK_TTL_MS = 10 * 60 * 1000; // Р°РЅС‚Рё-РїРµСЂРµРєСЂС‹С‚РёРµ РєСЂРѕРЅ: РЅРµ С‡Р°С‰Рµ 1 С‚РёРєР°
 
-// Хард-бюджет тика. Free-план Cloudflare душит тяжёлые крон-запуски: тик,
-// который не успел завершиться за отведённый wall-clock лимит, «молча» убивается
-// (в tail — ноль логов и exceededCpu). Поэтому каждый тик жёстко застрахован
-// возвратом "timeout" с громким логом, а тяжёлые шаги (LLM/рендер) получают свои
-// короткие бюджеты с фолбэком на правила / JS-рендер, чтобы тик почти всегда
-// укладывался в бюджет и «не дожимался» там.
+// РҐР°СЂРґ-Р±СЋРґР¶РµС‚ С‚РёРєР°. Free-РїР»Р°РЅ Cloudflare РґСѓС€РёС‚ С‚СЏР¶С‘Р»С‹Рµ РєСЂРѕРЅ-Р·Р°РїСѓСЃРєРё: С‚РёРє,
+// РєРѕС‚РѕСЂС‹Р№ РЅРµ СѓСЃРїРµР» Р·Р°РІРµСЂС€РёС‚СЊСЃСЏ Р·Р° РѕС‚РІРµРґС‘РЅРЅС‹Р№ wall-clock Р»РёРјРёС‚, В«РјРѕР»С‡Р°В» СѓР±РёРІР°РµС‚СЃСЏ
+// (РІ tail вЂ” РЅРѕР»СЊ Р»РѕРіРѕРІ Рё exceededCpu). РџРѕСЌС‚РѕРјСѓ РєР°Р¶РґС‹Р№ С‚РёРє Р¶С‘СЃС‚РєРѕ Р·Р°СЃС‚СЂР°С…РѕРІР°РЅ
+// РІРѕР·РІСЂР°С‚РѕРј "timeout" СЃ РіСЂРѕРјРєРёРј Р»РѕРіРѕРј, Р° С‚СЏР¶С‘Р»С‹Рµ С€Р°РіРё (LLM/СЂРµРЅРґРµСЂ) РїРѕР»СѓС‡Р°СЋС‚ СЃРІРѕРё
+// РєРѕСЂРѕС‚РєРёРµ Р±СЋРґР¶РµС‚С‹ СЃ С„РѕР»Р±СЌРєРѕРј РЅР° РїСЂР°РІРёР»Р° / JS-СЂРµРЅРґРµСЂ, С‡С‚РѕР±С‹ С‚РёРє РїРѕС‡С‚Рё РІСЃРµРіРґР°
+// СѓРєР»Р°РґС‹РІР°Р»СЃСЏ РІ Р±СЋРґР¶РµС‚ Рё В«РЅРµ РґРѕР¶РёРјР°Р»СЃСЏВ» С‚Р°Рј.
 const TICK_BUDGET_MS = 28000;
 const LLM_BUDGET_MS = 6000;
 const RENDER_BUDGET_MS = 5000;
 const SCAN_BUDGET_MS = 8000;
 const ASSEMBLE_BUDGET_MS = 9000;
 
-// Запускает promise с жёстким бюджетом: по истечении ms реджектит (промис при
-// этом продолжает жить в фоне, но результат уже никому не нужен — тик не ждёт).
+// Р—Р°РїСѓСЃРєР°РµС‚ promise СЃ Р¶С‘СЃС‚РєРёРј Р±СЋРґР¶РµС‚РѕРј: РїРѕ РёСЃС‚РµС‡РµРЅРёРё ms СЂРµРґР¶РµРєС‚РёС‚ (РїСЂРѕРјРёСЃ РїСЂРё
+// СЌС‚РѕРј РїСЂРѕРґРѕР»Р¶Р°РµС‚ Р¶РёС‚СЊ РІ С„РѕРЅРµ, РЅРѕ СЂРµР·СѓР»СЊС‚Р°С‚ СѓР¶Рµ РЅРёРєРѕРјСѓ РЅРµ РЅСѓР¶РµРЅ вЂ” С‚РёРє РЅРµ Р¶РґС‘С‚).
 function bounded(ms, label, promise) {
   let timer;
   return new Promise((resolve, reject) => {
@@ -46,19 +46,19 @@ function bounded(ms, label, promise) {
       (e) => { clearTimeout(timer); reject(e); }
     );
     timer = setTimeout(() => {
-      reject(new Error(`${label} превысил бюджет ${ms}ms`));
+      reject(new Error(`${label} РїСЂРµРІС‹СЃРёР» Р±СЋРґР¶РµС‚ ${ms}ms`));
     }, ms);
   });
 }
 
-// png в черновике хранится base64 (KV умеет только строки) — превращаем в байты.
+// png РІ С‡РµСЂРЅРѕРІРёРєРµ С…СЂР°РЅРёС‚СЃСЏ base64 (KV СѓРјРµРµС‚ С‚РѕР»СЊРєРѕ СЃС‚СЂРѕРєРё) вЂ” РїСЂРµРІСЂР°С‰Р°РµРј РІ Р±Р°Р№С‚С‹.
 function decodePng(b64) {
   if (!b64) return null;
   const bin = atob(b64);
   return Uint8Array.from(bin, (c) => c.charCodeAt(0));
 }
 
-// Байты карточки -> base64 для хранения в KV.
+// Р‘Р°Р№С‚С‹ РєР°СЂС‚РѕС‡РєРё -> base64 РґР»СЏ С…СЂР°РЅРµРЅРёСЏ РІ KV.
 function bytesToBase64(bytes) {
   let bin = "";
   const step = 0x8000;
@@ -68,8 +68,8 @@ function bytesToBase64(bytes) {
   return btoa(bin);
 }
 
-// Уведомление админу в Telegram о результате публикации. Ошибка отправки не
-// роняет публикацию — уведомление некритично.
+// РЈРІРµРґРѕРјР»РµРЅРёРµ Р°РґРјРёРЅСѓ РІ Telegram Рѕ СЂРµР·СѓР»СЊС‚Р°С‚Рµ РїСѓР±Р»РёРєР°С†РёРё. РћС€РёР±РєР° РѕС‚РїСЂР°РІРєРё РЅРµ
+// СЂРѕРЅСЏРµС‚ РїСѓР±Р»РёРєР°С†РёСЋ вЂ” СѓРІРµРґРѕРјР»РµРЅРёРµ РЅРµРєСЂРёС‚РёС‡РЅРѕ.
 async function notifyAdmin(env, text) {
   if (!env.TELEGRAM_ADMIN_CHAT_ID) return;
   try {
@@ -81,24 +81,24 @@ function vkPostUrl(env, postId) {
   return postId && env.VK_GROUP_ID ? `https://vk.com/wall-${env.VK_GROUP_ID}_${postId}` : null;
 }
 
-// Статусная строка по результатам публикации в обе платформы.
+// РЎС‚Р°С‚СѓСЃРЅР°СЏ СЃС‚СЂРѕРєР° РїРѕ СЂРµР·СѓР»СЊС‚Р°С‚Р°Рј РїСѓР±Р»РёРєР°С†РёРё РІ РѕР±Рµ РїР»Р°С‚С„РѕСЂРјС‹.
 function pubStatus(res) {
   const parts = [];
-  parts.push(res.tgOk ? "🟢 TG ✓" : "TG ✗");
-  parts.push(res.vkOk ? "🔵 VK ✓" : "VK ✗");
-  return parts.join(" · ");
+  parts.push(res.tgOk ? "рџџў TG вњ“" : "TG вњ—");
+  parts.push(res.vkOk ? "рџ”µ VK вњ“" : "VK вњ—");
+  return parts.join(" В· ");
 }
 
-// ---------- время и слоты ----------
+// ---------- РІСЂРµРјСЏ Рё СЃР»РѕС‚С‹ ----------
 
-export function mskToUtcMs(dow, minuteOfDay, now = new Date()) {
-  // ближайшее наступление dow (0=пн) в minuteOfDay в МСК -> epoch ms
-  const msk = new Date(now.getTime() + MSK_OFFSET_MIN * 60 * 1000);
-  const todayDow = (msk.getUTCDay() + 6) % 7;
+export function ekbToUtcMs(dow, minuteOfDay, now = new Date()) {
+  // Р±Р»РёР¶Р°Р№С€РµРµ РЅР°СЃС‚СѓРїР»РµРЅРёРµ dow (0=РїРЅ) РІ minuteOfDay РІ Р•РљР‘ -> epoch ms
+  const ekb = new Date(now.getTime() + EKB_OFFSET_MIN * 60 * 1000);
+  const todayDow = (ekb.getUTCDay() + 6) % 7;
   let delta = (dow - todayDow + 7) % 7;
-  let y = msk.getUTCFullYear();
-  let m = msk.getUTCMonth();
-  let d = msk.getUTCDate();
+  let y = ekb.getUTCFullYear();
+  let m = ekb.getUTCMonth();
+  let d = ekb.getUTCDate();
   for (let i = 0; i < delta; i++) {
     d += 1;
     if (d > new Date(Date.UTC(y, m + 1, 0)).getUTCDate()) {
@@ -110,7 +110,7 @@ export function mskToUtcMs(dow, minuteOfDay, now = new Date()) {
       }
     }
   }
-  const utcMinute = minuteOfDay - MSK_OFFSET_MIN;
+  const utcMinute = minuteOfDay - EKB_OFFSET_MIN;
   return Date.UTC(y, m, d, Math.floor(utcMinute / 60), utcMinute % 60) - (0);
 }
 
@@ -118,41 +118,41 @@ export function currentWindow(minuteOfDay) {
   return NEWS_WINDOWS.find((w) => minuteOfDay >= w.start && minuteOfDay < w.end) || null;
 }
 
-// Текущее окно по динамическому расписанию (см. lib/schedule.js).
+// РўРµРєСѓС‰РµРµ РѕРєРЅРѕ РїРѕ РґРёРЅР°РјРёС‡РµСЃРєРѕРјСѓ СЂР°СЃРїРёСЃР°РЅРёСЋ (СЃРј. lib/schedule.js).
 export async function dynamicCurrentWindow(env, minuteOfDay) {
   return schedCurrentWindow(env, minuteOfDay);
 }
 
-// Сколько новостей/дайджестов уже опубликовано в этом окне сегодня. Дайджест и
-// одиночная новость занимают «вместимость» окна одинаково (cap=1 за окно).
+// РЎРєРѕР»СЊРєРѕ РЅРѕРІРѕСЃС‚РµР№/РґР°Р№РґР¶РµСЃС‚РѕРІ СѓР¶Рµ РѕРїСѓР±Р»РёРєРѕРІР°РЅРѕ РІ СЌС‚РѕРј РѕРєРЅРµ СЃРµРіРѕРґРЅСЏ. Р”Р°Р№РґР¶РµСЃС‚ Рё
+// РѕРґРёРЅРѕС‡РЅР°СЏ РЅРѕРІРѕСЃС‚СЊ Р·Р°РЅРёРјР°СЋС‚ В«РІРјРµСЃС‚РёРјРѕСЃС‚СЊВ» РѕРєРЅР° РѕРґРёРЅР°РєРѕРІРѕ (cap=1 Р·Р° РѕРєРЅРѕ).
 async function countInWindow(env, win, now) {
   const log = await kv.getLog(env);
-  const msk = mskNow(now);
+  const ekb = ekbNow(now);
   return log.filter((e) => {
     const k = e.kind;
     if (k && k !== "news" && k !== "digest") return false;
     const t = new Date(e.published_at);
     if (Number.isNaN(t.getTime())) return false;
-    const em = mskNow(t);
-    if (em.date !== msk.date) return false;
+    const em = ekbNow(t);
+    if (em.date !== ekb.date) return false;
     return em.minuteOfDay >= win.start && em.minuteOfDay < win.end;
   }).length;
 }
 
-// Следующий свободный слот для поста (epoch ms).
-// Строгое расписание: один пост в начале окна. Окна по умолчанию — дайджесты
-// 3-5 новостей: 09:00, 13:00, 18:00 МСК. Адаптивное расписание (lib/schedule.js)
-// может добавить или убрать слоты по охватам — здесь учитываются динамические
-// окна. Без рандома внутри окна.
+// РЎР»РµРґСѓСЋС‰РёР№ СЃРІРѕР±РѕРґРЅС‹Р№ СЃР»РѕС‚ РґР»СЏ РїРѕСЃС‚Р° (epoch ms).
+// РЎС‚СЂРѕРіРѕРµ СЂР°СЃРїРёСЃР°РЅРёРµ: РѕРґРёРЅ РїРѕСЃС‚ РІ РЅР°С‡Р°Р»Рµ РѕРєРЅР°. РћРєРЅР° РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ вЂ” РґР°Р№РґР¶РµСЃС‚С‹
+// 3-5 РЅРѕРІРѕСЃС‚РµР№: 09:00, 13:00, 18:00 РњРЎРљ. РђРґР°РїС‚РёРІРЅРѕРµ СЂР°СЃРїРёСЃР°РЅРёРµ (lib/schedule.js)
+// РјРѕР¶РµС‚ РґРѕР±Р°РІРёС‚СЊ РёР»Рё СѓР±СЂР°С‚СЊ СЃР»РѕС‚С‹ РїРѕ РѕС…РІР°С‚Р°Рј вЂ” Р·РґРµСЃСЊ СѓС‡РёС‚С‹РІР°СЋС‚СЃСЏ РґРёРЅР°РјРёС‡РµСЃРєРёРµ
+// РѕРєРЅР°. Р‘РµР· СЂР°РЅРґРѕРјР° РІРЅСѓС‚СЂРё РѕРєРЅР°.
 export async function nextFreeSlot(env, now = new Date()) {
   const nowMs = now.getTime();
   const wins = await getWindows(env);
   for (let dayOffset = 0; dayOffset < 8; dayOffset++) {
     const t = new Date(nowMs + dayOffset * 86400000);
-    const m2 = mskNow(t);
+    const m2 = ekbNow(t);
     for (const w of wins) {
-      const slot = mskToUtcMs(m2.dow, w.start, new Date(t));
-      if (slot < nowMs) continue; // слот уже прошёл
+      const slot = ekbToUtcMs(m2.dow, w.start, new Date(t));
+      if (slot < nowMs) continue; // СЃР»РѕС‚ СѓР¶Рµ РїСЂРѕС€С‘Р»
       const used = await countInWindow(env, w, new Date(slot));
       if (used < w.cap) return slot;
     }
@@ -160,7 +160,7 @@ export async function nextFreeSlot(env, now = new Date()) {
   return nowMs + 3600 * 1000;
 }
 
-// ---------- диспатч кандидатов на подготовку (GitHub Actions) ----------
+// ---------- РґРёСЃРїР°С‚С‡ РєР°РЅРґРёРґР°С‚РѕРІ РЅР° РїРѕРґРіРѕС‚РѕРІРєСѓ (GitHub Actions) ----------
 
 function chunkText(text, size) {
   const out = [];
@@ -207,7 +207,7 @@ export async function dispatchToGitHub(env, cand) {
   return true;
 }
 
-// ---------- публикация ----------
+// ---------- РїСѓР±Р»РёРєР°С†РёСЏ ----------
 
 export async function publishPackage(env, pkg, dry, target = "all") {
   if (target === "vk") return publishOne("vk");
@@ -243,9 +243,9 @@ export async function publishPackage(env, pkg, dry, target = "all") {
         vkErr = e.message;
       }
     }
-    // Строгий пул VK/TG: авто-пост должен уйти в обе платформы. Если ушла
-    // только одна — недостающую догоняем ретраями на следующих тиках, а в лог
-    // пишем частичный статус (он же — источник правды по количеству постов).
+    // РЎС‚СЂРѕРіРёР№ РїСѓР» VK/TG: Р°РІС‚Рѕ-РїРѕСЃС‚ РґРѕР»Р¶РµРЅ СѓР№С‚Рё РІ РѕР±Рµ РїР»Р°С‚С„РѕСЂРјС‹. Р•СЃР»Рё СѓС€Р»Р°
+    // С‚РѕР»СЊРєРѕ РѕРґРЅР° вЂ” РЅРµРґРѕСЃС‚Р°СЋС‰СѓСЋ РґРѕРіРѕРЅСЏРµРј СЂРµС‚СЂР°СЏРјРё РЅР° СЃР»РµРґСѓСЋС‰РёС… С‚РёРєР°С…, Р° РІ Р»РѕРі
+    // РїРёС€РµРј С‡Р°СЃС‚РёС‡РЅС‹Р№ СЃС‚Р°С‚СѓСЃ (РѕРЅ Р¶Рµ вЂ” РёСЃС‚РѕС‡РЅРёРє РїСЂР°РІРґС‹ РїРѕ РєРѕР»РёС‡РµСЃС‚РІСѓ РїРѕСЃС‚РѕРІ).
     if (mode === "all" && tgOk !== vkOk && !dry) {
       await kv.addVkRetry(env, { ...pkg, attempts: 0 }, { missing: [tgOk ? "vk" : "tg"] });
     }
@@ -271,13 +271,13 @@ export async function publishPackage(env, pkg, dry, target = "all") {
       tg_err: tgErr || null,
       vk_err: vkErr || null,
       target: mode,
-      // Атрибуты для статистики: схема мошенничества / жанр / тема / провайдер.
+      // РђС‚СЂРёР±СѓС‚С‹ РґР»СЏ СЃС‚Р°С‚РёСЃС‚РёРєРё: СЃС…РµРјР° РјРѕС€РµРЅРЅРёС‡РµСЃС‚РІР° / Р¶Р°РЅСЂ / С‚РµРјР° / РїСЂРѕРІР°Р№РґРµСЂ.
       scheme_id: (pkg.data && pkg.data.scheme_id) || pkg.scheme_id || null,
       style_id: (pkg.data && pkg.data.style_id) || pkg.style_id || null,
       topic_id: (pkg.data && pkg.data.topic_id) || pkg.topic_id || null,
       llm_provider: (pkg.data && pkg.data.llm_provider) || pkg.llm_provider || null,
-      // Контекст для следующего поста: сетка и типы карточек предыдущего,
-      // чтобы LLM не повторял layout и не клеил подряд одинаковые посты.
+      // РљРѕРЅС‚РµРєСЃС‚ РґР»СЏ СЃР»РµРґСѓСЋС‰РµРіРѕ РїРѕСЃС‚Р°: СЃРµС‚РєР° Рё С‚РёРїС‹ РєР°СЂС‚РѕС‡РµРє РїСЂРµРґС‹РґСѓС‰РµРіРѕ,
+      // С‡С‚РѕР±С‹ LLM РЅРµ РїРѕРІС‚РѕСЂСЏР» layout Рё РЅРµ РєР»РµРёР» РїРѕРґСЂСЏРґ РѕРґРёРЅР°РєРѕРІС‹Рµ РїРѕСЃС‚С‹.
       card_types: (pkg.data && pkg.data.cards && pkg.data.cards.length)
         ? pkg.data.cards.map((c) => c && c.type || "stat").slice(0, 4)
         : [],
@@ -289,14 +289,14 @@ export async function publishPackage(env, pkg, dry, target = "all") {
   }
 }
 
-// Публикация текстового поста (ивенты без карточки).
+// РџСѓР±Р»РёРєР°С†РёСЏ С‚РµРєСЃС‚РѕРІРѕРіРѕ РїРѕСЃС‚Р° (РёРІРµРЅС‚С‹ Р±РµР· РєР°СЂС‚РѕС‡РєРё).
 export async function publishText(env, text, dry, kind, extra = {}) {
   let tgOk = false;
   let vkOk = false;
   let tgErr = null;
   let vkErr = null;
   if (dry) {
-    console.log(`[dry-run] TG text -> ${env.TELEGRAM_CHANNEL_ID} (${text.length} симв.)`);
+    console.log(`[dry-run] TG text -> ${env.TELEGRAM_CHANNEL_ID} (${text.length} СЃРёРјРІ.)`);
     tgOk = true;
   } else {
     try {
@@ -306,7 +306,7 @@ export async function publishText(env, text, dry, kind, extra = {}) {
   }
   const plain = htmlToPlain(text);
   if (dry) {
-    console.log(`[dry-run] VK wall.post text (${plain.length} симв.)`);
+    console.log(`[dry-run] VK wall.post text (${plain.length} СЃРёРјРІ.)`);
     vkOk = true;
   } else {
     try {
@@ -335,13 +335,13 @@ export async function publishText(env, text, dry, kind, extra = {}) {
   return true;
 }
 
-// ---------- ретраи: догонка недостающей платформы (строгий пул VK/TG) ----------
+// ---------- СЂРµС‚СЂР°Рё: РґРѕРіРѕРЅРєР° РЅРµРґРѕСЃС‚Р°СЋС‰РµР№ РїР»Р°С‚С„РѕСЂРјС‹ (СЃС‚СЂРѕРіРёР№ РїСѓР» VK/TG) ----------
 
-// На каждом тике пробуем догрузить в недостающую платформу посты, которые не
-// ушли с первой попытки (missing = ["vk"] | ["tg"]). Когда обе платформы
-// опубликованы — обновляем существующую запись publish_log (одна запись на пост,
-// со статусом обеих). Неудача -> возврат в очередь с ростом счётчика; превышение
-// лимита или выход из окна свежести -> оставляем частичный статус в логе.
+// РќР° РєР°Р¶РґРѕРј С‚РёРєРµ РїСЂРѕР±СѓРµРј РґРѕРіСЂСѓР·РёС‚СЊ РІ РЅРµРґРѕСЃС‚Р°СЋС‰СѓСЋ РїР»Р°С‚С„РѕСЂРјСѓ РїРѕСЃС‚С‹, РєРѕС‚РѕСЂС‹Рµ РЅРµ
+// СѓС€Р»Рё СЃ РїРµСЂРІРѕР№ РїРѕРїС‹С‚РєРё (missing = ["vk"] | ["tg"]). РљРѕРіРґР° РѕР±Рµ РїР»Р°С‚С„РѕСЂРјС‹
+// РѕРїСѓР±Р»РёРєРѕРІР°РЅС‹ вЂ” РѕР±РЅРѕРІР»СЏРµРј СЃСѓС‰РµСЃС‚РІСѓСЋС‰СѓСЋ Р·Р°РїРёСЃСЊ publish_log (РѕРґРЅР° Р·Р°РїРёСЃСЊ РЅР° РїРѕСЃС‚,
+// СЃРѕ СЃС‚Р°С‚СѓСЃРѕРј РѕР±РµРёС…). РќРµСѓРґР°С‡Р° -> РІРѕР·РІСЂР°С‚ РІ РѕС‡РµСЂРµРґСЊ СЃ СЂРѕСЃС‚РѕРј СЃС‡С‘С‚С‡РёРєР°; РїСЂРµРІС‹С€РµРЅРёРµ
+// Р»РёРјРёС‚Р° РёР»Рё РІС‹С…РѕРґ РёР· РѕРєРЅР° СЃРІРµР¶РµСЃС‚Рё -> РѕСЃС‚Р°РІР»СЏРµРј С‡Р°СЃС‚РёС‡РЅС‹Р№ СЃС‚Р°С‚СѓСЃ РІ Р»РѕРіРµ.
 export async function processVkRetries(env) {
   const { MAX_VK_RETRY_ATTEMPTS } = await import("./limits.js");
   const retries = await kv.getVkRetry(env);
@@ -352,14 +352,14 @@ export async function processVkRetries(env) {
   const nowMs = Date.now();
   for (const item of retries) {
     if (item.attempts >= MAX_VK_RETRY_ATTEMPTS) {
-      console.log(`[vk-retry] отказ после ${item.attempts} попыток: ${item.title || item.id}`);
+      console.log(`[vk-retry] РѕС‚РєР°Р· РїРѕСЃР»Рµ ${item.attempts} РїРѕРїС‹С‚РѕРє: ${item.title || item.id}`);
       await kv.removeVkRetry(env, item.id);
       processed++;
       continue;
     }
-    // новость протухла, пока ждала догонки — не публикуем
+    // РЅРѕРІРѕСЃС‚СЊ РїСЂРѕС‚СѓС…Р»Р°, РїРѕРєР° Р¶РґР°Р»Р° РґРѕРіРѕРЅРєРё вЂ” РЅРµ РїСѓР±Р»РёРєСѓРµРј
     if (isStaleItem(item, nowMs)) {
-      console.log(`[vk-retry] протухла, удаляю: ${item.title || item.id}`);
+      console.log(`[vk-retry] РїСЂРѕС‚СѓС…Р»Р°, СѓРґР°Р»СЏСЋ: ${item.title || item.id}`);
       await kv.removeVkRetry(env, item.id);
       processed++;
       continue;
@@ -376,7 +376,7 @@ export async function processVkRetries(env) {
           await publishToTelegram(env, item, dry);
         } else {
           const vkr = await publishToVk(env, item, dry);
-          if (!vkr || !vkr.post_id) throw new Error("нет post_id после успешного upload");
+          if (!vkr || !vkr.post_id) throw new Error("РЅРµС‚ post_id РїРѕСЃР»Рµ СѓСЃРїРµС€РЅРѕРіРѕ upload");
           vkPost = vkr.post_id;
           vkAttach = vkr.vk_attachment || null;
         }
@@ -397,16 +397,16 @@ export async function processVkRetries(env) {
         vk_attachment: vkAttach,
       });
       processed++;
-      console.log(`[vk-retry] опубликовано в обе платформы (попытка ${item.attempts}): ${item.title || item.id}`);
+      console.log(`[vk-retry] РѕРїСѓР±Р»РёРєРѕРІР°РЅРѕ РІ РѕР±Рµ РїР»Р°С‚С„РѕСЂРјС‹ (РїРѕРїС‹С‚РєР° ${item.attempts}): ${item.title || item.id}`);
       const url = vkPostUrl(env, vkPost);
       if (!dry) {
         await notifyAdmin(
           env,
-          `✅ <b>Догнано</b>: ${item.title || item.id}\n${pubStatus({ tgOk: true, vkOk: true })}${url ? ` · ${url}` : ""}`
+          `вњ… <b>Р”РѕРіРЅР°РЅРѕ</b>: ${item.title || item.id}\n${pubStatus({ tgOk: true, vkOk: true })}${url ? ` В· ${url}` : ""}`
         );
       }
     } else {
-      console.log(`[vk-retry] попытка ${item.attempts} не удалась для «${item.title || item.id}»: ${tgErr || vkErr}`);
+      console.log(`[vk-retry] РїРѕРїС‹С‚РєР° ${item.attempts} РЅРµ СѓРґР°Р»Р°СЃСЊ РґР»СЏ В«${item.title || item.id}В»: ${tgErr || vkErr}`);
       await kv.removeVkRetry(env, item.id);
       await kv.addVkRetry(env, { ...item, attempts: item.attempts, missing });
       processed++;
@@ -415,15 +415,15 @@ export async function processVkRetries(env) {
   return { processed };
 }
 
-// ---------- черновики ----------
+// ---------- С‡РµСЂРЅРѕРІРёРєРё ----------
 
 async function autoDeferDrafts(env, state, now = new Date()) {
   const drafts = await kv.listDrafts(env);
   const deadline = now.getTime() - DRAFT_TIMEOUT_MIN * 60 * 1000;
   for (const d of drafts) {
     if (d.status && d.status !== "pending") continue;
-    // Черновики от GitHub приходят без created_at — таймер 30 минут стартует
-    // с момента, когда Worker впервые увидел черновик.
+    // Р§РµСЂРЅРѕРІРёРєРё РѕС‚ GitHub РїСЂРёС…РѕРґСЏС‚ Р±РµР· created_at вЂ” С‚Р°Р№РјРµСЂ 30 РјРёРЅСѓС‚ СЃС‚Р°СЂС‚СѓРµС‚
+    // СЃ РјРѕРјРµРЅС‚Р°, РєРѕРіРґР° Worker РІРїРµСЂРІС‹Рµ СѓРІРёРґРµР» С‡РµСЂРЅРѕРІРёРє.
     if (!d.created_at) {
       d.created_at = now.toISOString();
       await kv.saveDraft(env, d);
@@ -431,12 +431,12 @@ async function autoDeferDrafts(env, state, now = new Date()) {
     }
     const created = new Date(d.created_at).getTime();
     if (created > deadline) continue;
-    // новость протухла, пока ждала ответа админа — черновик тихо удаляем
+    // РЅРѕРІРѕСЃС‚СЊ РїСЂРѕС‚СѓС…Р»Р°, РїРѕРєР° Р¶РґР°Р»Р° РѕС‚РІРµС‚Р° Р°РґРјРёРЅР° вЂ” С‡РµСЂРЅРѕРІРёРє С‚РёС…Рѕ СѓРґР°Р»СЏРµРј
     if (isStaleItem(d, now.getTime())) {
       await kv.deleteDraft(env, d.id);
       continue;
     }
-    // админ не ответил за 30 минут -> отложенный пост в ближайший свободный слот
+    // Р°РґРјРёРЅ РЅРµ РѕС‚РІРµС‚РёР» Р·Р° 30 РјРёРЅСѓС‚ -> РѕС‚Р»РѕР¶РµРЅРЅС‹Р№ РїРѕСЃС‚ РІ Р±Р»РёР¶Р°Р№С€РёР№ СЃРІРѕР±РѕРґРЅС‹Р№ СЃР»РѕС‚
     const slot = await nextFreeSlot(env, now);
     await kv.deleteDraft(env, d.id);
     await kv.addStock(env, {
@@ -466,25 +466,25 @@ async function autoDeferDrafts(env, state, now = new Date()) {
       await sendMessage(
         env,
         env.TELEGRAM_ADMIN_CHAT_ID,
-        `⏳ <b>Не получил ответ за ${DRAFT_TIMEOUT_MIN} минут</b> — пост «${d.title || ""}» поставлен в отложенные на слот ${when}.`,
+        `вЏі <b>РќРµ РїРѕР»СѓС‡РёР» РѕС‚РІРµС‚ Р·Р° ${DRAFT_TIMEOUT_MIN} РјРёРЅСѓС‚</b> вЂ” РїРѕСЃС‚ В«${d.title || ""}В» РїРѕСЃС‚Р°РІР»РµРЅ РІ РѕС‚Р»РѕР¶РµРЅРЅС‹Рµ РЅР° СЃР»РѕС‚ ${when}.`,
         { parse_mode: "HTML" }
       );
     } catch (e) { /* ignore */ }
   }
 }
 
-// ---------- одиночные новости по окнам (1 новость = 1 пост) ----------
+// ---------- РѕРґРёРЅРѕС‡РЅС‹Рµ РЅРѕРІРѕСЃС‚Рё РїРѕ РѕРєРЅР°Рј (1 РЅРѕРІРѕСЃС‚СЊ = 1 РїРѕСЃС‚) ----------
 
-// Топ-1 свежайший кандидат для одиночного поста (pickDigestItems(1) уже сделал
-// сортировку по свежести + буст темы). Пусто — новость не выйдет.
+// РўРѕРї-1 СЃРІРµР¶Р°Р№С€РёР№ РєР°РЅРґРёРґР°С‚ РґР»СЏ РѕРґРёРЅРѕС‡РЅРѕРіРѕ РїРѕСЃС‚Р° (pickDigestItems(1) СѓР¶Рµ СЃРґРµР»Р°Р»
+// СЃРѕСЂС‚РёСЂРѕРІРєСѓ РїРѕ СЃРІРµР¶РµСЃС‚Рё + Р±СѓСЃС‚ С‚РµРјС‹). РџСѓСЃС‚Рѕ вЂ” РЅРѕРІРѕСЃС‚СЊ РЅРµ РІС‹Р№РґРµС‚.
 async function pickSingleItem(env) {
   const items = await pickDigestItems(env, 1);
   return items[0] || null;
 }
 
-// Бюджетная сборка карточки: текст через LLM (или правила при недоступности/
-// перерасходе бюджета), картинка через рендер-сервис (или JS-фолбэк). Ничего
-// не публикует и не потребляет — только готовит. Возвращает pkg или null.
+// Р‘СЋРґР¶РµС‚РЅР°СЏ СЃР±РѕСЂРєР° РєР°СЂС‚РѕС‡РєРё: С‚РµРєСЃС‚ С‡РµСЂРµР· LLM (РёР»Рё РїСЂР°РІРёР»Р° РїСЂРё РЅРµРґРѕСЃС‚СѓРїРЅРѕСЃС‚Рё/
+// РїРµСЂРµСЂР°СЃС…РѕРґРµ Р±СЋРґР¶РµС‚Р°), РєР°СЂС‚РёРЅРєР° С‡РµСЂРµР· СЂРµРЅРґРµСЂ-СЃРµСЂРІРёСЃ (РёР»Рё JS-С„РѕР»Р±СЌРє). РќРёС‡РµРіРѕ
+// РЅРµ РїСѓР±Р»РёРєСѓРµС‚ Рё РЅРµ РїРѕС‚СЂРµР±Р»СЏРµС‚ вЂ” С‚РѕР»СЊРєРѕ РіРѕС‚РѕРІРёС‚. Р’РѕР·РІСЂР°С‰Р°РµС‚ pkg РёР»Рё null.
 async function finalizeNewsPkg(env, cand, opts) {
   const { slug, date, slot } = opts;
   const link = cand.link || "";
@@ -496,7 +496,7 @@ async function finalizeNewsPkg(env, cand, opts) {
     data = await bounded(LLM_BUDGET_MS, "[scheduler] LLM",
       generatePostData(src, env, { link, source, guid: cand.guid || "" }));
   } catch (e) {
-    console.log("[scheduler] LLM превысил бюджет, использую правила:", e.message);
+    console.log("[scheduler] LLM РїСЂРµРІС‹СЃРёР» Р±СЋРґР¶РµС‚, РёСЃРїРѕР»СЊР·СѓСЋ РїСЂР°РІРёР»Р°:", e.message);
   }
   if (!data) data = generateByRules(src, { link, source });
 
@@ -506,14 +506,14 @@ async function finalizeNewsPkg(env, cand, opts) {
       renderCardBytes(env, data, { link, source }));
     if (bytes && bytes.length > 100) b64 = bytesToBase64(bytes);
   } catch (e) {
-    console.log("[scheduler] рендер превысил бюджет, JS-фолбэк:", e.message);
+    console.log("[scheduler] СЂРµРЅРґРµСЂ РїСЂРµРІС‹СЃРёР» Р±СЋРґР¶РµС‚, JS-С„РѕР»Р±СЌРє:", e.message);
   }
   if (!b64) {
     try {
       const bytes = await renderCard(data, { format: "png" });
       if (bytes && bytes.length > 100) b64 = bytesToBase64(bytes);
     } catch (e) {
-      console.log("[scheduler] JS-рендер не сработал:", e.message);
+      console.log("[scheduler] JS-СЂРµРЅРґРµСЂ РЅРµ СЃСЂР°Р±РѕС‚Р°Р»:", e.message);
     }
   }
   if (!b64) return null;
@@ -545,39 +545,39 @@ async function finalizeNewsPkg(env, cand, opts) {
   };
 }
 
-// Автопосты ВКЛ: топ-1 кандидат активного окна -> одиночный пост на склад.
-// Окно занимается маркером — второй пост в то же окно не собирается.
+// РђРІС‚РѕРїРѕСЃС‚С‹ Р’РљР›: С‚РѕРї-1 РєР°РЅРґРёРґР°С‚ Р°РєС‚РёРІРЅРѕРіРѕ РѕРєРЅР° -> РѕРґРёРЅРѕС‡РЅС‹Р№ РїРѕСЃС‚ РЅР° СЃРєР»Р°Рґ.
+// РћРєРЅРѕ Р·Р°РЅРёРјР°РµС‚СЃСЏ РјР°СЂРєРµСЂРѕРј вЂ” РІС‚РѕСЂРѕР№ РїРѕСЃС‚ РІ С‚Рѕ Р¶Рµ РѕРєРЅРѕ РЅРµ СЃРѕР±РёСЂР°РµС‚СЃСЏ.
 export async function assembleNewsPosts(env, now = new Date()) {
-  const msk = mskNow(now);
+  const ekb = ekbNow(now);
   const made = [];
   for (const w of await getWindows(env)) {
-    if (msk.minuteOfDay < w.start || msk.minuteOfDay >= w.end) continue;
-    if (await kv.getDigestDone(env, msk.date, w.slug)) continue;
+    if (ekb.minuteOfDay < w.start || ekb.minuteOfDay >= w.end) continue;
+    if (await kv.getDigestDone(env, ekb.date, w.slug)) continue;
     const cand = await pickSingleItem(env);
     if (!cand) continue;
     const res = await finalizeNewsPkg(env, cand, {
       slug: w.slug,
-      date: msk.date,
-      slot: mskToUtcMs(msk.dow, w.start, now),
+      date: ekb.date,
+      slot: ekbToUtcMs(ekb.dow, w.start, now),
     });
     if (!res) continue;
     await kv.addStock(env, res.pkg);
-    await commitSingle(env, msk.date, w.slug, cand);
+    await commitSingle(env, ekb.date, w.slug, cand);
     made.push(res.pkg.guid);
-    console.log("[scheduler] одиночная новость собрана:", res.pkg.title, "→", new Date(res.pkg.scheduled_for).toISOString());
+    console.log("[scheduler] РѕРґРёРЅРѕС‡РЅР°СЏ РЅРѕРІРѕСЃС‚СЊ СЃРѕР±СЂР°РЅР°:", res.pkg.title, "в†’", new Date(res.pkg.scheduled_for).toISOString());
   }
   return made;
 }
 
-// Потребляет топ-1 кандидата и ставит маркер окна — пост выйдет один раз.
+// РџРѕС‚СЂРµР±Р»СЏРµС‚ С‚РѕРї-1 РєР°РЅРґРёРґР°С‚Р° Рё СЃС‚Р°РІРёС‚ РјР°СЂРєРµСЂ РѕРєРЅР° вЂ” РїРѕСЃС‚ РІС‹Р№РґРµС‚ РѕРґРёРЅ СЂР°Р·.
 async function commitSingle(env, date, slug, cand) {
   const rest = (await kv.getCandidates(env)).filter((c) => c.guid !== cand.guid);
   await kv.setCandidates(env, rest);
   await kv.setDigestDone(env, date, slug, { assembled_at: new Date().toISOString(), kind: "news", guid: cand.guid });
 }
 
-// Автопосты ВЫКЛ: вместо публикации админу приходит превью новости на одобрение
-// (кнопки 🌐/🔵/🟢/🔄/❌) — тот же контракт, что у дайджест-превью.
+// РђРІС‚РѕРїРѕСЃС‚С‹ Р’Р«РљР›: РІРјРµСЃС‚Рѕ РїСѓР±Р»РёРєР°С†РёРё Р°РґРјРёРЅСѓ РїСЂРёС…РѕРґРёС‚ РїСЂРµРІСЊСЋ РЅРѕРІРѕСЃС‚Рё РЅР° РѕРґРѕР±СЂРµРЅРёРµ
+// (РєРЅРѕРїРєРё рџЊђ/рџ”µ/рџџў/рџ”„/вќЊ) вЂ” С‚РѕС‚ Р¶Рµ РєРѕРЅС‚СЂР°РєС‚, С‡С‚Рѕ Сѓ РґР°Р№РґР¶РµСЃС‚-РїСЂРµРІСЊСЋ.
 async function sendNewsPreview(env, adminChat, pkg) {
   const bytes = decodePng(pkg.png);
   const sent = await sendCard(env, adminChat, bytes, pkg.caption, {
@@ -606,29 +606,29 @@ async function sendNewsPreview(env, adminChat, pkg) {
 }
 
 export async function assembleNewsDrafts(env, now = new Date()) {
-  const msk = mskNow(now);
+  const ekb = ekbNow(now);
   const adminChat = env.TELEGRAM_ADMIN_CHAT_ID;
   let sent = 0;
   for (const w of await getWindows(env)) {
-    if (msk.minuteOfDay < w.start || msk.minuteOfDay >= w.end) continue;
-    if (await kv.getDigestDone(env, msk.date, w.slug)) continue;
+    if (ekb.minuteOfDay < w.start || ekb.minuteOfDay >= w.end) continue;
+    if (await kv.getDigestDone(env, ekb.date, w.slug)) continue;
     const cand = await pickSingleItem(env);
     if (!cand) continue;
     const res = await finalizeNewsPkg(env, cand, {
       slug: w.slug,
-      date: msk.date,
-      slot: mskToUtcMs(msk.dow, w.start, now),
+      date: ekb.date,
+      slot: ekbToUtcMs(ekb.dow, w.start, now),
     });
     if (!res) continue;
     if (adminChat) await sendNewsPreview(env, adminChat, res.pkg);
-    await commitSingle(env, msk.date, w.slug, cand);
+    await commitSingle(env, ekb.date, w.slug, cand);
     sent++;
-    console.log("[scheduler] превью новости админу:", res.pkg.title);
+    console.log("[scheduler] РїСЂРµРІСЊСЋ РЅРѕРІРѕСЃС‚Рё Р°РґРјРёРЅСѓ:", res.pkg.title);
   }
   return sent;
 }
 
-// ---------- публикация из склада по слотам ----------
+// ---------- РїСѓР±Р»РёРєР°С†РёСЏ РёР· СЃРєР»Р°РґР° РїРѕ СЃР»РѕС‚Р°Рј ----------
 
 async function publishDueStock(env, now = new Date()) {
   const stock = await kv.getStock(env);
@@ -636,9 +636,9 @@ async function publishDueStock(env, now = new Date()) {
   const state = await kv.loadState(env);
   const dry = !!state.dry_run;
   const due = stock.filter((p) => (p.scheduled_for || 0) <= nowMs);
-  // Дубли в stock возможны (тик умирал между addStock и commitSingle) —
-  // один и тот же пакет (id) не должен выходить дважды: публикуем только
-  // первую копию в очереди, остальные тихо выкидываем.
+  // Р”СѓР±Р»Рё РІ stock РІРѕР·РјРѕР¶РЅС‹ (С‚РёРє СѓРјРёСЂР°Р» РјРµР¶РґСѓ addStock Рё commitSingle) вЂ”
+  // РѕРґРёРЅ Рё С‚РѕС‚ Р¶Рµ РїР°РєРµС‚ (id) РЅРµ РґРѕР»Р¶РµРЅ РІС‹С…РѕРґРёС‚СЊ РґРІР°Р¶РґС‹: РїСѓР±Р»РёРєСѓРµРј С‚РѕР»СЊРєРѕ
+  // РїРµСЂРІСѓСЋ РєРѕРїРёСЋ РІ РѕС‡РµСЂРµРґРё, РѕСЃС‚Р°Р»СЊРЅС‹Рµ С‚РёС…Рѕ РІС‹РєРёРґС‹РІР°РµРј.
   const seenIds = new Set();
   for (const pkg of due) {
     if (seenIds.has(pkg.id)) {
@@ -646,23 +646,23 @@ async function publishDueStock(env, now = new Date()) {
       continue;
     }
     seenIds.add(pkg.id);
-    // Дайджест собран из свежих новостей прямо в окне (маркер digest_done) —
-    // проверку свежести не применяем, окно не «переполняем» по cap: оно и есть
-    // этот выпуск.
+    // Р”Р°Р№РґР¶РµСЃС‚ СЃРѕР±СЂР°РЅ РёР· СЃРІРµР¶РёС… РЅРѕРІРѕСЃС‚РµР№ РїСЂСЏРјРѕ РІ РѕРєРЅРµ (РјР°СЂРєРµСЂ digest_done) вЂ”
+    // РїСЂРѕРІРµСЂРєСѓ СЃРІРµР¶РµСЃС‚Рё РЅРµ РїСЂРёРјРµРЅСЏРµРј, РѕРєРЅРѕ РЅРµ В«РїРµСЂРµРїРѕР»РЅСЏРµРјВ» РїРѕ cap: РѕРЅРѕ Рё РµСЃС‚СЊ
+    // СЌС‚РѕС‚ РІС‹РїСѓСЃРє.
     if (pkg.kind === "digest") {
-      // пусто
+      // РїСѓСЃС‚Рѕ
     } else if (pkg.kind === "news" && isStaleItem(pkg, nowMs)) {
-      // новость протухла, пока ждала своего слота — выкидываем тихо
+      // РЅРѕРІРѕСЃС‚СЊ РїСЂРѕС‚СѓС…Р»Р°, РїРѕРєР° Р¶РґР°Р»Р° СЃРІРѕРµРіРѕ СЃР»РѕС‚Р° вЂ” РІС‹РєРёРґС‹РІР°РµРј С‚РёС…Рѕ
       await kv.removeStock(env, pkg.id);
       continue;
     }
     if (pkg.kind === "news" || pkg.kind === "digest") {
-      const msk = mskNow(new Date(pkg.scheduled_for || now.getTime()));
-      const win = await dynamicCurrentWindow(env, msk.minuteOfDay);
+      const ekb = ekbNow(new Date(pkg.scheduled_for || now.getTime()));
+      const win = await dynamicCurrentWindow(env, ekb.minuteOfDay);
       if (win) {
         const used = await countInWindow(env, win, new Date(pkg.scheduled_for || now.getTime()));
         if (used >= win.cap) {
-          // окно уже занято другим постом/выпуском — переносим в следующий слот
+          // РѕРєРЅРѕ СѓР¶Рµ Р·Р°РЅСЏС‚Рѕ РґСЂСѓРіРёРј РїРѕСЃС‚РѕРј/РІС‹РїСѓСЃРєРѕРј вЂ” РїРµСЂРµРЅРѕСЃРёРј РІ СЃР»РµРґСѓСЋС‰РёР№ СЃР»РѕС‚
           const next = await nextFreeSlot(env, now);
           await kv.removeStock(env, pkg.id);
           await kv.addStock(env, { ...pkg, scheduled_for: next });
@@ -670,7 +670,7 @@ async function publishDueStock(env, now = new Date()) {
         }
       }
     }
-    // защита от дублей: если этот guid уже публиковался — пропускаем
+    // Р·Р°С‰РёС‚Р° РѕС‚ РґСѓР±Р»РµР№: РµСЃР»Рё СЌС‚РѕС‚ guid СѓР¶Рµ РїСѓР±Р»РёРєРѕРІР°Р»СЃСЏ вЂ” РїСЂРѕРїСѓСЃРєР°РµРј
     if (pkg.guid) {
       const log = await kv.getLog(env);
       if (log.some((e) => e.guid && e.guid === pkg.guid)) {
@@ -678,11 +678,11 @@ async function publishDueStock(env, now = new Date()) {
         continue;
       }
     }
-    // Свежая карточка в момент публикации: небо рисуется под реальное время
-    // выхода поста (рендер-сервис считает МСК сам), а не под время генерации.
-    // Формат — по настройке card_format (auto/gif/png); дайджест-обложка — PNG
-    // и без плашки цитаты (обычные новости). Автопост из окна (no_rereder) уже
-    // несёт готовую карточку — не тратим тяжёлый рендер ещё раз на тике.
+    // РЎРІРµР¶Р°СЏ РєР°СЂС‚РѕС‡РєР° РІ РјРѕРјРµРЅС‚ РїСѓР±Р»РёРєР°С†РёРё: РЅРµР±Рѕ СЂРёСЃСѓРµС‚СЃСЏ РїРѕРґ СЂРµР°Р»СЊРЅРѕРµ РІСЂРµРјСЏ
+    // РІС‹С…РѕРґР° РїРѕСЃС‚Р° (СЂРµРЅРґРµСЂ-СЃРµСЂРІРёСЃ СЃС‡РёС‚Р°РµС‚ РњРЎРљ СЃР°Рј), Р° РЅРµ РїРѕРґ РІСЂРµРјСЏ РіРµРЅРµСЂР°С†РёРё.
+    // Р¤РѕСЂРјР°С‚ вЂ” РїРѕ РЅР°СЃС‚СЂРѕР№РєРµ card_format (auto/gif/png); РґР°Р№РґР¶РµСЃС‚-РѕР±Р»РѕР¶РєР° вЂ” PNG
+    // Рё Р±РµР· РїР»Р°С€РєРё С†РёС‚Р°С‚С‹ (РѕР±С‹С‡РЅС‹Рµ РЅРѕРІРѕСЃС‚Рё). РђРІС‚РѕРїРѕСЃС‚ РёР· РѕРєРЅР° (no_rereder) СѓР¶Рµ
+    // РЅРµСЃС‘С‚ РіРѕС‚РѕРІСѓСЋ РєР°СЂС‚РѕС‡РєСѓ вЂ” РЅРµ С‚СЂР°С‚РёРј С‚СЏР¶С‘Р»С‹Р№ СЂРµРЅРґРµСЂ РµС‰С‘ СЂР°Р· РЅР° С‚РёРєРµ.
     if (!dry && pkg.data && pkg.kind !== "event" && !pkg.no_rereder) {
       try {
         const fresh = await renderCardBytes(env, pkg.data, {
@@ -699,7 +699,7 @@ async function publishDueStock(env, now = new Date()) {
     await kv.removeStock(env, pkg.id);
     try {
       if (pkg.kind === "event") {
-        // ивенты — текстовый пост без карточки (создаются админом в диалоге)
+        // РёРІРµРЅС‚С‹ вЂ” С‚РµРєСЃС‚РѕРІС‹Р№ РїРѕСЃС‚ Р±РµР· РєР°СЂС‚РѕС‡РєРё (СЃРѕР·РґР°СЋС‚СЃСЏ Р°РґРјРёРЅРѕРј РІ РґРёР°Р»РѕРіРµ)
         const text = (pkg.caption || pkg.title || "").trim();
         if (!text) continue;
         const ok = await publishText(env, text, dry, "event", {
@@ -709,7 +709,7 @@ async function publishDueStock(env, now = new Date()) {
           link: pkg.link || "",
         });
         if (ok) {
-          await notifyAdmin(env, `🎪 <b>Ивент опубликован</b>: ${pkg.title || ""}`);
+          await notifyAdmin(env, `рџЋЄ <b>РРІРµРЅС‚ РѕРїСѓР±Р»РёРєРѕРІР°РЅ</b>: ${pkg.title || ""}`);
         } else {
           await kv.addStock(env, { ...pkg, scheduled_for: now.getTime() + 15 * 60 * 1000 });
         }
@@ -717,33 +717,33 @@ async function publishDueStock(env, now = new Date()) {
       }
       const res = await publishPackage(env, pkg, dry);
       if (!dry) {
-        // Строгий пул: если ушла только одна платформа — недостающая догоняется
-        // ретраями, пишем об этом админу.
+        // РЎС‚СЂРѕРіРёР№ РїСѓР»: РµСЃР»Рё СѓС€Р»Р° С‚РѕР»СЊРєРѕ РѕРґРЅР° РїР»Р°С‚С„РѕСЂРјР° вЂ” РЅРµРґРѕСЃС‚Р°СЋС‰Р°СЏ РґРѕРіРѕРЅСЏРµС‚СЃСЏ
+        // СЂРµС‚СЂР°СЏРјРё, РїРёС€РµРј РѕР± СЌС‚РѕРј Р°РґРјРёРЅСѓ.
         const url = vkPostUrl(env, res.vkPost);
-        const line = url ? `${pubStatus(res)} · ${url}` : pubStatus(res);
+        const line = url ? `${pubStatus(res)} В· ${url}` : pubStatus(res);
         if (res.tgOk && res.vkOk) {
-          await notifyAdmin(env, `✅ <b>Опубликовано</b>: ${pkg.title || ""}\n${line}`);
+          await notifyAdmin(env, `вњ… <b>РћРїСѓР±Р»РёРєРѕРІР°РЅРѕ</b>: ${pkg.title || ""}\n${line}`);
         } else if (res.tgOk || res.vkOk) {
           const missing = res.tgOk ? "VK" : "TG";
-          await notifyAdmin(env, `⏳ <b>Частично опубликовано</b>: ${pkg.title || ""}\n${line}\n🔜 Догоняю ${missing} в ближайшие тики.`);
+          await notifyAdmin(env, `вЏі <b>Р§Р°СЃС‚РёС‡РЅРѕ РѕРїСѓР±Р»РёРєРѕРІР°РЅРѕ</b>: ${pkg.title || ""}\n${line}\nрџ”њ Р”РѕРіРѕРЅСЏСЋ ${missing} РІ Р±Р»РёР¶Р°Р№С€РёРµ С‚РёРєРё.`);
         }
       }
     } catch (e) {
       console.log("[scheduler] publish failed:", e.message);
-      await notifyAdmin(env, `❌ <b>Не удалось опубликовать</b>: ${pkg.title || ""}\n${escHtml(e.message)}`);
+      await notifyAdmin(env, `вќЊ <b>РќРµ СѓРґР°Р»РѕСЃСЊ РѕРїСѓР±Р»РёРєРѕРІР°С‚СЊ</b>: ${pkg.title || ""}\n${escHtml(e.message)}`);
       await kv.addStock(env, { ...pkg, scheduled_for: now.getTime() + 15 * 60 * 1000 });
     }
   }
 }
 
-// ---------- сборка дайджестов по окнам ----------
+// ---------- СЃР±РѕСЂРєР° РґР°Р№РґР¶РµСЃС‚РѕРІ РїРѕ РѕРєРЅР°Рј ----------
 
-// Свежих кандидатов на выпуск: не протухшие, свежайшие первыми, не больше
-// DIGEST_MAX_ITEMS. Приоритет темам, которые сейчас лучше всего залетают у
-// аудитории: вес темы-лидера (из статов) сдвигает кандидата вверх по свежести
-// (1 балл веса ~ 45 минут), чтобы выпуск «делал подобные» успешным постам.
-// Пусто -> дайджест не выйдет (кандидаты могли прийти позже в окне — маркер
-// не ставим).
+// РЎРІРµР¶РёС… РєР°РЅРґРёРґР°С‚РѕРІ РЅР° РІС‹РїСѓСЃРє: РЅРµ РїСЂРѕС‚СѓС…С€РёРµ, СЃРІРµР¶Р°Р№С€РёРµ РїРµСЂРІС‹РјРё, РЅРµ Р±РѕР»СЊС€Рµ
+// DIGEST_MAX_ITEMS. РџСЂРёРѕСЂРёС‚РµС‚ С‚РµРјР°Рј, РєРѕС‚РѕСЂС‹Рµ СЃРµР№С‡Р°СЃ Р»СѓС‡С€Рµ РІСЃРµРіРѕ Р·Р°Р»РµС‚Р°СЋС‚ Сѓ
+// Р°СѓРґРёС‚РѕСЂРёРё: РІРµСЃ С‚РµРјС‹-Р»РёРґРµСЂР° (РёР· СЃС‚Р°С‚РѕРІ) СЃРґРІРёРіР°РµС‚ РєР°РЅРґРёРґР°С‚Р° РІРІРµСЂС… РїРѕ СЃРІРµР¶РµСЃС‚Рё
+// (1 Р±Р°Р»Р» РІРµСЃР° ~ 45 РјРёРЅСѓС‚), С‡С‚РѕР±С‹ РІС‹РїСѓСЃРє В«РґРµР»Р°Р» РїРѕРґРѕР±РЅС‹РµВ» СѓСЃРїРµС€РЅС‹Рј РїРѕСЃС‚Р°Рј.
+// РџСѓСЃС‚Рѕ -> РґР°Р№РґР¶РµСЃС‚ РЅРµ РІС‹Р№РґРµС‚ (РєР°РЅРґРёРґР°С‚С‹ РјРѕРіР»Рё РїСЂРёР№С‚Рё РїРѕР·Р¶Рµ РІ РѕРєРЅРµ вЂ” РјР°СЂРєРµСЂ
+// РЅРµ СЃС‚Р°РІРёРј).
 async function pickDigestItems(env, count) {
   const nowMs = Date.now();
   const list = ((await kv.getCandidates(env)) || []).filter((c) => !isStaleItem(c, nowMs));
@@ -752,18 +752,18 @@ async function pickDigestItems(env, count) {
     const { getContentWeights } = await import("./stats.js");
     const cw = await getContentWeights(env);
     if (cw && cw.topic && Object.keys(cw.topic).length) topicBoost = cw.topic;
-  } catch (e) { /* без буста тем */ }
+  } catch (e) { /* Р±РµР· Р±СѓСЃС‚Р° С‚РµРј */ }
   const boostOf = (c) => {
     if (!topicBoost) return 0;
     try {
       const t = mainTopic(String(c.title || "") + " " + String(c.text || c.excerpt || ""));
       if (t && topicBoost[t.id]) return topicBoost[t.id];
-    } catch (e) { /* нет темы */ }
+    } catch (e) { /* РЅРµС‚ С‚РµРјС‹ */ }
     return 0;
   };
   const scored = list.map((c) => ({ c, fresh: digestFreshScore(c), boost: boostOf(c) }));
-  // Каждый балл веса темы ≈ 45 минут «свежести»: лидер темы обгоняет соседние
-  // по времени, но не переворачивает выпуск для старых кандидатов.
+  // РљР°Р¶РґС‹Р№ Р±Р°Р»Р» РІРµСЃР° С‚РµРјС‹ в‰€ 45 РјРёРЅСѓС‚ В«СЃРІРµР¶РµСЃС‚РёВ»: Р»РёРґРµСЂ С‚РµРјС‹ РѕР±РіРѕРЅСЏРµС‚ СЃРѕСЃРµРґРЅРёРµ
+  // РїРѕ РІСЂРµРјРµРЅРё, РЅРѕ РЅРµ РїРµСЂРµРІРѕСЂР°С‡РёРІР°РµС‚ РІС‹РїСѓСЃРє РґР»СЏ СЃС‚Р°СЂС‹С… РєР°РЅРґРёРґР°С‚РѕРІ.
   scored.sort((a, b) => (b.fresh + (b.boost || 0) * 45 * 60 * 1000) - (a.fresh + (a.boost || 0) * 45 * 60 * 1000));
   return scored.slice(0, count).map((x) => ({
     ...x.c,
@@ -771,9 +771,9 @@ async function pickDigestItems(env, count) {
   }));
 }
 
-// Собирает готовый пакет-дайджест из items (текст через LLM/правила + обложка).
-// Ничего не публикует и не потребляет — только готовит. Возвращает pkg или null,
-// если обложку не удалось собрать.
+// РЎРѕР±РёСЂР°РµС‚ РіРѕС‚РѕРІС‹Р№ РїР°РєРµС‚-РґР°Р№РґР¶РµСЃС‚ РёР· items (С‚РµРєСЃС‚ С‡РµСЂРµР· LLM/РїСЂР°РІРёР»Р° + РѕР±Р»РѕР¶РєР°).
+// РќРёС‡РµРіРѕ РЅРµ РїСѓР±Р»РёРєСѓРµС‚ Рё РЅРµ РїРѕС‚СЂРµР±Р»СЏРµС‚ вЂ” С‚РѕР»СЊРєРѕ РіРѕС‚РѕРІРёС‚. Р’РѕР·РІСЂР°С‰Р°РµС‚ pkg РёР»Рё null,
+// РµСЃР»Рё РѕР±Р»РѕР¶РєСѓ РЅРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР±СЂР°С‚СЊ.
 async function finalizeDigestPkg(env, items, opts) {
   const { label, slug, date, slot } = opts;
   const itemMeta = items.map((c) => ({
@@ -785,8 +785,8 @@ async function finalizeDigestPkg(env, items, opts) {
   }));
 
   const digestText = await generateDigestText(items, env, { label, slug, date });
-  // Без живого LLM выпуск не собираем: фолбэк-правила дают сырые заголовки,
-  // это мусор. Окно пропускается, кандидаты не тратятся.
+  // Р‘РµР· Р¶РёРІРѕРіРѕ LLM РІС‹РїСѓСЃРє РЅРµ СЃРѕР±РёСЂР°РµРј: С„РѕР»Р±СЌРє-РїСЂР°РІРёР»Р° РґР°СЋС‚ СЃС‹СЂС‹Рµ Р·Р°РіРѕР»РѕРІРєРё,
+  // СЌС‚Рѕ РјСѓСЃРѕСЂ. РћРєРЅРѕ РїСЂРѕРїСѓСЃРєР°РµС‚СЃСЏ, РєР°РЅРґРёРґР°С‚С‹ РЅРµ С‚СЂР°С‚СЏС‚СЃСЏ.
   if (!digestText) return null;
   const { headline, caption, digest_text } = digestText;
 
@@ -797,8 +797,8 @@ async function finalizeDigestPkg(env, items, opts) {
     cards: [
       {
         type: "list",
-        label: "В этом выпуске",
-        items: itemMeta.map((m2) => m2.title || "Новость").slice(0, DIGEST_MAX_ITEMS),
+        label: "Р’ СЌС‚РѕРј РІС‹РїСѓСЃРєРµ",
+        items: itemMeta.map((m2) => m2.title || "РќРѕРІРѕСЃС‚СЊ").slice(0, DIGEST_MAX_ITEMS),
       },
     ],
     tier: "news",
@@ -808,19 +808,19 @@ async function finalizeDigestPkg(env, items, opts) {
     topic_id: "digest",
   };
 
-  // Одна обложка на весь выпуск (рендер по данным пакета, пере-рисуется и в
-  // момент публикации под реальное время суток). Всегда PNG — фото, а не файл;
-  // без плашки цитаты (обычные новости).
+  // РћРґРЅР° РѕР±Р»РѕР¶РєР° РЅР° РІРµСЃСЊ РІС‹РїСѓСЃРє (СЂРµРЅРґРµСЂ РїРѕ РґР°РЅРЅС‹Рј РїР°РєРµС‚Р°, РїРµСЂРµ-СЂРёСЃСѓРµС‚СЃСЏ Рё РІ
+  // РјРѕРјРµРЅС‚ РїСѓР±Р»РёРєР°С†РёРё РїРѕРґ СЂРµР°Р»СЊРЅРѕРµ РІСЂРµРјСЏ СЃСѓС‚РѕРє). Р’СЃРµРіРґР° PNG вЂ” С„РѕС‚Рѕ, Р° РЅРµ С„Р°Р№Р»;
+  // Р±РµР· РїР»Р°С€РєРё С†РёС‚Р°С‚С‹ (РѕР±С‹С‡РЅС‹Рµ РЅРѕРІРѕСЃС‚Рё).
   let b64 = "";
   try {
     const bytes = await renderCardBytes(env, data, { link: "", source: "TrustNode", format: "png", quote: "" });
     if (bytes && bytes.length > 100) b64 = bytesToBase64(bytes);
   } catch (e) {
-    console.log("[scheduler] дайджест: обложку не собрали:", e.message);
+    console.log("[scheduler] РґР°Р№РґР¶РµСЃС‚: РѕР±Р»РѕР¶РєСѓ РЅРµ СЃРѕР±СЂР°Р»Рё:", e.message);
   }
   if (!b64) {
-    // Обложка обязательна (TG/VK постят картинку) — без неё выпуск не выйдет,
-    // кандидатов не трогаем, окно попробуем собрать на следующем тике.
+    // РћР±Р»РѕР¶РєР° РѕР±СЏР·Р°С‚РµР»СЊРЅР° (TG/VK РїРѕСЃС‚СЏС‚ РєР°СЂС‚РёРЅРєСѓ) вЂ” Р±РµР· РЅРµС‘ РІС‹РїСѓСЃРє РЅРµ РІС‹Р№РґРµС‚,
+    // РєР°РЅРґРёРґР°С‚РѕРІ РЅРµ С‚СЂРѕРіР°РµРј, РѕРєРЅРѕ РїРѕРїСЂРѕР±СѓРµРј СЃРѕР±СЂР°С‚СЊ РЅР° СЃР»РµРґСѓСЋС‰РµРј С‚РёРєРµ.
     return null;
   }
 
@@ -846,12 +846,12 @@ async function finalizeDigestPkg(env, items, opts) {
   };
 }
 
-// Собирает пакет-дайджест для активного окна. Возвращает { pkg, items }
-// (items — выбранные свежие кандидаты) или null, если окно уже собрано
-// (маркер) или нет свежих кандидатов.
+// РЎРѕР±РёСЂР°РµС‚ РїР°РєРµС‚-РґР°Р№РґР¶РµСЃС‚ РґР»СЏ Р°РєС‚РёРІРЅРѕРіРѕ РѕРєРЅР°. Р’РѕР·РІСЂР°С‰Р°РµС‚ { pkg, items }
+// (items вЂ” РІС‹Р±СЂР°РЅРЅС‹Рµ СЃРІРµР¶РёРµ РєР°РЅРґРёРґР°С‚С‹) РёР»Рё null, РµСЃР»Рё РѕРєРЅРѕ СѓР¶Рµ СЃРѕР±СЂР°РЅРѕ
+// (РјР°СЂРєРµСЂ) РёР»Рё РЅРµС‚ СЃРІРµР¶РёС… РєР°РЅРґРёРґР°С‚РѕРІ.
 async function buildDigestForWindow(env, win, now) {
-  const msk = mskNow(now);
-  const date = msk.date;
+  const ekb = ekbNow(now);
+  const date = ekb.date;
   if (await kv.getDigestDone(env, date, win.slug)) return null;
 
   const items = await pickDigestItems(env, DIGEST_MAX_ITEMS);
@@ -860,13 +860,13 @@ async function buildDigestForWindow(env, win, now) {
     label: win.label,
     slug: win.slug,
     date,
-    slot: mskToUtcMs(msk.dow, win.start, now),
+    slot: ekbToUtcMs(ekb.dow, win.start, now),
   });
   if (!res) return null;
   return { pkg: res.pkg, items };
 }
 
-// Потребляет собранных кандидатов и ставит маркер — дайджест выйдет один раз.
+// РџРѕС‚СЂРµР±Р»СЏРµС‚ СЃРѕР±СЂР°РЅРЅС‹С… РєР°РЅРґРёРґР°С‚РѕРІ Рё СЃС‚Р°РІРёС‚ РјР°СЂРєРµСЂ вЂ” РґР°Р№РґР¶РµСЃС‚ РІС‹Р№РґРµС‚ РѕРґРёРЅ СЂР°Р·.
 async function commitDigest(env, date, win, items) {
   const consumed = new Set(items.map((c) => c.guid));
   const rest = (await kv.getCandidates(env)).filter((c) => !consumed.has(c.guid));
@@ -874,26 +874,26 @@ async function commitDigest(env, date, win, items) {
   await kv.setDigestDone(env, date, win.slug, { assembled_at: new Date().toISOString(), items: items.length });
 }
 
-// Автопостинг ВКЛ: собранный в активном окне дайджест ложится на склад и
-// публикуется тем же тиком (slot уже наступил). Возвращает массив guid.
+// РђРІС‚РѕРїРѕСЃС‚РёРЅРі Р’РљР›: СЃРѕР±СЂР°РЅРЅС‹Р№ РІ Р°РєС‚РёРІРЅРѕРј РѕРєРЅРµ РґР°Р№РґР¶РµСЃС‚ Р»РѕР¶РёС‚СЃСЏ РЅР° СЃРєР»Р°Рґ Рё
+// РїСѓР±Р»РёРєСѓРµС‚СЃСЏ С‚РµРј Р¶Рµ С‚РёРєРѕРј (slot СѓР¶Рµ РЅР°СЃС‚СѓРїРёР»). Р’РѕР·РІСЂР°С‰Р°РµС‚ РјР°СЃСЃРёРІ guid.
 export async function assembleDigests(env, now = new Date()) {
-  const msk = mskNow(now);
+  const ekb = ekbNow(now);
   const made = [];
   for (const w of await getWindows(env)) {
-    if (msk.minuteOfDay < w.start || msk.minuteOfDay >= w.end) continue;
+    if (ekb.minuteOfDay < w.start || ekb.minuteOfDay >= w.end) continue;
     const res = await buildDigestForWindow(env, w, now);
     if (!res) continue;
     await kv.addStock(env, res.pkg);
-    await commitDigest(env, msk.date, w, res.items);
+    await commitDigest(env, ekb.date, w, res.items);
     made.push(res.pkg.guid);
-    console.log("[scheduler] дайджест собран:", res.pkg.title, "→", new Date(res.pkg.scheduled_for).toISOString());
+    console.log("[scheduler] РґР°Р№РґР¶РµСЃС‚ СЃРѕР±СЂР°РЅ:", res.pkg.title, "в†’", new Date(res.pkg.scheduled_for).toISOString());
   }
   return made;
 }
 
-// Автопостинг ВЫКЛ: вместо публикации админу приходит дайджест-превью на
-// одобрение (кнопки 🌐/🔵/🟢/🔄/❌). Обложка — с короткой подписью, полный
-// разбор уходит отдельным сообщением.
+// РђРІС‚РѕРїРѕСЃС‚РёРЅРі Р’Р«РљР›: РІРјРµСЃС‚Рѕ РїСѓР±Р»РёРєР°С†РёРё Р°РґРјРёРЅСѓ РїСЂРёС…РѕРґРёС‚ РґР°Р№РґР¶РµСЃС‚-РїСЂРµРІСЊСЋ РЅР°
+// РѕРґРѕР±СЂРµРЅРёРµ (РєРЅРѕРїРєРё рџЊђ/рџ”µ/рџџў/рџ”„/вќЊ). РћР±Р»РѕР¶РєР° вЂ” СЃ РєРѕСЂРѕС‚РєРѕР№ РїРѕРґРїРёСЃСЊСЋ, РїРѕР»РЅС‹Р№
+// СЂР°Р·Р±РѕСЂ СѓС…РѕРґРёС‚ РѕС‚РґРµР»СЊРЅС‹Рј СЃРѕРѕР±С‰РµРЅРёРµРј.
 async function sendDigestPreview(env, adminChat, pkg) {
   const bytes = decodePng(pkg.png);
   const sent = await sendCard(env, adminChat, bytes, pkg.caption, {
@@ -925,73 +925,73 @@ async function sendDigestPreview(env, adminChat, pkg) {
 }
 
 export async function assembleDigestDrafts(env, now = new Date()) {
-  const msk = mskNow(now);
+  const ekb = ekbNow(now);
   const adminChat = env.TELEGRAM_ADMIN_CHAT_ID;
   let sent = 0;
   for (const w of await getWindows(env)) {
-    if (msk.minuteOfDay < w.start || msk.minuteOfDay >= w.end) continue;
+    if (ekb.minuteOfDay < w.start || ekb.minuteOfDay >= w.end) continue;
     const res = await buildDigestForWindow(env, w, now);
     if (!res) continue;
     if (adminChat) await sendDigestPreview(env, adminChat, res.pkg);
-    await commitDigest(env, msk.date, w, res.items);
+    await commitDigest(env, ekb.date, w, res.items);
     sent++;
-    console.log("[scheduler] дайджест-превью админу:", res.pkg.title);
+    console.log("[scheduler] РґР°Р№РґР¶РµСЃС‚-РїСЂРµРІСЊСЋ Р°РґРјРёРЅСѓ:", res.pkg.title);
   }
   return sent;
 }
 
-// Тестовое превью (/digesttest): собирает дайджест из текущих кандидатов как
-// будто наступило ближайшее окно и шлёт его админу. Кандидатов НЕ потребляет и
-// маркер digest_done НЕ ставит. Возвращает { ok, reason?, title }.
+// РўРµСЃС‚РѕРІРѕРµ РїСЂРµРІСЊСЋ (/digesttest): СЃРѕР±РёСЂР°РµС‚ РґР°Р№РґР¶РµСЃС‚ РёР· С‚РµРєСѓС‰РёС… РєР°РЅРґРёРґР°С‚РѕРІ РєР°Рє
+// Р±СѓРґС‚Рѕ РЅР°СЃС‚СѓРїРёР»Рѕ Р±Р»РёР¶Р°Р№С€РµРµ РѕРєРЅРѕ Рё С€Р»С‘С‚ РµРіРѕ Р°РґРјРёРЅСѓ. РљР°РЅРґРёРґР°С‚РѕРІ РќР• РїРѕС‚СЂРµР±Р»СЏРµС‚ Рё
+// РјР°СЂРєРµСЂ digest_done РќР• СЃС‚Р°РІРёС‚. Р’РѕР·РІСЂР°С‰Р°РµС‚ { ok, reason?, title }.
 export async function sendDigestTestPreview(env) {
-  const msk = mskNow();
+  const ekb = ekbNow();
   const now = new Date();
   const wins = await getWindows(env);
   const win =
-    wins.find((w) => msk.minuteOfDay >= w.start && msk.minuteOfDay < w.end) ||
+    wins.find((w) => ekb.minuteOfDay >= w.start && ekb.minuteOfDay < w.end) ||
     wins[0];
 
   const items = await pickDigestItems(env, DIGEST_MAX_ITEMS);
   if (!items.length) {
-    return { ok: false, reason: "В очереди нет свежих кандидатов — запусти /rescan" };
+    return { ok: false, reason: "Р’ РѕС‡РµСЂРµРґРё РЅРµС‚ СЃРІРµР¶РёС… РєР°РЅРґРёРґР°С‚РѕРІ вЂ” Р·Р°РїСѓСЃС‚Рё /rescan" };
   }
 
-  const date = msk.date;
+  const date = ekb.date;
   const res = await finalizeDigestPkg(env, items, {
     label: win.label,
     slug: win.slug,
     date,
-    slot: mskToUtcMs(0, win.start, now),
+    slot: ekbToUtcMs(0, win.start, now),
   });
-  if (!res) return { ok: false, reason: "Обложку не удалось собрать" };
+  if (!res) return { ok: false, reason: "РћР±Р»РѕР¶РєСѓ РЅРµ СѓРґР°Р»РѕСЃСЊ СЃРѕР±СЂР°С‚СЊ" };
 
   const adminChat = env.TELEGRAM_ADMIN_CHAT_ID;
   if (adminChat) await sendDigestPreview(env, adminChat, res.pkg);
   return { ok: true, title: res.pkg.title };
 }
 
-// «Переделать» для дайджест-превью: кандидаты уже потреблены выпуском, поэтому
-// пересобираем текст и обложку из компонентов сохранённого черновика (без
-// повторного диспатча на GitHub) и шлём админу новое превью. Возвращает
-// { ok: true } или { ok: false, reason }.
+// В«РџРµСЂРµРґРµР»Р°С‚СЊВ» РґР»СЏ РґР°Р№РґР¶РµСЃС‚-РїСЂРµРІСЊСЋ: РєР°РЅРґРёРґР°С‚С‹ СѓР¶Рµ РїРѕС‚СЂРµР±Р»РµРЅС‹ РІС‹РїСѓСЃРєРѕРј, РїРѕСЌС‚РѕРјСѓ
+// РїРµСЂРµСЃРѕР±РёСЂР°РµРј С‚РµРєСЃС‚ Рё РѕР±Р»РѕР¶РєСѓ РёР· РєРѕРјРїРѕРЅРµРЅС‚РѕРІ СЃРѕС…СЂР°РЅС‘РЅРЅРѕРіРѕ С‡РµСЂРЅРѕРІРёРєР° (Р±РµР·
+// РїРѕРІС‚РѕСЂРЅРѕРіРѕ РґРёСЃРїР°С‚С‡Р° РЅР° GitHub) Рё С€Р»С‘Рј Р°РґРјРёРЅСѓ РЅРѕРІРѕРµ РїСЂРµРІСЊСЋ. Р’РѕР·РІСЂР°С‰Р°РµС‚
+// { ok: true } РёР»Рё { ok: false, reason }.
 export async function rebuildDigestPreview(env, draft) {
   const slug = String(draft.id || "").replace(/^dg\d{8}/, "");
   const win = windowBySlug(slug);
   const date = String(draft.guid || "").split(":")[1] || "";
   if (!win || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-    return { ok: false, reason: "не распознан выпуск дайджеста" };
+    return { ok: false, reason: "РЅРµ СЂР°СЃРїРѕР·РЅР°РЅ РІС‹РїСѓСЃРє РґР°Р№РґР¶РµСЃС‚Р°" };
   }
   if (!Array.isArray(draft.items) || !draft.items.length) {
-    return { ok: false, reason: "нет сохранённых новостей выпуска" };
+    return { ok: false, reason: "РЅРµС‚ СЃРѕС…СЂР°РЅС‘РЅРЅС‹С… РЅРѕРІРѕСЃС‚РµР№ РІС‹РїСѓСЃРєР°" };
   }
 
   const res = await finalizeDigestPkg(env, draft.items, {
     label: win.label,
     slug: win.slug,
     date,
-    slot: mskToUtcMs(0, win.start, new Date()),
+    slot: ekbToUtcMs(0, win.start, new Date()),
   });
-  if (!res) return { ok: false, reason: "обложку не собрали" };
+  if (!res) return { ok: false, reason: "РѕР±Р»РѕР¶РєСѓ РЅРµ СЃРѕР±СЂР°Р»Рё" };
 
   const adminChat = draft.admin_chat_id || env.TELEGRAM_ADMIN_CHAT_ID;
   await kv.deleteDraft(env, draft.id);
@@ -999,7 +999,7 @@ export async function rebuildDigestPreview(env, draft) {
   return { ok: true };
 }
 
-// ---------- главный тик ----------
+// ---------- РіР»Р°РІРЅС‹Р№ С‚РёРє ----------
 
 export async function tick(env, opts = {}) {
   const now = opts.now ? new Date(opts.now) : new Date();
@@ -1009,10 +1009,10 @@ export async function tick(env, opts = {}) {
   let currentStep = "lock";
 
   const run = async () => {
-    // Анти-перекрытие крон: Cloudflare не ждёт завершения предыдущего запуска,
-    // если крон раз в 5 минут «не успевает». Два параллельных тика читают одну
-    // и ту же очередь и могут опубликовать один пост дважды — KV-лок не даёт им
-    // бежать одновременно (TTL страхует от зависшего тика).
+    // РђРЅС‚Рё-РїРµСЂРµРєСЂС‹С‚РёРµ РєСЂРѕРЅ: Cloudflare РЅРµ Р¶РґС‘С‚ Р·Р°РІРµСЂС€РµРЅРёСЏ РїСЂРµРґС‹РґСѓС‰РµРіРѕ Р·Р°РїСѓСЃРєР°,
+    // РµСЃР»Рё РєСЂРѕРЅ СЂР°Р· РІ 5 РјРёРЅСѓС‚ В«РЅРµ СѓСЃРїРµРІР°РµС‚В». Р”РІР° РїР°СЂР°Р»Р»РµР»СЊРЅС‹С… С‚РёРєР° С‡РёС‚Р°СЋС‚ РѕРґРЅСѓ
+    // Рё С‚Сѓ Р¶Рµ РѕС‡РµСЂРµРґСЊ Рё РјРѕРіСѓС‚ РѕРїСѓР±Р»РёРєРѕРІР°С‚СЊ РѕРґРёРЅ РїРѕСЃС‚ РґРІР°Р¶РґС‹ вЂ” KV-Р»РѕРє РЅРµ РґР°С‘С‚ РёРј
+    // Р±РµР¶Р°С‚СЊ РѕРґРЅРѕРІСЂРµРјРµРЅРЅРѕ (TTL СЃС‚СЂР°С…СѓРµС‚ РѕС‚ Р·Р°РІРёСЃС€РµРіРѕ С‚РёРєР°).
     currentStep = "lock";
     try {
       if (env.BOT_KV) {
@@ -1032,7 +1032,7 @@ export async function tick(env, opts = {}) {
 
     const state = await kv.loadState(env);
 
-    // 1. скан (часть лент) + дедуп + кандидаты в очередь
+    // 1. СЃРєР°РЅ (С‡Р°СЃС‚СЊ Р»РµРЅС‚) + РґРµРґСѓРї + РєР°РЅРґРёРґР°С‚С‹ РІ РѕС‡РµСЂРµРґСЊ
     currentStep = "scan";
     let t = Date.now();
     const offset = state.meta.scan_chunk || 0;
@@ -1041,7 +1041,7 @@ export async function tick(env, opts = {}) {
       scanFound = await bounded(SCAN_BUDGET_MS, "[scheduler] scan",
         scanFeeds(env, offset, CHUNK_COUNT).then((list) => list.length));
     } catch (e) {
-      console.log("[scheduler] scan ошибка/превышен бюджет:", e.message);
+      console.log("[scheduler] scan РѕС€РёР±РєР°/РїСЂРµРІС‹С€РµРЅ Р±СЋРґР¶РµС‚:", e.message);
     }
     state.meta.scan_chunk = (offset + 1) % CHUNK_COUNT;
     state.meta.last_scan = {
@@ -1052,21 +1052,21 @@ export async function tick(env, opts = {}) {
     };
     mark("scan", t);
 
-    // 2. накопление кандидатов и сборка одиночных постов по окнам.
-    // Автопостинг ВКЛ: топ-1 свежая новость активного окна -> карточка на склад,
-    // публикуется тем же тиком (слот уже наступил). ВЫКЛ: админу приходит превью
-    // на одобрение. Многотемные дайджесты остались только в ручном режиме
-    // (/digesttest, пересборка, approve).
+    // 2. РЅР°РєРѕРїР»РµРЅРёРµ РєР°РЅРґРёРґР°С‚РѕРІ Рё СЃР±РѕСЂРєР° РѕРґРёРЅРѕС‡РЅС‹С… РїРѕСЃС‚РѕРІ РїРѕ РѕРєРЅР°Рј.
+    // РђРІС‚РѕРїРѕСЃС‚РёРЅРі Р’РљР›: С‚РѕРї-1 СЃРІРµР¶Р°СЏ РЅРѕРІРѕСЃС‚СЊ Р°РєС‚РёРІРЅРѕРіРѕ РѕРєРЅР° -> РєР°СЂС‚РѕС‡РєР° РЅР° СЃРєР»Р°Рґ,
+    // РїСѓР±Р»РёРєСѓРµС‚СЃСЏ С‚РµРј Р¶Рµ С‚РёРєРѕРј (СЃР»РѕС‚ СѓР¶Рµ РЅР°СЃС‚СѓРїРёР»). Р’Р«РљР›: Р°РґРјРёРЅСѓ РїСЂРёС…РѕРґРёС‚ РїСЂРµРІСЊСЋ
+    // РЅР° РѕРґРѕР±СЂРµРЅРёРµ. РњРЅРѕРіРѕС‚РµРјРЅС‹Рµ РґР°Р№РґР¶РµСЃС‚С‹ РѕСЃС‚Р°Р»РёСЃСЊ С‚РѕР»СЊРєРѕ РІ СЂСѓС‡РЅРѕРј СЂРµР¶РёРјРµ
+    // (/digesttest, РїРµСЂРµСЃР±РѕСЂРєР°, approve).
     currentStep = "assemble";
     t = Date.now();
     try {
       const nowMs = now.getTime();
-      // выкидываем протухшие кандидаты, чтобы они не ждали выпуска до лучших времён
+      // РІС‹РєРёРґС‹РІР°РµРј РїСЂРѕС‚СѓС…С€РёРµ РєР°РЅРґРёРґР°С‚С‹, С‡С‚РѕР±С‹ РѕРЅРё РЅРµ Р¶РґР°Р»Рё РІС‹РїСѓСЃРєР° РґРѕ Р»СѓС‡С€РёС… РІСЂРµРјС‘РЅ
       const candList = await kv.getCandidates(env);
       const freshCands = candList.filter((c) => !isStaleItem(c, nowMs));
       if (freshCands.length !== candList.length) await kv.setCandidates(env, freshCands);
-      // Сборка поста не должна съедать остаток тика: у неё собственный бюджет.
-      // При перерасходе кандидат не тратится — его подхватит следующий тик.
+      // РЎР±РѕСЂРєР° РїРѕСЃС‚Р° РЅРµ РґРѕР»Р¶РЅР° СЃСЉРµРґР°С‚СЊ РѕСЃС‚Р°С‚РѕРє С‚РёРєР°: Сѓ РЅРµС‘ СЃРѕР±СЃС‚РІРµРЅРЅС‹Р№ Р±СЋРґР¶РµС‚.
+      // РџСЂРё РїРµСЂРµСЂР°СЃС…РѕРґРµ РєР°РЅРґРёРґР°С‚ РЅРµ С‚СЂР°С‚РёС‚СЃСЏ вЂ” РµРіРѕ РїРѕРґС…РІР°С‚РёС‚ СЃР»РµРґСѓСЋС‰РёР№ С‚РёРє.
       if (await kv.getAutopost(env)) {
         await bounded(ASSEMBLE_BUDGET_MS, "[scheduler] assemble",
           assembleNewsPosts(env, now));
@@ -1079,7 +1079,7 @@ export async function tick(env, opts = {}) {
     }
     mark("assemble", t);
 
-    // 5. авто-отложка черновиков (нет ответа админа 30 мин)
+    // 5. Р°РІС‚Рѕ-РѕС‚Р»РѕР¶РєР° С‡РµСЂРЅРѕРІРёРєРѕРІ (РЅРµС‚ РѕС‚РІРµС‚Р° Р°РґРјРёРЅР° 30 РјРёРЅ)
     currentStep = "defer";
     t = Date.now();
     try {
@@ -1089,7 +1089,7 @@ export async function tick(env, opts = {}) {
     }
     mark("defer", t);
 
-    // 6. публикация из склада
+    // 6. РїСѓР±Р»РёРєР°С†РёСЏ РёР· СЃРєР»Р°РґР°
     currentStep = "publish";
     t = Date.now();
     try {
@@ -1099,7 +1099,7 @@ export async function tick(env, opts = {}) {
     }
     mark("publish", t);
 
-    // 6b. догонка недостающей платформы (строгий пул VK/TG)
+    // 6b. РґРѕРіРѕРЅРєР° РЅРµРґРѕСЃС‚Р°СЋС‰РµР№ РїР»Р°С‚С„РѕСЂРјС‹ (СЃС‚СЂРѕРіРёР№ РїСѓР» VK/TG)
     currentStep = "vkretry";
     t = Date.now();
     try {
@@ -1121,9 +1121,9 @@ export async function tick(env, opts = {}) {
     return "ok";
   };
 
-  // Хард-бюджет: даже если что-то внешнее зависло, тик обязан вернуться до
-  // того, как free-план убьёт его молча. Возвращаем "timeout" с логом и
-  // снимаем lock, чтобы следующий крон мог идти дальше.
+  // РҐР°СЂРґ-Р±СЋРґР¶РµС‚: РґР°Р¶Рµ РµСЃР»Рё С‡С‚Рѕ-С‚Рѕ РІРЅРµС€РЅРµРµ Р·Р°РІРёСЃР»Рѕ, С‚РёРє РѕР±СЏР·Р°РЅ РІРµСЂРЅСѓС‚СЊСЃСЏ РґРѕ
+  // С‚РѕРіРѕ, РєР°Рє free-РїР»Р°РЅ СѓР±СЊС‘С‚ РµРіРѕ РјРѕР»С‡Р°. Р’РѕР·РІСЂР°С‰Р°РµРј "timeout" СЃ Р»РѕРіРѕРј Рё
+  // СЃРЅРёРјР°РµРј lock, С‡С‚РѕР±С‹ СЃР»РµРґСѓСЋС‰РёР№ РєСЂРѕРЅ РјРѕРі РёРґС‚Рё РґР°Р»СЊС€Рµ.
   const TIMEOUT = Symbol("tick-timeout");
   let timer;
   const timeoutPromise = new Promise((resolve) => {
@@ -1132,14 +1132,14 @@ export async function tick(env, opts = {}) {
   const result = await Promise.race([run(), timeoutPromise]);
   clearTimeout(timer);
   if (result === TIMEOUT) {
-    console.log(`[scheduler] tick HARD BUDGET (${TICK_BUDGET_MS}ms) превышен на шаге "${currentStep}", lock снимаю`);
+    console.log(`[scheduler] tick HARD BUDGET (${TICK_BUDGET_MS}ms) РїСЂРµРІС‹С€РµРЅ РЅР° С€Р°РіРµ "${currentStep}", lock СЃРЅРёРјР°СЋ`);
     try {
       if (env.BOT_KV) await env.BOT_KV.delete("scheduler_lock");
     } catch (e) { /* ignore */ }
     try {
       await notifyAdmin(env,
-        `⚠️ <b>Тик не успел завершиться</b> (бюджет ${TICK_BUDGET_MS} мс, шаг «${currentStep}»).\n` +
-        `Слотов/публикаций сегодня может не быть — следите за логами (<code>wrangler tail</code>).`);
+        `вљ пёЏ <b>РўРёРє РЅРµ СѓСЃРїРµР» Р·Р°РІРµСЂС€РёС‚СЊСЃСЏ</b> (Р±СЋРґР¶РµС‚ ${TICK_BUDGET_MS} РјСЃ, С€Р°Рі В«${currentStep}В»).\n` +
+        `РЎР»РѕС‚РѕРІ/РїСѓР±Р»РёРєР°С†РёР№ СЃРµРіРѕРґРЅСЏ РјРѕР¶РµС‚ РЅРµ Р±С‹С‚СЊ вЂ” СЃР»РµРґРёС‚Рµ Р·Р° Р»РѕРіР°РјРё (<code>wrangler tail</code>).`);
     } catch (e) { /* ignore */ }
     return "timeout";
   }

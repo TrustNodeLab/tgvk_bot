@@ -99,7 +99,7 @@ test("collectDailyMetrics: считает посты дня и подписчи�
   const kv = makeKV();
   const env = makeEnv(kv);
   const stock = await import(KV);
-  const now = new Date("2026-08-15T12:00:00Z"); // МСК 15:00
+  const now = new Date("2026-08-15T12:00:00Z"); // ЕКБ 15:00
   await stock.addLog(env, post("a", "2026-08-15T09:30:00Z"));
   await stock.addLog(env, post("b", "2026-08-15T11:00:00Z"));
   await stock.addLog(env, post("c", "2026-08-14T09:30:00Z")); // вчера — не в счёт
@@ -149,7 +149,7 @@ test("eveningSummaryText: сводка дня с дельтами к вчера 
   try {
     const text = await eveningSummaryText(env, { now });
     assert.ok(text.includes("Вечерняя сводка"), "заголовок сводки");
-    assert.ok(text.includes("15.08"), "дата в МСК");
+    assert.ok(text.includes("15.08"), "дата в ЕКБ");
     assert.ok(text.includes("<b>2</b>"), "посты дня");
     assert.ok(text.includes("120"), "подписчики TG");
     assert.ok(text.includes("890"), "подписчики VK");
@@ -184,7 +184,7 @@ test("weekReportText: агрегирует неделю и сравнивает 
   const kv = makeKV();
   const env = makeEnv(kv);
   const stock = await import(KV);
-  const now = new Date("2026-08-16T17:35:00Z"); // вс МСК 20:35
+  const now = new Date("2026-08-16T17:35:00Z"); // вс ЕКБ 20:35
   // текущая неделя: 10-16.08
   for (let d = 10; d <= 16; d++) {
     const date = `2026-08-${String(d).padStart(2, "0")}`;
@@ -236,7 +236,7 @@ test("maybeSendReports: вечерняя сводка уходит один ра
   const kv = makeKV();
   const env = makeEnv(kv);
   const stock = await import(KV);
-  const within = new Date("2026-08-15T17:05:00Z"); // МСК 20:05 — окно вечера
+  const within = new Date("2026-08-15T15:05:00Z"); // ЕКБ 20:05 — окно вечера
   await stock.addLog(env, post("a", "2026-08-15T09:30:00Z", { views: 100, likes: 3 }));
 
   const s = stubFetch();
@@ -258,7 +258,7 @@ test("maybeSendReports: вне окна и без админа ничего не
   const env = makeEnv(kv);
   const stock = await import(KV);
   await stock.addLog(env, post("a", "2026-08-15T09:30:00Z", { views: 100, likes: 3 }));
-  const noon = new Date("2026-08-15T07:00:00Z"); // МСК 10:00 — не время отчётов
+  const noon = new Date("2026-08-15T07:00:00Z"); // ЕКБ 10:00 — не время отчётов
 
   const s = stubFetch();
   try {
@@ -285,7 +285,7 @@ test("maybeSendReports: недельная сводка — только в во
   const kv = makeKV();
   const env = makeEnv(kv);
   const stock = await import(KV);
-  const sunday = new Date("2026-08-16T17:35:00Z"); // вс МСК 20:35
+  const sunday = new Date("2026-08-16T15:35:00Z"); // вс ЕКБ 20:35
   for (let d = 10; d <= 16; d++) {
     const date = `2026-08-${String(d).padStart(2, "0")}`;
     await stock.setDayMetrics(env, date, { date, posts: 2, views: 500, likes: 20, reactions: 30, reposts: 1, engagement: 1200, tg_members: 100 + d, vk_members: 880 + d });
@@ -303,7 +303,7 @@ test("maybeSendReports: недельная сводка — только в во
   const kv2 = makeKV();
   const env2 = makeEnv(kv2);
   const stock2 = await import(KV);
-  const saturday = new Date("2026-08-15T17:35:00Z"); // сб МСК 20:35 — не воскресенье
+  const saturday = new Date("2026-08-15T15:35:00Z"); // сб ЕКБ 20:35 — не воскресенье
   for (let d = 9; d <= 15; d++) {
     const date = `2026-08-${String(d).padStart(2, "0")}`;
     await stock2.setDayMetrics(env2, date, { date, posts: 2, views: 500, likes: 20, reactions: 30, reposts: 1, engagement: 1200, tg_members: 100 + d, vk_members: 880 + d });

@@ -1,12 +1,12 @@
 // Генератор карточки поста прямо в Worker (чистый JS, без Canvas/PIL).
 // Текст рисуется растровым шрифтом Exo2 (worker/lib/font.js); PNG кодируется
 // через CompressionStream("deflate") — zlib-поток, ровно то, что ждёт PNG IDAT.
-// Умеет статичный PNG и анимированный GIF (небо над Москвой мерцает: звёзды
-// мигают с индивидуальной фазой, градиент «дышит»). Реализация неба — порт
-// bot/astro.py + _draw_sky из bot/card_generator.py.
+// Умеет статичный PNG и анимированный GIF (небо над Екатеринбургом мерцает:
+// звёзды мигают с индивидуальной фазой, градиент «дышит»). Реализация неба —
+// порт bot/astro.py + _draw_sky из bot/card_generator.py.
 
 import { FONT, FONT_H } from "./font.js";
-import { sunAltitudeMoscow, starsMoscow, CONSTELLATION_LINES } from "./astro.js";
+import { sunAltitudeEkb, starsEkb, CONSTELLATION_LINES } from "./astro.js";
 
 const W = 1080;
 const H = 1350;
@@ -77,10 +77,10 @@ function project(alt, az, w, h) {
   return [w / 2 + r * Math.sin(azR) * scale, h * 0.42 - r * Math.cos(azR) * scale];
 }
 
-// Рисует фон карточки: градиент неба под dtMsk и мерцающие звёзды с фазами.
+// Рисует фон карточки: градиент неба под dtEkb и мерцающие звёзды с фазами.
 // phase (0..1) — позиция в цикле анимации; каждый кадр GIF движет небо.
-function drawSky(c, dtMsk, phase) {
-  const sunAlt = sunAltitudeMoscow(dtMsk);
+function drawSky(c, dtEkb, phase) {
+  const sunAlt = sunAltitudeEkb(dtEkb);
   const th = skyTheme(sunAlt);
   const w = c.w, h = c.h;
   // «дыхание» градиента: лёгкий сдвиг t по синусоиде фазы
@@ -95,7 +95,7 @@ function drawSky(c, dtMsk, phase) {
   }
   if (th.starOp > 0.01) {
     const positions = {};
-    for (const [name, alt, az, mag] of starsMoscow(dtMsk)) {
+    for (const [name, alt, az, mag] of starsEkb(dtEkb)) {
       if (alt <= -2) continue;
       const [x, y] = project(alt, az, w, h);
       if (x > -50 && x < w + 50 && y > -50 && y < h + 50) {
@@ -314,15 +314,15 @@ function drawFooter(canvas, tier, y) {
 }
 
 // Основная точка входа. data: {headline, cards:[{type,number,label,desc,items,before,after}], tier}
-// opts: {format: "png"|"gif", frames: число кадров (gif), dtMsk: Date (UTC-поля = МСК), phase: 0..1}.
+// opts: {format: "png"|"gif", frames: число кадров (gif), dtEkb: Date (UTC-поля = ЕКБ), phase: 0..1}.
 // Возвращает байты PNG или анимированного GIF89a.
 export async function renderCard(data, opts = {}) {
   const frames = opts.format === "gif" ? Math.max(2, Math.min(30, opts.frames || 12)) : 1;
-  const dtMsk = opts.dtMsk || new Date(Date.now() + 3 * 3600 * 1000); // МСК
+  const dtEkb = opts.dtEkb || new Date(Date.now() + 5 * 3600 * 1000); // ЕКБ = UTC+5
   const canvases = [];
   for (let f = 0; f < frames; f++) {
     const c = new Canvas(W, H);
-    drawSky(c, dtMsk, frames === 1 ? (opts.phase || 0) : f / frames);
+    drawSky(c, dtEkb, frames === 1 ? (opts.phase || 0) : f / frames);
     drawContent(c, data);
     canvases.push(c);
   }

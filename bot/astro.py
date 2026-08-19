@@ -1,8 +1,8 @@
 import math
 from datetime import datetime, timedelta
 
-MOSCOW_LAT = 55.7558
-MOSCOW_LON = 37.6173
+EKB_LAT = 56.8519
+EKB_LON = 60.6122
 
 # Bright star catalog: name, RA (hours), Dec (degrees), magnitude, constellation
 # Real astronomical data (J2000), public-domain values.
@@ -117,19 +117,19 @@ def sun_position(dt_utc):
     dec = math.degrees(math.asin(math.sin(eps)*math.sin(lam)))
     return ra, dec
 
-def sun_altitude_moscow(dt_msk):
-    dt_utc = dt_msk - timedelta(hours=3)
-    lst = lst_hours(dt_utc, MOSCOW_LON)
+def sun_altitude_ekb(dt_ekb):
+    dt_utc = dt_ekb - timedelta(hours=5)
+    lst = lst_hours(dt_utc, EKB_LON)
     ra, dec = sun_position(dt_utc)
-    alt, az = altaz(ra, dec, lst, MOSCOW_LAT)
+    alt, az = altaz(ra, dec, lst, EKB_LAT)
     return alt
 
-def stars_moscow(dt_msk):
-    dt_utc = dt_msk - timedelta(hours=3)
-    lst = lst_hours(dt_utc, MOSCOW_LON)
+def stars_ekb(dt_ekb):
+    dt_utc = dt_ekb - timedelta(hours=5)
+    lst = lst_hours(dt_utc, EKB_LON)
     result = []
     for name, ra, dec, mag, con in STARS:
-        alt, az = altaz(ra, dec, lst, MOSCOW_LAT)
+        alt, az = altaz(ra, dec, lst, EKB_LAT)
         result.append((name, alt, az, mag, con))
     return result
 
@@ -137,6 +137,6 @@ if __name__ == "__main__":
     from datetime import date
     for h in [0,5,10,15,20]:
         dt = datetime(2026,8,4,h,0,0)
-        sun_alt = sun_altitude_moscow(dt)
-        visible = [s for s in stars_moscow(dt) if s[1] > 0]
-        print(f"{h:02d}:00 MSK -> sun_alt={sun_alt:.1f} deg, stars above horizon={len(visible)}")
+        sun_alt = sun_altitude_ekb(dt)
+        visible = [s for s in stars_ekb(dt) if s[1] > 0]
+        print(f"{h:02d}:00 EKB -> sun_alt={sun_alt:.1f} deg, stars above horizon={len(visible)}")

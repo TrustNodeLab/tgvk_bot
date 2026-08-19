@@ -104,7 +104,7 @@ function jsonResp(body, status = 200) {
 
 // ---------- тесты ----------
 
-test("currentWindow: границы окон (МСК) — 3 дайджест-окна", async () => {
+test("currentWindow: границы окон (ЕКБ) — 3 дайджест-окна", async () => {
   const { currentWindow } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
   // окна: 09–12 (утро), 13–17 (день), 18–24 (вечер)
   assert.equal(currentWindow(0), null); // 00:00 — вне окон
@@ -122,8 +122,8 @@ test("currentWindow: границы окон (МСК) — 3 дайджест-о�
 test("nextFreeSlot: свободное окно сейчас -> публикуем немедленно", async () => {
   const { nextFreeSlot } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
   const env = makeEnv();
-  // 2026-08-07 06:00 UTC = 09:00 МСК — ровно начало утреннего окна (вместимость 1)
-  const now = new Date("2026-08-07T06:00:00Z");
+  // 2026-08-07 04:00 UTC = 09:00 ЕКБ — ровно начало утреннего окна (вместимость 1)
+  const now = new Date("2026-08-07T04:00:00Z");
   const slot = await nextFreeSlot(env, now);
   assert.equal(slot, now.getTime());
 });
@@ -132,22 +132,22 @@ test("nextFreeSlot: окно заполнено -> следующий свобо
   const { nextFreeSlot } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
   const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
   const env = makeEnv();
-  const now = new Date("2026-08-07T09:05:00Z"); // 12:05 МСК — утреннее окно ещё идёт
-  // заполняем окно 09–12 одним постом сегодня (в 09:00 МСК = 06:00 UTC)
+  const now = new Date("2026-08-07T07:05:00Z"); // 12:05 ЕКБ — утро закончилось, день не начался
+  // заполняем окно 09–12 одним постом сегодня (в 09:00 ЕКБ = 04:00 UTC)
   await kv.addLog(env, {
     id: "n7",
     kind: "news",
-    published_at: new Date("2026-08-07T06:00:00Z").toISOString(), // 09:00 МСК
+    published_at: new Date("2026-08-07T04:00:00Z").toISOString(), // 09:00 ЕКБ
   });
   const slot = await nextFreeSlot(env, now);
-  const msk = (await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/config.js")).mskNow(new Date(slot));
-  // следующий слот — ровно начало дневного окна 13:00 МСК того же дня
-  assert.equal(msk.date, "2026-08-07");
-  assert.equal(msk.minuteOfDay, 13 * 60, `слот = 13:00 МСК, а не ${msk.minuteOfDay}`);
+  const ekb = (await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/config.js")).ekbNow(new Date(slot));
+  // следующий слот — ровно начало дневного окна 13:00 ЕКБ того же дня
+  assert.equal(ekb.date, "2026-08-07");
+  assert.equal(ekb.minuteOfDay, 13 * 60, `слот = 13:00 ЕКБ, а не ${ekb.minuteOfDay}`);
   assert.ok(slot > now.getTime(), "слот в будущем");
 });
 
-test("mskToUtcMs: корректный перевод времени в UTC", async () => {
+test("ekbToUtcMs: корректный перевод времени в UTC", async () => {
   const { nextFreeSlot } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
   // не экспортируется напрямую — проверяем через поведение nextFreeSlot
   assert.ok(typeof nextFreeSlot === "function");
@@ -174,7 +174,7 @@ test("tick: скан и ротация chunk; вне окна очередь н�
   const calls = installFetchMock(500); // GitHub отвечает ошибкой — но и не должен вызываться
   const env = makeEnv();
   await kv.addCandidate(env, { guid: "g1", title: "Т", link: "http://l", text: "текст", found_at: new Date().toISOString() });
-  const r = await tick(env, { now: new Date("2026-08-07T00:00:00Z") }); // 03:00 МСК — вне окон
+  const r = await tick(env, { now: new Date("2026-08-07T00:00:00Z") }); // 05:00 ЕКБ — вне окон
   assert.equal(r, "ok");
   const state = await kv.loadState(env);
   assert.equal(state.meta.scan_chunk, 1); // 0 -> 1
@@ -195,7 +195,7 @@ test("tick: автопостинг выкл -> в окне админу уход
     text: "МВД посоветовало использовать виртуальную карту. За год похищено 15,8 млрд рублей.",
     found_at: new Date().toISOString(),
   });
-  await tick(env, { now: new Date("2026-08-07T06:00:00Z") }); // 09:00 МСК — утро
+  await tick(env, { now: new Date("2026-08-07T06:00:00Z") }); // 11:00 ЕКБ — утро
   const drafts = await kv.listDrafts(env);
   const dg = drafts.find((d) => d.kind === "news" && d.guid === "g3");
   assert.ok(dg, "черновик-превью одиночной новости создан");
@@ -695,7 +695,7 @@ test("publishToVk: идемпотентность — повторная пуб�
   delete globalThis.fetch;
 });
 
-test("providerPlan: ротация провайдеров по времени суток МСК", async () => {
+test("providerPlan: ротация провайдеров по времени суток ЕКБ", async () => {
   const { providerPlan } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/llm.js");
   const env = { LLM_PROXY_URL: "https://render.test" };
   const h = (hour) => ({ hour });
@@ -849,7 +849,7 @@ test("isStaleItem: протухшая новость определяется п
 test("tick: протухшие кандидаты выбрасываются из очереди без диспатча", async () => {
   const kv = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/kv.js");
   const { tick } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
-  const now = new Date("2026-08-07T00:00:00Z"); // 03:00 МСК — вне окон, очередь не собирается в выпуск
+  const now = new Date("2026-08-07T00:00:00Z"); // 05:00 ЕКБ — вне окон, очередь не собирается в выпуск
   installFetchMock(500);
   const env = makeEnv();
   // кладём свежего и протухшего кандидата (для свежего видим «сейчас» = now)
@@ -1159,7 +1159,7 @@ test("tick: autopost вкл -> одиночная новость публику�
     text: "МВД посоветовало россиянам использовать виртуальную карту. За год похищено 15,8 млрд рублей.",
     found_at: new Date().toISOString(),
   });
-  await tick(env, { now: new Date("2026-08-07T06:00:00Z") }); // 09:00 МСК — утро
+  await tick(env, { now: new Date("2026-08-07T06:00:00Z") }); // 11:00 ЕКБ — утро
   const log = await kv.getLog(env);
   const dg = log.find((e) => e.kind === "news" && e.guid === "g-autogen");
   assert.ok(dg, "одиночная новость опубликована и записана в лог (kind=news)");
@@ -1178,7 +1178,7 @@ test("assembleDigests: из 3+ кандидатов собирается оди�
   installFetchMock(); // /digest, обложка и TG — локальные заглушки
   const env = makeEnv();
   await kv.setAutopost(env, true);
-  const now = new Date("2026-08-07T06:00:00Z"); // 09:00 МСК — утро
+  const now = new Date("2026-08-07T06:00:00Z"); // 11:00 ЕКБ — утро
   for (const i of ["a", "b", "c", "d"]) {
     await kv.addCandidate(env, {
       guid: `g${i}`,
@@ -1210,7 +1210,7 @@ test("assembleDigests: один кандидат -> дайджест выход�
   installFetchMock(); // /digest, обложка и TG — локальные заглушки
   const env = makeEnv();
   await kv.setAutopost(env, true);
-  const now = new Date("2026-08-07T12:30:00Z"); // 15:30 МСК — день
+  const now = new Date("2026-08-07T10:00:00Z"); // 15:00 ЕКБ — день
   await kv.addCandidate(env, {
     guid: "solo",
     title: "Одна новость",
@@ -1230,7 +1230,7 @@ test("assembleDigestDrafts: автопостинг выкл -> хранит пр
   const { assembleDigestDrafts } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
   const calls = installFetchMock(500);
   const env = makeEnv();
-  const now = new Date("2026-08-07T06:00:00Z"); // 09:00 МСК — утро
+  const now = new Date("2026-08-07T06:00:00Z"); // 11:00 ЕКБ — утро
   await kv.addCandidate(env, {
     guid: "g9",
     title: "Новость",
@@ -1256,7 +1256,7 @@ test("assembleNewsPosts: топ-1 кандидат -> одиночная нов�
   installFetchMock();
   const env = makeEnv();
   await kv.setAutopost(env, true);
-  const now = new Date("2026-08-07T06:00:00Z"); // 09:00 МСК — утро
+  const now = new Date("2026-08-07T06:00:00Z"); // 11:00 ЕКБ — утро
   const hour = 3600 * 1000;
   await kv.addCandidate(env, {
     guid: "gna",
@@ -1294,7 +1294,7 @@ test("assembleNewsDrafts: автопостинг выкл -> черновик ki
   const { assembleNewsDrafts } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
   const calls = installFetchMock(500);
   const env = makeEnv();
-  const now = new Date("2026-08-07T06:00:00Z"); // 09:00 МСК — утро
+  const now = new Date("2026-08-07T06:00:00Z"); // 11:00 ЕКБ — утро
   await kv.addCandidate(env, {
     guid: "g9",
     title: "Новость",

@@ -33,7 +33,7 @@ import {
   vkCall,
 } from "./lib/telegram.js";
 import { fmtTime, escHtml } from "./lib/text.js";
-import { mskNow, plural } from "./lib/config.js";
+import { ekbNow, plural } from "./lib/config.js";
 import { sendGeneratedPreview, approveButtons } from "./lib/preview.js";
 import { renderCard } from "./lib/cardgen.js";
 import { eveningSummaryText, dayReportText, weekReportText, monthReportText, maybeSendReports } from "./lib/analytics.js";
@@ -1240,10 +1240,10 @@ async function handleCommand(env, state, chatId, text) {
       const lastLine = last
         ? `${escHtml(last.title || "")} — ${fmtTime(last.published_at)}`
         : "—";
-      const msk = mskNow();
+      const ekb = ekbNow();
       const today = log.filter((e) => {
         const t = new Date(e.published_at);
-        return !Number.isNaN(t.getTime()) && mskNow(t).date === msk.date;
+        return !Number.isNaN(t.getTime()) && ekbNow(t).date === ekb.date;
       }).length;
       const next = await nextFreeSlot(env);
       const stockLines = stock.length
@@ -1277,7 +1277,7 @@ async function handleCommand(env, state, chatId, text) {
     case "/schedule": {
       const sched = await getSchedule(env);
       const wins = sched.windows.map(
-        (w) => `• <b>${w.label}</b> — ${minutesToClock(w.start)} МСК: 1 пост — одна свежая новость`
+        (w) => `• <b>${w.label}</b> — ${minutesToClock(w.start)} ЕКБ: 1 пост — одна свежая новость`
       ).join("\n");
       const modeLabel = sched.mode === "auto" ? "авто" : "ручной";
       const schedLine =
@@ -1287,7 +1287,7 @@ async function handleCommand(env, state, chatId, text) {
       const nextSlot = await nextFreeSlot(env, new Date());
       const next = fmtTime(new Date(nextSlot).toISOString());
       const msg =
-        "🗓 <b>Расписание (МСК)</b>\n\n" +
+        "🗓 <b>Расписание (ЕКБ)</b>\n\n" +
         schedLine +
         "\n" +
         wins +
@@ -1339,10 +1339,10 @@ async function handleCommand(env, state, chatId, text) {
 
     case "/stats": {
       const log = await kv.getLog(env);
-      const msk = mskNow();
+      const ekb = ekbNow();
       const today = log.filter((e) => {
         const t = new Date(e.published_at);
-        return !Number.isNaN(t.getTime()) && mskNow(t).date === msk.date;
+        return !Number.isNaN(t.getTime()) && ekbNow(t).date === ekb.date;
       }).length;
       const byKind = {};
       for (const e of log) byKind[e.kind || "news"] = (byKind[e.kind || "news"] || 0) + 1;
@@ -1467,7 +1467,7 @@ async function handleCommand(env, state, chatId, text) {
         `Автопостинг: <b>${(await kv.getAutopost(env)) ? "вкл" : "выкл"}</b>\n` +
         `Формат карточек: <b>${fmtLabel}</b> (сменить: /cardfmt gif|png|auto)\n` +
         `Ключевые слова: +${extra} добавлено, −${removed} убрано\n` +
-        `Окна (МСК): ${NEWS_WINDOWS.map((w) => `${minutesToClock(w.start)}–${minutesToClock(w.end)}`).join(", ")}`;
+        `Окна (ЕКБ): ${NEWS_WINDOWS.map((w) => `${minutesToClock(w.start)}–${minutesToClock(w.end)}`).join(", ")}`;
       await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
       break;
     }

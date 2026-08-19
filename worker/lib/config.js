@@ -1,7 +1,8 @@
-// Константы и утилиты бота: часовой пояс МСК, окна публикации, лимиты, футер.
-export const MSK_OFFSET_MIN = 3 * 60; // UTC+3
+// Константы и утилиты бота: часовой пояс ЕКБ (Екатеринбург, UTC+5),
+// окна публикации, лимиты, футер.
+export const EKB_OFFSET_MIN = 5 * 60; // UTC+5
 
-// Окна публикации дайджестов (минуты от полуночи МСК).
+// Окна публикации дайджестов (минуты от полуночи ЕКБ).
 // Идеальная формула канала: 3 дайджеста в день — утро (09:00),
 // день (13:00) и вечер (18:00). В каждом — сводка 3-5 свежих новостей.
 // Публикация — ровно в начале окна.
@@ -115,19 +116,19 @@ export function parsePubDate(raw) {
   return Number.isNaN(t) ? null : new Date(t);
 }
 
-// Текущее время в МСК: {dow, hour, minute, minuteOfDay, iso}.
-export function mskNow(date = new Date()) {
-  const msk = new Date(date.getTime() + MSK_OFFSET_MIN * 60 * 1000);
-  const dow = (msk.getUTCDay() + 6) % 7; // 0 = понедельник ... 6 = воскресенье
-  const minuteOfDay = msk.getUTCHours() * 60 + msk.getUTCMinutes();
-  const iso = msk.toISOString();
+// Текущее время в ЕКБ (Екатеринбург, UTC+5): {dow, hour, minute, minuteOfDay, iso}.
+export function ekbNow(date = new Date()) {
+  const ekb = new Date(date.getTime() + EKB_OFFSET_MIN * 60 * 1000);
+  const dow = (ekb.getUTCDay() + 6) % 7; // 0 = понедельник ... 6 = воскресенье
+  const minuteOfDay = ekb.getUTCHours() * 60 + ekb.getUTCMinutes();
+  const iso = ekb.toISOString();
   return {
     dow,
-    hour: msk.getUTCHours(),
-    minute: msk.getUTCMinutes(),
+    hour: ekb.getUTCHours(),
+    minute: ekb.getUTCMinutes(),
     minuteOfDay,
     iso,
-    date: msk.toISOString().slice(0, 10),
+    date: ekb.toISOString().slice(0, 10),
   };
 }
 

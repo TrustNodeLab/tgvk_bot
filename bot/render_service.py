@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-HTTP-сервис TrustNode: рендер карточек (PIL + Exo2/Jura + небо Москвы)
+HTTP-сервис TrustNode: рендер карточек (PIL + Exo2/Jura + небо Екатеринбурга)
 и прокси к GigaChat для генерации текстов постов.
 
 Позволяет Worker'у получать красивые карточки и настоящие LLM-тексты без
@@ -45,8 +45,8 @@ TIER_META = {
 DEFAULT_QUOTE = "Не спешите переводить деньги незнакомцам — проверяйте информацию."
 
 
-def _msk_now():
-    return datetime.utcnow() + timedelta(hours=3)
+def _ekb_now():
+    return datetime.utcnow() + timedelta(hours=5)
 
 
 def map_data(payload: dict) -> dict:
@@ -134,13 +134,13 @@ class Handler(BaseHTTPRequestHandler):
             if fmt == "gif":
                 frames = int(payload.get("frames") or 12)
                 out = os.path.join(tempfile.gettempdir(), "trustnode_card.gif")
-                render_card_gif(data, out, dt_msk=_msk_now(), frames=frames)
+                render_card_gif(data, out, dt_ekb=_ekb_now(), frames=frames)
                 with open(out, "rb") as f:
                     body = f.read()
                 self._send(200, body, "image/gif")
             else:
                 out = os.path.join(tempfile.gettempdir(), "trustnode_card.png")
-                render_card(data, out, dt_msk=_msk_now())
+                render_card(data, out, dt_ekb=_ekb_now())
                 with open(out, "rb") as f:
                     body = f.read()
                 self._send(200, body, "image/png")

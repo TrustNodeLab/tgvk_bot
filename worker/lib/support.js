@@ -7,8 +7,8 @@ import {
   sendMessage, sendPhoto, editMessageReplyMarkup,
   answerCallbackQuery, downloadFile, vkCall, resolveTelegramChannel,
 } from "./telegram.js";
-import { mskNow } from "./config.js";
-import { mskToUtcMs } from "./scheduler.js";
+import { ekbNow } from "./config.js";
+import { ekbToUtcMs } from "./scheduler.js";
 import { fmtTime, escHtml, htmlToPlain } from "./text.js";
 
 // ---------- меню пользователя ----------
@@ -45,12 +45,12 @@ function parseTimeInput(input, now = new Date()) {
   const h = Number(m[1]);
   const min = Number(m[2]);
   if (h < 0 || h > 23 || min < 0 || min > 59) return null;
-  const msk = mskNow(now);
+  const ekb = ekbNow(now);
   const target = h * 60 + min;
-  let ts = mskToUtcMs(msk.dow, target, now);
+  let ts = ekbToUtcMs(ekb.dow, target, now);
   if (ts < now.getTime()) {
-    const nextDow = (msk.dow + 1) % 7;
-    ts = mskToUtcMs(nextDow, target, now);
+    const nextDow = (ekb.dow + 1) % 7;
+    ts = ekbToUtcMs(nextDow, target, now);
   }
   return ts;
 }
@@ -90,7 +90,7 @@ export async function handleEventDialogMessage(env, msg) {
     await sendMessage(
       env,
       chatId,
-      "🎪 Шаг 2/2. Когда публикуем ивент?\n\nПришлите время в формате <b>ЧЧ:ММ</b> (МСК).\n\n/cancel — отмена.",
+      "🎪 Шаг 2/2. Когда публикуем ивент?\n\nПришлите время в формате <b>ЧЧ:ММ</b> (ЕКБ).\n\n/cancel — отмена.",
       { parse_mode: "HTML" }
     );
     return true;
@@ -102,7 +102,7 @@ export async function handleEventDialogMessage(env, msg) {
       await sendMessage(
         env,
         chatId,
-        "Не понял время. Пришлите в формате <b>ЧЧ:ММ</b> (МСК), например 18:30.",
+        "Не понял время. Пришлите в формате <b>ЧЧ:ММ</b> (ЕКБ), например 18:30.",
         { parse_mode: "HTML" }
       );
       return true;
@@ -124,7 +124,7 @@ export async function handleEventDialogMessage(env, msg) {
     await sendMessage(
       env,
       chatId,
-      `✅ <b>Ивент запланирован</b>\n\n${escHtml(dialog.text)}\n\n⏰ Публикация: <b>${when}</b> (МСК)`,
+      `✅ <b>Ивент запланирован</b>\n\n${escHtml(dialog.text)}\n\n⏰ Публикация: <b>${when}</b> (ЕКБ)`,
       { parse_mode: "HTML" }
     );
     return true;

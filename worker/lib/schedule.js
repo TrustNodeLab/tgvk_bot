@@ -63,7 +63,7 @@ export async function getWindows(env) {
   return st.windows;
 }
 
-// Окно, в котором сейчас время (минуты от полуночи МСК), либо null.
+// Окно, в котором сейчас время (минуты от полуночи ЕКБ), либо null.
 export async function currentWindow(env, minuteOfDay) {
   const wins = await getWindows(env);
   return wins.find((w) => minuteOfDay >= w.start && minuteOfDay < w.end) || null;

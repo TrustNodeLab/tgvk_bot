@@ -82,11 +82,11 @@ test("setSlotsPerDay: добавляет доп. слоты до MAX и убир
 test("nextFreeSlot учитывает доп. окна расписания", async () => {
   const { nextFreeSlot } = await import(SCHED);
   const { setSlotsPerDay } = await import(SCHEDULE);
-  const { mskNow } = await import(CONFIG);
+  const { ekbNow } = await import(CONFIG);
   const env = makeEnv();
   await setSlotsPerDay(env, 4); // база 3 + обеденное 12:00
-  const now = new Date("2026-08-07T07:30:00Z"); // 10:30 МСК — внутри утреннего окна, слот 09:00 уже прошёл
+  const now = new Date("2026-08-07T06:00:00Z"); // 11:00 ЕКБ — внутри утреннего окна, слот 09:00 уже прошёл
   const slot = await nextFreeSlot(env, now);
-  const msk = mskNow(new Date(slot));
-  assert.equal(msk.minuteOfDay, 12 * 60, "следующий слот — обеденный 12:00 МСК (доп. окно)");
+  const ekb = ekbNow(new Date(slot));
+  assert.equal(ekb.minuteOfDay, 12 * 60, "следующий слот — обеденный 12:00 ЕКБ (доп. окно)");
 });
