@@ -53,6 +53,7 @@ import {
   startEventDialog,
   handleEventDialogMessage,
 } from "./lib/support.js";
+import { multiStatus, multigroupTick } from "./lib/multigroup.js";
 
 const VERSION = "3.0.2";
 
@@ -89,7 +90,9 @@ const HELP_TEXT =
   "/blacklist add|del kw|src|guid &lt;значение&gt; — чёрный список\n" +
   "/keyword add|remove &lt;слова&gt; — ключевые слова\n" +
   "/rescan — полный тик, /export — история, /version — версия\n" +
-  "/healthcheck — здоровье студии (пропуски окон, срывы, опросы)";
+  "/healthcheck — здоровье студии (пропуски окон, срывы, опросы)\n" +
+  "<b>Мультигруппы VK:</b>\n" +
+  "/mg — статус групп (DGC/LostLink/LostArt), /mg-tick — публикация по слотам";
 
 const COMMANDS = [
   { command: "start", description: "Главное меню" },
@@ -123,6 +126,8 @@ const COMMANDS = [
   { command: "rescan", description: "Полный тик" },
   { command: "digesttest", description: "Тестовое превью дайджеста" },
   { command: "version", description: "Версия" },
+  { command: "mg", description: "Мультигруппы VK: статус" },
+  { command: "mg-tick", description: "Мультигруппы VK: публикация сейчас" },
   { command: "healthcheck", description: "Здоровье студии" },
 ];
 
@@ -142,6 +147,7 @@ const BTN_SETTINGS = "⚙️ Настройки";
 const BTN_HELP = "📖 Помощь";
 const BTN_DRYRUN = "🧪 Dry-run";
 const BTN_EVENT = "🎪 Ивент";
+const BTN_MULTI = "👥 Мультигруппы";
 
 // Постоянная reply-клавиатура под строкой ввода.
 function replyKeyboard(rows) {
@@ -159,7 +165,8 @@ const MAIN_KB = replyKeyboard([
   [BTN_STATUS, BTN_REPORT, BTN_ANALYTICS],
   [BTN_DRAFTS, BTN_STOCK, BTN_NEW_POST],
   [BTN_SCHEDULE, BTN_SOURCES, BTN_SETTINGS],
-  [BTN_EVENT, BTN_DRYRUN, BTN_HELP],
+  [BTN_MULTI, BTN_EVENT, BTN_DRYRUN],
+  [BTN_HELP],
 ]);
 
 // Ответ по нажатию reply-кнопки -> команда (кроме «Сделать пост» — там подсказка).
@@ -177,6 +184,7 @@ const BTN_CMDS = {
   [BTN_DRYRUN]: "/dryrun",
   [BTN_NOAI]: "/noai",
   [BTN_EVENT]: "/event",
+  [BTN_MULTI]: "/mg",
 };
 
 // Быстрые inline-действия под отчётами/статусом — не выходя из ответа.
@@ -197,6 +205,17 @@ const QUICK_ANALYTICS_KB = {
       { text: BTN_STATUS, callback_data: "cmd:status" },
       { text: BTN_SCHEDULE, callback_data: "cmd:schedule" },
       { text: BTN_REPORT, callback_data: "cmd:report" },
+    ],
+  ],
+};
+
+// Быстрые действия под /mg: принудительный тик и переход к общему статусу.
+const QUICK_MULTI_KB = {
+  inline_keyboard: [
+    [
+      { text: "🚀 Публиковать сейчас", callback_data: "mg:tick" },
+      { text: BTN_STATUS, callback_data: "cmd:status" },
+      { text: BTN_STOCK, callback_data: "cmd:stock" },
     ],
   ],
 };
@@ -1147,6 +1166,23 @@ async function handleCallback(env, cq, state) {
     return;
   }
 
+  // быстрые inline-действия мультигрупп (mg:tick)
+  if (action === "mg") {
+    if (segs[1] === "tick") {
+      try {
+        const results = await multigroupTick(env);
+        const lines = results.map(
+          (r) => `${r.posted ? "✅" : "⏭"} <b>${escHtml(r.slug)}</b>: ${escHtml(r.detail)}`
+        ).join("\n");
+        await sendMessage(env, chatId, "👥 <b>multigroupTick</b>\n" + lines, { parse_mode: "HTML" });
+        try { await answerCallbackQuery(env, qid, "Готово"); } catch (e) { /* ignore */ }
+      } catch (e) {
+        try { await answerCallbackQuery(env, qid, `Ошибка: ${e.message.slice(0, 90)}`); } catch (e2) { /* ignore */ }
+      }
+      return;
+    }
+  }
+
   // быстрые inline-действия под отчётами/статусом (cmd:<command>)
   if (action === "cmd") {
     const command = segs[1] || "";
@@ -1945,6 +1981,30 @@ async function handleCommand(env, state, chatId, text) {
     case "/version":
       await sendMessage(env, chatId, `🧬 TrustNode SMM v${VERSION} (Worker publish contour)`);
       break;
+
+    case "/mg":
+    case "/mg-status": {
+      const rows = await multiStatus(env);
+      const msg =
+        "👥 <b>Мультигруппы (VK)</b>\n\n" +
+        rows.map((r) => {
+          const slotDot = r.slot === "активен" ? "🟢" : "⚪";
+          return `${slotDot} <b>${escHtml(r.name)}</b> · токен ${r.token} · сегодня: ${r.postedToday} пост`
+            + (r.slot === "активен" ? ` (${r.slot})` : "");
+        }).join("\n") +
+        "\n\nОкна: DGC 05/10/15/20:00 · LostLink 08/11/14/17/20:30 · LostArt 09/12/15/18:00 (ЕКБ)";
+      await sendMessage(env, chatId, msg, { parse_mode: "HTML", reply_markup: QUICK_MULTI_KB });
+      break;
+    }
+
+    case "/mg-tick": {
+      const results = await multigroupTick(env);
+      const lines = results.map(
+        (r) => `${r.posted ? "✅" : "⏭"} <b>${escHtml(r.slug)}</b>: ${escHtml(r.detail)}`
+      ).join("\n");
+      await sendMessage(env, chatId, "👥 <b>multigroupTick</b>\n" + lines, { parse_mode: "HTML" });
+      break;
+    }
 
     default:
       await sendMessage(env, chatId, "Неизвестная команда. Список — /help");

@@ -627,8 +627,10 @@ function lzwEncode(indices, minCodeSize) {
 }
 
 // Основная точка входа: PNG-байты → GIF-байты (GIF89a, индексированный).
-export async function pngToGif(pngBytes) {
-  const { w, h, rgba } = await parsePngToRgba(pngBytes);
+// Конвертирует RGBA-пиксели в статичный GIF89a (те же шаги, что в pngToGif,
+// но без PNG-парсинга). Нужен мультигрупповому контуру: арты из TG приходят
+// JPEG'ами (decodeJpeg в lib/jpeg.js) или PNG'ами — оба сводятся к RGBA.
+export function rgbaToGif(w, h, rgba) {
   const palette = buildPalette(rgba);
   // Точное сопоставление каждого уникального цвета с ближайшим цветом палитры.
   // Кэш по полному RGB, т.к. уникальных цветов обычно не много.
@@ -701,6 +703,12 @@ export async function pngToGif(pngBytes) {
   let off = 0;
   for (const p of parts) { out.set(p, off); off += p.length; }
   return out;
+}
+
+// PNG -> статичный GIF: парсинг PNG в RGBA, затем rgbaToGif.
+export async function pngToGif(pngBytes) {
+  const { w, h, rgba } = await parsePngToRgba(pngBytes);
+  return rgbaToGif(w, h, rgba);
 }
 
 // ---------- анимированный GIF (несколько кадров, общая палитра) ----------

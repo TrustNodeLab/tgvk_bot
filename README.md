@@ -48,6 +48,34 @@
    публичный репозиторий или GitHub Pages. Иногда VK тянет превью с задержкой и
    первый показ может быть без картинки. Если не задан — бот постит фото обычным путём.
 
+### 2а. Дополнительные VK-группы (мультигруппы DGC / LostLink / LostArt)
+
+Бот умеет публиковать и в отдельные игровые/арт-сообщества по своим окнам:
+
+- **DGC** — игровые новости (RU): RSS-ленты playground.ru / vgtimes / dtf.
+  Окна (ЕКБ): 05:00, 10:00, 15:00, 20:00.
+- **LostLink** — игровые новости (EN): pcgamer / polygon / eurogamer /
+  rockpapershotgun / vg247. Окна (ЕКБ): 08:00, 11:00, 14:00, 17:00, 20:00.
+- **LostArt** — ИИ-арты из ТГ-каналов (`@aiart`, `@aiartcommunity`, `@neuralart`,
+  `@promptart`, `@aipainting`, `@psychedelic_ai`). Картинка скачивается с
+  популярной стены `t.me/s/<channel>`, декодируется (JPEG/PNG → RGBA),
+  конвертируется в GIF и постится **GIF-документом** (`docs.getWallUploadServer`
+  → `docs.save` → `wall.post`) — это единственный способ показать картинку
+  на стене групповым токеном. Окна (ЕКБ): 09:00, 12:00, 15:00, 18:00.
+
+Каждое окно длится 30 минут и публикует ровно 1 пост; повтор слота блокируется
+ключом `vk_posted:mg:<group>:<дата>:<слот>` в KV. Нужно по одному ключу на группу:
+
+```
+npx wrangler secret put VK_TOKEN_DGC      # токен с правом «Стена» группы DGC
+npx wrangler secret put VK_TOKEN_LOSTLINK # то же для LostLink
+npx wrangler secret put VK_TOKEN_LOSTART  # то же для LostArt
+```
+
+Токены групп заводятся так же, как основной `VK_TOKEN` (Управление → Работа с
+API → Ключи доступа). Команды админу: `/mg` — статус мультигрупп,
+`/mg-tick` — принудительная публикация по текущим слотам.
+
 ### 3. LLM — GigaChat (работает в РФ без VPN)
 
 Gemini и другие зарубежные провайдеры из России недоступны без VPN, поэтому по
@@ -112,6 +140,10 @@ Python-бот обращается к ним через REST-эндпоинты 
    npx wrangler secret put GITHUB_TOKEN      # PAT с правами workflow
    npx wrangler secret put WEBHOOK_SECRET    # тот же secret_token из setWebhook
    npx wrangler secret put BOT_AUTH          # ключ для бота к /kv и /files/* (fallback — WEBHOOK_SECRET)
+   npx wrangler secret put VK_TOKEN          # основной токен студии (стена)
+   npx wrangler secret put VK_TOKEN_DGC      # мультигруппы: токен группы DGC
+   npx wrangler secret put VK_TOKEN_LOSTLINK # мультигруппы: токен группы LostLink
+   npx wrangler secret put VK_TOKEN_LOSTART  # мультигруппы: токен группы LostArt
    ```
 3. Деплой: `npx wrangler deploy` в папке `worker/`.
 4. В GitHub Actions добавь секреты `BOT_WORKER_URL` (URL Worker'а, без слэша в
@@ -266,6 +298,8 @@ worker/
   wrangler.toml         — конфигурация (KV, R2, cron раз в 5 минут)
   lib/
     scheduler.js         — главный тик: скан → автогенерация → склад → публикация по слотам
+    multigroup.js        — мультигруппы VK: DGC/LostLink (новости RU/EN) и LostArt (арты из TG)
+    jpeg.js              — JPEG-декодер (baseline, для конвертации артов TG в GIF)
     schedule.js          — адаптивное расписание: базовые + доп. окна, авто-корректировка по охватам
     feeds.js             — RSS-ленты, ключевые слова, кандидаты
     llm.js               — генерация текста и карточки (GigaChat/Gemini/правила, без GitHub)
@@ -274,7 +308,7 @@ worker/
     analytics.js         — день-метрики и отчёты студии (вечер/день/неделя/месяц)
     schemes.js           — схемы карточек (для анализа залётности)
     preview.js           — превью черновика и кнопки одобрения
-    cardgen.js           — JS-рендер карточки (PNG + анимированный GIF с небом) и PNG-дашборд /stats
+    cardgen.js           — JS-рендер карточки (PNG + анимированный GIF с небом), RGBA→GIF для артов
     astro.js             — астрономия Москвы (порт bot/astro.py: Солнце, звёзды)
     telegram.js          — обёртки Telegram/VK API (идемпотентная публикация)
     kv.js                — состояние, черновики, склад, publish_log, ретраи, расписание

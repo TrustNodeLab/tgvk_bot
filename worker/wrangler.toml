@@ -36,6 +36,9 @@ preview_id = "3bc5ff47849e41d49396e6e26736a461"
 #   WEBHOOK_SECRET — тот же secret_token, что передаётся в setWebhook
 #   BOT_AUTH     — общий ключ для бота (GH Actions) к /kv и /files/*,
 #                  если не задан — используется WEBHOOK_SECRET
+#   VK_TOKEN     — основной токен студии (стена TrustNode)
+#   VK_TOKEN_DGC / VK_TOKEN_LOSTLINK / VK_TOKEN_LOSTART — токены мультигрупп
+#                  (DGC/LostLink игровые новости, LostArt — ИИ-арты из TG)
 
 # Workers AI: резервный LLM-провайдер прямо из Worker (без внешних ключей).
 # Используется в generatePostData, когда LLM_PROXY_URL/LLM_API_BASE недоступны,

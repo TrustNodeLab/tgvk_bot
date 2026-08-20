@@ -39,9 +39,10 @@ export async function tgCall(env, method, params = {}, files = null) {
   return data.result;
 }
 
-export async function vkCall(env, method, params = {}) {
+export async function vkCall(env, method, params = {}, opts = {}) {
+  const token = opts.token || env.VK_TOKEN;
   const body = new URLSearchParams({
-    access_token: env.VK_TOKEN,
+    access_token: token,
     v: VK_VERSION,
     ...Object.fromEntries(Object.entries(params).map(([k, v]) => [k, String(v)])),
   });
@@ -214,6 +215,68 @@ export async function vkPostWall(env, message, attachment) {
     message,
     attachments: attachment,
   });
+}
+
+// Загрузка GIF-документа на стену указанной группы (per-group токен): возврат
+// attachment `doc{owner_id}_{id}`. Логика — та же, что в vkUploadWallGif, но без
+// привязки к env.VK_TOKEN/env.VK_GROUP_ID: работает от VK_TOKEN_<GROUP>.
+export async function vkUploadWallGifFor(env, gifBytes, token, groupId) {
+  const MAX_ATTEMPTS = 3;
+  let lastErr = null;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const dws = await vkCall(env, "docs.getWallUploadServer", { group_id: groupId }, { token });
+    if (!dws || !dws.upload_url) {
+      lastErr = "VK: docs.getWallUploadServer не вернул upload_url";
+      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      continue;
+    }
+    const fd = new FormData();
+    fd.append("file", new Blob([gifBytes], { type: "image/gif" }), "card.gif");
+    let bodyText = "";
+    try {
+      const resp = await fetch(dws.upload_url, {
+        method: "POST",
+        body: fd,
+        headers: {
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+          Accept: "*/*",
+        },
+      });
+      bodyText = await resp.text();
+    } catch (e) {
+      bodyText = "";
+      lastErr = `VK: gif upload fetch error: ${e.message}`;
+      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      continue;
+    }
+    let ur = null;
+    try { ur = JSON.parse(bodyText); } catch (e) { ur = null; }
+    if (!ur || !ur.file) {
+      lastErr = `VK: gif upload вернул без file (${bodyText.slice(0, 120)})`;
+      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      continue;
+    }
+    const saved = await vkCall(env, "docs.save", { file: ur.file }, { token });
+    const wrap = Array.isArray(saved) ? saved[0] : saved;
+    const doc = (wrap && (wrap.doc || wrap)) || null;
+    if (!doc || !doc.id) {
+      lastErr = `VK: docs.save вернул без doc (${JSON.stringify(saved).slice(0, 200)})`;
+      if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+      continue;
+    }
+    return `doc${doc.owner_id}_${doc.id}`;
+  }
+  throw new Error(lastErr || "VK: gif upload не удался");
+}
+
+// Пост в стену указанной группы от её токена (per-group wall.post).
+export async function vkPostWallFor(env, token, groupId, message, attachment) {
+  return vkCall(env, "wall.post", {
+    owner_id: -groupId,
+    from_group: 1,
+    message,
+    attachments: attachment,
+  }, { token });
 }
 
 // Загрузка изображения как GIF-документа на стену сообщества и возврат attachment
