@@ -23,8 +23,8 @@ import { sendPoll } from "./telegram.js";
 import { fmtTime, escHtml, fitCaption, htmlToPlain } from "./text.js";
 import { collectEngagement, maybeHealthAlert, maybeBackupToGitHub } from "./ops.js";
 
-const CHUNK_COUNT = 2; // СЃРєР°РЅ РґРµР»РёС‚СЃСЏ РЅР° 2 С‡Р°СЃС‚Рё (Р»РёРјРёС‚ РїРѕРґР·Р°РїСЂРѕСЃРѕРІ free-РїР»Р°РЅР°)
-const TICK_LOCK_TTL_MS = 10 * 60 * 1000; // Р°РЅС‚Рё-РїРµСЂРµРєСЂС‹С‚РёРµ РєСЂРѕРЅ: РЅРµ С‡Р°С‰Рµ 1 С‚РёРєР°
+const CHUNK_COUNT = 4; // скан дробится на 4 части — за тик опрашиваем ~9 лент, чтобы уложиться в бюджет
+const TICK_LOCK_TTL_MS = 4 * 60 * 1000; // Р°РЅС‚Рё-РїРµСЂРµРєСЂС‹С‚РёРµ РєСЂРѕРЅ: Р±РѕР»СЊС€Рµ TTL, С‡РµРј РєСЂРѕРЅ (5 РјРёРЅ) Р±С‹ Р·Р°СЃС‚Р°РІРёР»Рѕ РїСЂРѕРїСѓСЃРєР°С‚СЊ РєР°Р¶РґС‹Р№ РІС‚РѕСЂРѕР№ Р·Р°РїСѓСЃРє.
 const OPS_BUDGET_MS = 20 * 1000; // Р±СЋРґР¶РµС‚ РѕРїРµСЂР°С†РёРѕРЅРЅС‹С… РґРѕРіРѕРЅСЏР»РѕРє (engagement/health/backup)
 
 // РҐР°СЂРґ-Р±СЋРґР¶РµС‚ С‚РёРєР°. Free-РїР»Р°РЅ Cloudflare РґСѓС€РёС‚ С‚СЏР¶С‘Р»С‹Рµ РєСЂРѕРЅ-Р·Р°РїСѓСЃРєРё: С‚РёРє,
@@ -34,10 +34,11 @@ const OPS_BUDGET_MS = 20 * 1000; // Р±СЋРґР¶РµС‚ РѕРїРµСЂР
 // РєРѕСЂРѕС‚РєРёРµ Р±СЋРґР¶РµС‚С‹ СЃ С„РѕР»Р±СЌРєРѕРј РЅР° РїСЂР°РІРёР»Р° / JS-СЂРµРЅРґРµСЂ, С‡С‚РѕР±С‹ С‚РёРє РїРѕС‡С‚Рё РІСЃРµРіРґР°
 // СѓРєР»Р°РґС‹РІР°Р»СЃСЏ РІ Р±СЋРґР¶РµС‚ Рё В«РЅРµ РґРѕР¶РёРјР°Р»СЃСЏВ» С‚Р°Рј.
 const TICK_BUDGET_MS = 28000;
-const LLM_BUDGET_MS = 6000;
-const RENDER_BUDGET_MS = 5000;
+const LLM_BUDGET_MS = 4000;
+const RENDER_BUDGET_MS = 4000;
+const DIGEST_BUDGET_MS = 4000;
 const SCAN_BUDGET_MS = 8000;
-const ASSEMBLE_BUDGET_MS = 9000;
+const ASSEMBLE_BUDGET_MS = 13000;
 
 // Р—Р°РїСѓСЃРєР°РµС‚ promise СЃ Р¶С‘СЃС‚РєРёРј Р±СЋРґР¶РµС‚РѕРј: РїРѕ РёСЃС‚РµС‡РµРЅРёРё ms СЂРµРґР¶РµРєС‚РёС‚ (РїСЂРѕРјРёСЃ РїСЂРё
 // СЌС‚РѕРј РїСЂРѕРґРѕР»Р¶Р°РµС‚ Р¶РёС‚СЊ РІ С„РѕРЅРµ, РЅРѕ СЂРµР·СѓР»СЊС‚Р°С‚ СѓР¶Рµ РЅРёРєРѕРјСѓ РЅРµ РЅСѓР¶РµРЅ вЂ” С‚РёРє РЅРµ Р¶РґС‘С‚).
@@ -1094,7 +1095,7 @@ async function llmMixFormat(env, date, slug, count) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ window: slug, date, count, provider: "gigachat" }),
-        signal: AbortSignal.timeout(15000),
+        signal: AbortSignal.timeout(4000),
       });
       if (res.ok) {
         const data = JSON.parse(await res.text());
@@ -1161,7 +1162,7 @@ async function llmPollData(env, items) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text, provider: "gigachat" }),
-    signal: AbortSignal.timeout(15000),
+    signal: AbortSignal.timeout(4000),
   });
   if (!res.ok) return null;
   const data = JSON.parse(await res.text());
@@ -1193,7 +1194,13 @@ async function assembleMixWindow(env, now, w) {
   if (!items.length) return null;
   const format = await decideMixFormat(env, date, w.slug, items.length);
   if (format === "digest") {
-    const res = await buildDigestForWindow(env, w, now);
+    let res = null;
+    try {
+      res = await bounded(DIGEST_BUDGET_MS, "[scheduler] digest",
+        buildDigestForWindow(env, w, now));
+    } catch (e) {
+      console.log("[scheduler] digest превысил бюджет, окно на одиночную новость:", e.message);
+    }
     if (res) {
       await kv.addStock(env, res.pkg);
       await commitDigest(env, date, w, res.items);

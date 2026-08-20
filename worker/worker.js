@@ -54,7 +54,7 @@ import {
   handleEventDialogMessage,
 } from "./lib/support.js";
 
-const VERSION = "3.0.1";
+const VERSION = "3.0.2";
 
 // ---------- тексты ----------
 
@@ -315,6 +315,29 @@ async function dashboardHtml(env, now = new Date()) {
   const cands = await kv.getCandidates(env) || [];
   const stock = await kv.getStock(env) || [];
 
+  // Диагностика: смотрим KV глазами воркера (ключами и длинами), чтобы понять,
+  // тот ли namespace читает рантайм (CLI и воркер расходились).
+  let kvDiag = "нет (env.BOT_KV отсутствует)";
+  try {
+    if (env.BOT_KV && typeof env.BOT_KV.list === "function") {
+      const res = await env.BOT_KV.list();
+      const keys = (res.keys || []).map((k) => k.name);
+      const sample = keys.slice(0, 40);
+      const counts = {};
+      for (const k of keys) {
+        const prefix = k.split(":")[0];
+        counts[prefix] = (counts[prefix] || 0) + 1;
+      }
+      const stateRaw = await env.BOT_KV.get("state", "json");
+      kvDiag =
+        `<b>ключей: ${keys.length}</b> | по префиксам: ${Object.entries(counts).map(([p, n]) => `${escHtml2(p)}:${n}`).join(" ")}` +
+        `<br>попал 1-й: ${escHtml2(sample.join(",") || "—")}` +
+        `<br>state запис. ${!!!stateRaw ? "НЕТ" : "есть"}${stateRaw && stateRaw.meta && stateRaw.meta.last_scan ? ` | last_scan=${escHtml2(JSON.stringify(stateRaw.meta.last_scan))}` : ""}`;
+    }
+  } catch (e) {
+    kvDiag = `ошибка: ${escHtml2(e.message)}`;
+  }
+
   return `<!DOCTYPE html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TrustNode · dashboard</title>
 <style>body{font-family:system-ui,sans-serif;background:#0f172a;color:#e2e8f0;margin:24px}a{color:#38bdf8}table{border-collapse:collapse;width:100%;max-width:760px;margin:8px 0}th,td{border:1px solid #334155;padding:6px 10px;text-align:left}th{background:#1e293b}.badge{display:inline-block;padding:2px 8px;border-radius:10px;background:#1e293b;font-size:12px}.ok{color:#4ade80}.warn{color:#facc15}.bad{color:#f87171}</style></head>
@@ -325,6 +348,9 @@ async function dashboardHtml(env, now = new Date()) {
 <span class="badge">Ответы на опросы: <b>${pollsTotal}</b></span>
 <span class="badge">Кандидаты: <b>${cands.length}</b></span>
 <span class="badge">Склад: <b>${stock.length}</b></span></p>
+
+<h2>🔍 KV (глазами воркера)</h2>
+<p style="font-family:monospace;font-size:12px;word-break:break-all">${kvDiag}</p>
 
 <h2>🗓 Расписание (ЕКБ) · ${sched.mode}</h2>
 <table><tr><th>Окно</th><th>Время</th></tr>${winRows}</table>

@@ -8,8 +8,8 @@ import { getCandidates, addCandidate, loadState } from "./kv.js";
 const REQUEST_HEADERS = { "User-Agent": "Mozilla/5.0 (compatible; TrustNodeBot/1.0)" };
 
 // Сколько лент опрашиваем параллельно за один заход (потолок — лимит
-// подзапросов free-плана; при 4 пачками закрываем и 37 лент за 3 захода).
-const MAX_FEEDS_PARALLEL = 4;
+// подзапросов free-плана; при 8 пачкой закрываем 35 лент за 2 захода).
+const MAX_FEEDS_PARALLEL = 8;
 
 // Многие русские RSS-ленты отдают windows-1251 и не указывают charset в заголовке;
 // res.text() в Workers всегда считает UTF-8 — из-за этого выходили «кракозябры».
@@ -136,11 +136,37 @@ export function isRussianText(text) {
   return cyr / t.length >= 0.35;
 }
 
+function decodeHtmlBytes(bytes) {
+  const latin = new TextDecoder("latin1");
+  const head = latin.decode(bytes.slice(0, 400));
+  const m =
+    /<\?xml[^>]*encoding=["']([^"']+)["']/i.exec(head) ||
+    /charset=["']?([\w-]+)/i.exec(head) ||
+    /<meta[^>]+charset=["']([\w-]+)["']/i.exec(head);
+  const declared = m ? m[1].toLowerCase() : "";
+  if (declared && !/^utf-?8$/.test(declared)) {
+    try {
+      return new TextDecoder(declared).decode(bytes);
+    } catch (e) {
+      /* неизвестный label — пробуем дальше */
+    }
+  }
+  const text = new TextDecoder("utf-8").decode(bytes);
+  if (text.includes("\uFFFD")) {
+    try {
+      return new TextDecoder("windows-1251").decode(bytes);
+    } catch (e) {
+      /* остаёмся на utf-8 */
+    }
+  }
+  return text;
+}
+
 export async function fetchArticleExcerpt(url, maxChars = 2500, timeoutMs = 10000) {
   try {
     const res = await fetch(url, { headers: REQUEST_HEADERS, signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return "";
-    const html = await res.text();
+    const html = decodeHtmlBytes(new Uint8Array(await res.arrayBuffer()));
     const pRe = /<p[^>]*>(.*?)<\/p>/gis;
     const parts = [];
     let m;
@@ -183,14 +209,14 @@ export async function scanFeeds(env, chunkOffset = 0, chunkCount = 2) {
   // Фиды тянутся параллельно (малыми группами), чтобы очередь десятка медленных
   // лент не съедала бюджет тика последовательными ожиданиями (10 с × N). Каждая
   // лента ограничена таймаутом, общая пачка — SCAN_STEP_BUDGET_MS.
-  const STEP_BUDGET_MS = 18000;
+  const STEP_BUDGET_MS = 8000;
   const stepStarted = Date.now();
   for (let i = 0; i < slice.length; i += MAX_FEEDS_PARALLEL) {
     if (Date.now() - stepStarted > STEP_BUDGET_MS) break;
     const batch = slice.slice(i, i + MAX_FEEDS_PARALLEL);
     const results = await Promise.allSettled(
       batch.map(async (feedUrl) => {
-        const res = await fetch(feedUrl, { headers: REQUEST_HEADERS, signal: AbortSignal.timeout(10000) });
+        const res = await fetch(feedUrl, { headers: REQUEST_HEADERS, signal: AbortSignal.timeout(4000) });
         if (!res.ok) return [];
         const xml = decodeFeedBytes(new Uint8Array(await res.arrayBuffer()));
         const items = [];
@@ -222,7 +248,7 @@ export async function scanFeeds(env, chunkOffset = 0, chunkCount = 2) {
   // каждый fetchArticleExcerpt с таймаутом 10с шёл по очереди, и при десятке
   // свежих кандидатов скан молча съедал весь бюджет тика (16с), оставляя
   // шагу assemble секунды — тик умирал на «assemble» и ничего не публиковал.
-  const MAX_EXCERPTS = 8;
+  const MAX_EXCERPTS = 6;
   const cands = [];
   for (let i = 0; i < Math.min(clusters.length, MAX_EXCERPTS); i += MAX_FEEDS_PARALLEL) {
     const batch = clusters.slice(i, i + MAX_FEEDS_PARALLEL).map(async (cl) => {
@@ -239,7 +265,7 @@ export async function scanFeeds(env, chunkOffset = 0, chunkCount = 2) {
         found_at: new Date().toISOString(),
       };
       // Текст подкачиваем только для лучшего источника кластера (экономия подзапросов).
-      cand.excerpt = await fetchArticleExcerpt(cand.link, 2500, 6000);
+      cand.excerpt = await fetchArticleExcerpt(cand.link, 2500, 4000);
       cand.text = buildClusterText(cl, cand.excerpt);
       return cand;
     });
