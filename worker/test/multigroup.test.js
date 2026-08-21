@@ -12,6 +12,7 @@ import {
   publishMultiGroup,
   multiStatus,
 } from "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/multigroup.js";
+import { ekbNow } from "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/config.js";
 
 function makeKV() {
   const m = new Map();
@@ -130,8 +131,9 @@ test("multigroup: повтор публикации в занятый слот �
 test("multigroup: status показывает токены и число постов", async () => {
   const kv = makeKV();
   const env = makeEnv(kv);
-  await kv.put("vk_posted:mg:dgc:2026-08-20:300", "1");
-  await kv.put("vk_posted:mg:lostart:2026-08-20:540", "2");
+  const today = ekbNow().date;
+  await kv.put(`vk_posted:mg:dgc:${today}:300`, "1");
+  await kv.put(`vk_posted:mg:lostart:${today}:540`, "2");
   const rows = await multiStatus(env);
   assert.equal(rows.length, 3);
   const dgc = rows.find((r) => r.slug === "dgc");
