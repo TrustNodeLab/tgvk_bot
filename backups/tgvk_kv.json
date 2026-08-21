@@ -1,6 +1,6 @@
 {
- "at": "2026-08-20T22:01:04.955Z",
- "day": "2026-08-21",
+ "at": "2026-08-21T22:00:25.095Z",
+ "day": "2026-08-22",
  "schedule": {
   "mode": "auto",
   "windows": [
@@ -240,10 +240,10 @@
    "last_fallback": 1786212693282,
    "last_daily_audit": "2026-08-07",
    "last_scan": {
-    "at": "2026-08-20T22:00:54.651Z",
+    "at": "2026-08-21T22:00:13.160Z",
     "chunk": 2,
     "found": 0,
-    "took_ms": 7269
+    "took_ms": 7454
    }
   },
   "blacklist": {
@@ -294,6 +294,70 @@
   "last_draft_id": "f0c2fa45de"
  },
  "publish_log": [
+  {
+   "id": "n20260821day",
+   "kind": "news",
+   "title": "Эксперт Марданов рассказал, как защитить себя и близких от мошенников",
+   "guid": "3428750",
+   "link": "https://rg.ru/2026/08/21/ekspert-mardanov-rasskazal-kak-zashchitit-sebia-i-blizkih-ot-moshennikov.html",
+   "tags": [],
+   "source": "rg.ru",
+   "published_at": "2026-08-21T11:05:45.721Z",
+   "ekb_hour": 16,
+   "ekb_minute": 965,
+   "window_slug": "day",
+   "caption": "С этим можно столкнуться уже сегодня.\n\n<b>Эксперт Марданов рассказал, как защитить себя и близких от мошенников</b>\n\nБанк может выявить подозрительную операцию, приостановить перевод и предупредить клиента.\n🔍 Фишинг-ссылка\n• Но защита сталкивается с серьезным ограничением, когда человек сам сообщает код мошенникам или переходит по подозрительным ссылкам\n• Источник: https://rg.ru/2026/08/21/ekspert-mardanov-rasskazal-kak-zashchitit-sebia-i-blizkih-ot-moshennikov.html\n\nИсточник: <a href=\"https://rg.ru/2026/08/21/ekspert-mardanov-rasskazal-kak-zashchitit-sebia-i-blizkih-ot-moshennikov.html\">ссылка</a>\n\n🛡️ <b>TrustNode</b>\n📱 Приложение: <a href=\"https://www.rustore.ru/catalog/app/com.frauddetector.app\">RuStore</a>\n🌐 Сайт: <a href=\"https://trustnodelab.github.io\">trustnodelab.github.io</a>",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 225,
+   "vk_attachment": "doc-238449687_704181096",
+   "tg_message_id": 213,
+   "tg_digest_message_id": null,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": null,
+   "style_id": "warning",
+   "topic_id": "phishing",
+   "llm_provider": null,
+   "card_types": [
+    "list",
+    "list"
+   ],
+   "layout": "list-list"
+  },
+  {
+   "id": "n20260821morning",
+   "kind": "news",
+   "title": "На Камчатке сотрудницу банка будут судить за хищение более 4 млн рублей",
+   "guid": "3428426",
+   "link": "https://rg.ru/2026/08/21/reg-dfo/na-kamchatke-sotrudnicu-banka-budut-sudit-za-hishchenie-bolee-4-mln-rublej.html",
+   "tags": [],
+   "source": "rg.ru",
+   "published_at": "2026-08-21T03:45:32.734Z",
+   "ekb_hour": 8,
+   "ekb_minute": 525,
+   "window_slug": "morning",
+   "caption": "Случай из новости — как это выглядело на деле.\n\n<b>На Камчатке сотрудницу банка будут судить за хищение более 4 млн рублей</b>\n\n72 эпизода хищений и мошенничества вменяют в вину бывшей сотруднице банка в Камчатском крае.\n🔍 Суть\n• Об этом &lt;a href=https://max.ru/id4101118140_gos/AaAhao2YPzc rel=noopener noreferrer target=_blank&gt;сообщает&lt;/a&gt; прокуратура региона\n• Источник: https://rg.ru/2026/08/21/reg-dfo/na-kamchatke-sotrudnicu-banka-budut-sudit-za-hishchenie-bolee-4-mln-rublej.html\n\n🛡️ Что делать\n• При малейшем сомнении перезвоните сами — по официальному номеру с карты или сайта\n• Расскажите о схеме близким: мошенники давят на доверие и страх\n\n\nИсточник: <a href=\"https://rg.ru/2026/08/21/reg-dfo/na-kamchatke-sotrudnicu-banka-budut-sudit-za-hishchenie-bolee-4-mln-rublej.html\">ссылка</a>\n\n🛡️ <b>TrustNode</b>\n📱 Приложение: <a href=\"https://www.rustore.ru/catalog/app/com.frauddetector.app\">RuStore</a>\n🌐 Сайт: <a href=\"https://trustnodelab.github.io\">trustnodelab.github.io</a>",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 224,
+   "vk_attachment": "doc-238449687_704158988",
+   "tg_message_id": 212,
+   "tg_digest_message_id": null,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": null,
+   "style_id": "case",
+   "topic_id": null,
+   "llm_provider": null,
+   "card_types": [
+    "stat",
+    "list"
+   ],
+   "layout": "stat-list"
+  },
   {
    "id": "n20260820evening",
    "kind": "news",
@@ -2242,13 +2306,23 @@
   },
   {
    "date": "2026-08-21",
+   "posts": 2,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 10,
+   "vk_members": null,
+   "collected_at": "2026-08-21T18:30:09.581Z"
+  },
+  {
+   "date": "2026-08-22",
    "posts": 0,
    "vk_views": 0,
    "vk_likes": 0,
    "vk_reposts": 0,
    "tg_members": 10,
    "vk_members": null,
-   "collected_at": "2026-08-20T22:00:59.892Z"
+   "collected_at": "2026-08-21T22:00:20.053Z"
   }
  ],
  "content_weights": {
