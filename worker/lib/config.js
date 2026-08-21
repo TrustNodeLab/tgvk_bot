@@ -103,8 +103,20 @@ export function parseRSS(xml) {
       .replace(/<!\[CDATA\[/g, "")
       .replace(/\]\]>/g, "");
     const pub_date = get("pubDate") || get("dc:date");
+    // Извлекаем картинку: <enclosure>, <media:content>, <media:thumbnail>, <img src>
+    let image = "";
+    const encMatch = block.match(/<enclosure[^>]+url=["']([^"']+)["'][^>]*type=["']image\//i);
+    if (encMatch) { image = decodeEntities(encMatch[1]).trim(); }
+    if (!image) {
+      const mediaMatch = block.match(/<media:(?:content|thumbnail)[^>]+url=["']([^"']+)["']/i);
+      if (mediaMatch) image = decodeEntities(mediaMatch[1]).trim();
+    }
+    if (!image) {
+      const imgMatch = description.match(/<img[^>]+src=["']([^"']+)["']/i);
+      if (imgMatch) image = decodeEntities(imgMatch[1]).trim();
+    }
     if (title && link) {
-      items.push({ guid, title, link, description, pub_date });
+      items.push({ guid, title, link, description, pub_date, image });
     }
   }
   return items;

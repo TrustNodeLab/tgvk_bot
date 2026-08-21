@@ -301,7 +301,22 @@ async function publishNews(env, group, token) {
     .slice(0, 500);
   const text = (langBody(group.lang, title, desc, it.link) + `\n${group.footer}`).slice(0, VK_POST_LIMIT);
 
-  const res = await vkPostWallFor(env, token, group.groupId, text, null);
+  // Пытаемся скачать картинку из RSS и загрузить как doc (GIF) в VK.
+  let attachment = null;
+  if (it.image) {
+    try {
+      const imgRes = await fetch(it.image, { headers: REQUEST_HEADERS, signal: AbortSignal.timeout(10000) });
+      if (imgRes.ok) {
+        const imgBytes = new Uint8Array(await imgRes.arrayBuffer());
+        if (imgBytes.length > 12) {
+          const gifBytes = await toGifBytes(imgBytes);
+          if (gifBytes) attachment = await vkUploadWallGifFor(env, gifBytes, token, group.groupId);
+        }
+      }
+    } catch (e) { /* картинка не загрузилась — постим без неё */ }
+  }
+
+  const res = await vkPostWallFor(env, token, group.groupId, text, attachment);
   const postId = res && res.post_id;
   try {
     await env.BOT_KV.put(`vk_posted:mg:${group.slug}:guid:${String(it.guid || "").slice(0, 120)}`, String(postId || 1));
