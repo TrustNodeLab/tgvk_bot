@@ -1,6 +1,6 @@
 {
- "at": "2026-08-21T22:00:25.095Z",
- "day": "2026-08-22",
+ "at": "2026-08-22T22:00:18.122Z",
+ "day": "2026-08-23",
  "schedule": {
   "mode": "auto",
   "windows": [
@@ -236,14 +236,14 @@
   ],
   "counters": {},
   "meta": {
-   "scan_chunk": 3,
+   "scan_chunk": 1,
    "last_fallback": 1786212693282,
    "last_daily_audit": "2026-08-07",
    "last_scan": {
-    "at": "2026-08-21T22:00:13.160Z",
-    "chunk": 2,
+    "at": "2026-08-22T22:00:10.022Z",
+    "chunk": 0,
     "found": 0,
-    "took_ms": 7454
+    "took_ms": 8000
    }
   },
   "blacklist": {
@@ -294,6 +294,69 @@
   "last_draft_id": "f0c2fa45de"
  },
  "publish_log": [
+  {
+   "id": "n20260822day",
+   "kind": "news",
+   "title": "В МВД рассказали, как мошенники чаще всего устанавливают связь с жертвами",
+   "guid": "<![CDATA[https://tass.ru/obschestvo/28034275]]>",
+   "link": "<![CDATA[https://tass.ru/obschestvo/28034275]]>",
+   "tags": [],
+   "source": "",
+   "published_at": "2026-08-22T10:55:19.215Z",
+   "ekb_hour": 15,
+   "ekb_minute": 955,
+   "window_slug": "day",
+   "caption": "С этим можно столкнуться уже сегодня.\n\n<b>В МВД рассказали, как мошенники чаще всего устанавливают связь с жертвами</b>\n\nРечь идет об СМС и звонках по телефону Источник: &lt;![CDATA[https://tass.ru/obschestvo/28034275]]&gt;\n\nЭто не «где-то там» — с такой схемой можно столкнуться уже сегодня.\n\n🔍 Звонок мошенника\n• Речь идет об СМС и звонках по телефону Источник: &lt;![CDATA[https://tass.ru/obschestvo/28034275]]&gt;\n\n🛡️ Что делать\n• Положите трубку и перезвоните в банк по номеру с обратной стороны карты\n• Сотрудники банка никогда не просят код из SMS или перевод «на безопасный счёт»\n• При малейшем сомнении перезвоните сами — по официальному номеру с карты или сайта\n\nЭто не «где-то там» — с таким звонком может столкнуться любой.\n\nИсточник: <a href=\"&lt;![CDATA[https://tass.ru/obschestvo/28034275]]&gt;\">ссылка</a>\n\n🛡️ <b>TrustNode</b>\n📱 Приложение: <a href=\"https://www.rustore.ru/catalog/app/com.frauddetector.app\">RuStore</a>\n🌐 Сайт: <a href=\"https://trustnodelab.github.io\">trustnodelab.github.io</a>",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 227,
+   "vk_attachment": "doc-238449687_704233010",
+   "tg_message_id": 216,
+   "tg_digest_message_id": null,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": null,
+   "style_id": "warning",
+   "topic_id": "call",
+   "llm_provider": null,
+   "card_types": [
+    "list",
+    "list"
+   ],
+   "layout": "list-list"
+  },
+  {
+   "id": "n20260822morning",
+   "kind": "news",
+   "title": "Родителей предупредили о схеме с фальшивыми школьными наборами",
+   "guid": "<![CDATA[https://russian.rt.com/russia/news/1672689-moshenniki-shkolnye-nabory-roditeli?utm_source=rss&utm_medium=rss&utm_campaign=RSS]]>",
+   "link": "<![CDATA[https://russian.rt.com/russia/news/1672689-moshenniki-shkolnye-nabory-roditeli?utm_source=rss&utm_medium=rss&utm_campaign=RSS]]>",
+   "tags": [],
+   "source": "",
+   "published_at": "2026-08-22T06:25:27.758Z",
+   "ekb_hour": 11,
+   "ekb_minute": 685,
+   "window_slug": "off",
+   "caption": "С этим можно столкнуться уже сегодня.\n\n<b>Родителей предупредили о схеме с фальшивыми школьными наборами</b>\n\n&lt;img alt=\"Preview\" align=\"left\" style=\"margin-right: 10px;\" src=\"https://mf.b37mrtl.ru/russian/images/2026.08/thumbnail/6a89066602e8bd2122697dcb.jpg\" /&gt; Мошенники перед 1 сентября начали предлагать родителям поддельные «школьные наборы» со всем необходимым для учёбы по специальной цене.\n\nЭто не «где-то там» — с такой схемой можно столкнуться уже сегодня.\n\n🛡️ Что делать\n• При малейшем сомнении перезвоните сами — по официальному номеру с карты или сайта\n• Расскажите о схеме близким: мошенники давят на доверие и страх\n\n\nИсточник: <a href=\"&lt;![CDATA[https://russian.rt.com/russia/news/1672689-moshenniki-shkolnye-nabory-roditeli?utm_source=rss&amp;utm_medium=rss&amp;utm_campaign=RSS]]&gt;\">ссылка</a>\n\n🛡️ <b>TrustNode</b>\n📱 Приложение: <a href=\"https://www.rustore.ru/catalog/app/com.frauddetector.app\">RuStore</a>\n🌐 Сайт: <a href=\"https://trustnodelab.github.io\">trustnodelab.github.io</a>",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 226,
+   "vk_attachment": "doc-238449687_704219887",
+   "tg_message_id": 215,
+   "tg_digest_message_id": null,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": null,
+   "style_id": "warning",
+   "topic_id": null,
+   "llm_provider": null,
+   "card_types": [
+    "list"
+   ],
+   "layout": "list"
+  },
   {
    "id": "n20260821day",
    "kind": "news",
@@ -2316,13 +2379,23 @@
   },
   {
    "date": "2026-08-22",
+   "posts": 2,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 10,
+   "vk_members": null,
+   "collected_at": "2026-08-22T18:35:03.070Z"
+  },
+  {
+   "date": "2026-08-23",
    "posts": 0,
    "vk_views": 0,
    "vk_likes": 0,
    "vk_reposts": 0,
    "tg_members": 10,
    "vk_members": null,
-   "collected_at": "2026-08-21T22:00:20.053Z"
+   "collected_at": "2026-08-22T22:00:15.285Z"
   }
  ],
  "content_weights": {
