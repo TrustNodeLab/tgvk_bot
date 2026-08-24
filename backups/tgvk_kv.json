@@ -1,6 +1,6 @@
 {
- "at": "2026-08-22T22:00:18.122Z",
- "day": "2026-08-23",
+ "at": "2026-08-24T22:00:19.549Z",
+ "day": "2026-08-25",
  "schedule": {
   "mode": "auto",
   "windows": [
@@ -236,14 +236,14 @@
   ],
   "counters": {},
   "meta": {
-   "scan_chunk": 1,
+   "scan_chunk": 3,
    "last_fallback": 1786212693282,
    "last_daily_audit": "2026-08-07",
    "last_scan": {
-    "at": "2026-08-22T22:00:10.022Z",
-    "chunk": 0,
+    "at": "2026-08-24T22:00:10.158Z",
+    "chunk": 2,
     "found": 0,
-    "took_ms": 8000
+    "took_ms": 7981
    }
   },
   "blacklist": {
@@ -294,6 +294,66 @@
   "last_draft_id": "f0c2fa45de"
  },
  "publish_log": [
+  {
+   "id": "mmt7c70t6281",
+   "kind": "generated",
+   "title": "Теперь письма без ошибок — это опасно Любое давление значит атака",
+   "guid": "",
+   "link": "",
+   "tags": [],
+   "source": "",
+   "published_at": "2026-08-24T14:34:18.321Z",
+   "ekb_hour": 19,
+   "ekb_minute": 1174,
+   "window_slug": "evening",
+   "caption": "<b>Письма без ошибок — новый риск</b>\n\nРаньше грамотность текста была признаком надежности, но сегодня ситуация изменилась.\n\n<b>Теперь идеально составленные сообщения могут сигнализировать об опасности.</b> Такие письма создаются искусственным интеллектом для максимальной убедительности и скрытности атаки.\n\nЕдинственный надежный индикатор угрозы остался прежним: <i>любое давление, требующее быстрых решений без проверки информации, является признаком атаки.</i>\n\nКак защититься:\n- Избегайте поспешных решений.\n- Проверяйте сведения альтернативными способами.\n- Применяйте обязательное двойное подтверждение важных операций.",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 230,
+   "vk_attachment": "doc-238449687_704342705",
+   "tg_message_id": 219,
+   "tg_digest_message_id": null,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": "phishing",
+   "style_id": "myth",
+   "topic_id": "phishing",
+   "llm_provider": "gemini",
+   "card_types": [],
+   "layout": ""
+  },
+  {
+   "id": "n20260824day",
+   "kind": "news",
+   "title": "Россиянам рассказали о новой уловке мошенников",
+   "guid": "https://1prime.ru/20260824/rossijane-872606021.html",
+   "link": "https://1prime.ru/20260824/rossijane-872606021.html",
+   "tags": [],
+   "source": "1prime.ru",
+   "published_at": "2026-08-24T08:55:30.328Z",
+   "ekb_hour": 13,
+   "ekb_minute": 835,
+   "window_slug": "day",
+   "caption": "Случай из новости — как это выглядело на деле.\n\n<b>Россиянам рассказали о новой уловке мошенников</b>\n\nИсточник: https://1prime.ru/20260824/rossijane-872606021.html\n\nТакая история может произойти с кем угодно — в том числе с близкими.\n\n🛡️ Что делать\n• При малейшем сомнении перезвоните сами — по официальному номеру с карты или сайта\n• Расскажите о схеме близким: мошенники давят на доверие и страх\n\nИтог можно было бы изменить одной проверкой.\n\nИсточник: <a href=\"https://1prime.ru/20260824/rossijane-872606021.html\">ссылка</a>\n\n🛡️ <b>TrustNode</b>\n📱 Приложение: <a href=\"https://www.rustore.ru/catalog/app/com.frauddetector.app\">RuStore</a>\n🌐 Сайт: <a href=\"https://trustnodelab.github.io\">trustnodelab.github.io</a>",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 229,
+   "vk_attachment": "doc-238449687_704322863",
+   "tg_message_id": 218,
+   "tg_digest_message_id": null,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": null,
+   "style_id": "case",
+   "topic_id": null,
+   "llm_provider": null,
+   "card_types": [
+    "list"
+   ],
+   "layout": "list"
+  },
   {
    "id": "n20260822day",
    "kind": "news",
@@ -2395,7 +2455,27 @@
    "vk_reposts": 0,
    "tg_members": 10,
    "vk_members": null,
-   "collected_at": "2026-08-22T22:00:15.285Z"
+   "collected_at": "2026-08-23T15:05:03.618Z"
+  },
+  {
+   "date": "2026-08-24",
+   "posts": 2,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 10,
+   "vk_members": null,
+   "collected_at": "2026-08-24T18:30:05.166Z"
+  },
+  {
+   "date": "2026-08-25",
+   "posts": 0,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 10,
+   "vk_members": null,
+   "collected_at": "2026-08-24T22:00:15.684Z"
   }
  ],
  "content_weights": {
