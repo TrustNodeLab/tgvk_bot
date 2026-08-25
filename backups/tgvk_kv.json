@@ -1,6 +1,6 @@
 {
- "at": "2026-08-24T22:00:19.549Z",
- "day": "2026-08-25",
+ "at": "2026-08-25T22:00:19.167Z",
+ "day": "2026-08-26",
  "schedule": {
   "mode": "auto",
   "windows": [
@@ -240,10 +240,10 @@
    "last_fallback": 1786212693282,
    "last_daily_audit": "2026-08-07",
    "last_scan": {
-    "at": "2026-08-24T22:00:10.158Z",
+    "at": "2026-08-25T22:00:10.166Z",
     "chunk": 2,
     "found": 0,
-    "took_ms": 7981
+    "took_ms": 8000
    }
   },
   "blacklist": {
@@ -294,6 +294,68 @@
   "last_draft_id": "f0c2fa45de"
  },
  "publish_log": [
+  {
+   "id": "n20260825day",
+   "kind": "news",
+   "title": "Что делать после ввода данных карты на фишинговом сайте, рассказали в МВД",
+   "guid": "https://profile.ru/news/society/chto-delat-posle-vvoda-dannyh-karty-na-fishingovom-sajte-rasskazali-v-mvd-1894627/",
+   "link": "https://profile.ru/news/society/chto-delat-posle-vvoda-dannyh-karty-na-fishingovom-sajte-rasskazali-v-mvd-1894627/",
+   "tags": [],
+   "source": "profile.ru",
+   "published_at": "2026-08-25T09:10:25.406Z",
+   "ekb_hour": 14,
+   "ekb_minute": 850,
+   "window_slug": "day",
+   "caption": "С этим можно столкнуться уже сегодня.\n\n<b>Что делать после ввода данных карты на фишинговом сайте, рассказали в МВД</b>\n\nМошенники копируют сайты банков и госуслуг до мелочей — ловушка срабатывает за секунду\n🔍 Фишинг-ссылка\n1. Вам присылают ссылку или QR-код «на акцию, выплату или проверку»\n2. Ссылка ведёт на копию настоящего сайта, неотличимую от оригинала\n3. Вы вводите логин, пароль или данные карты — они уходят мошенникам\n\n🚩 Как распознать\n• Адрес сайта отличается от официального на одну-две буквы\n• Ссылка пришла в сообщении от незнакомца или в подозрительном письме\n• Сайт просит «подтвердить данные» или код — настоящий сервис так не делает\n\nИсточник: <a href=\"https://profile.ru/news/society/chto-delat-posle-vvoda-dannyh-karty-na-fishingovom-sajte-rasskazali-v-mvd-1894627/\">ссылка</a>\n\n🛡️ <b>TrustNode</b>\n📱 Приложение: <a href=\"https://www.rustore.ru/catalog/app/com.frauddetector.app\">RuStore</a>\n🌐 Сайт: <a href=\"https://trustnodelab.github.io\">trustnodelab.github.io</a>",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 232,
+   "vk_attachment": "doc-238449687_704378560",
+   "tg_message_id": 222,
+   "tg_digest_message_id": null,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": "phishing",
+   "style_id": "warning",
+   "topic_id": "phishing",
+   "llm_provider": null,
+   "card_types": [
+    "list",
+    "list",
+    "list"
+   ],
+   "layout": "list-list-list"
+  },
+  {
+   "id": "mmt886r0s620",
+   "kind": "generated",
+   "title": "Скрытая атака через браузер Hydra Remote обманывает защиту",
+   "guid": "",
+   "link": "",
+   "tags": [],
+   "source": "",
+   "published_at": "2026-08-25T05:29:49.657Z",
+   "ekb_hour": 10,
+   "ekb_minute": 629,
+   "window_slug": "morning",
+   "caption": "<b>Заблуждение:</b> «Меня защищает антивирус и сложный пароль.» 👉 Почему это опасно?\n\n✅ Обычная защита бессильна против новой схемы Hydra Remote:\n— Скрывает свою активность.\n— Работает с уже открытыми вкладками.\n— Обходит логин и пароль.\n\n❗ Как защитить свои данные? ✨\n• Закрывайте ненужные окна браузера.\n• Используйте двухфакторную аутентификацию везде.\n• Регулярно проверяйте активные сессии на сайтах.\n\nТеперь вы знаете, как обезопасить себя! 🛡️\n\n🛡️ <b>TrustNode</b>\n📱 Приложение: <a href=\"https://www.rustore.ru/catalog/app/com.frauddetector.app\">RuStore</a>\n🌐 Сайт: <a href=\"https://trustnodelab.github.io\">trustnodelab.github.io</a>",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 231,
+   "vk_attachment": "doc-238449687_704378310",
+   "tg_message_id": 221,
+   "tg_digest_message_id": null,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": "malware",
+   "style_id": "myth",
+   "topic_id": "malware",
+   "llm_provider": "gigachat",
+   "card_types": [],
+   "layout": ""
+  },
   {
    "id": "mmt7c70t6281",
    "kind": "generated",
@@ -2469,13 +2531,23 @@
   },
   {
    "date": "2026-08-25",
+   "posts": 2,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 10,
+   "vk_members": null,
+   "collected_at": "2026-08-25T18:30:04.479Z"
+  },
+  {
+   "date": "2026-08-26",
    "posts": 0,
    "vk_views": 0,
    "vk_likes": 0,
    "vk_reposts": 0,
    "tg_members": 10,
    "vk_members": null,
-   "collected_at": "2026-08-24T22:00:15.684Z"
+   "collected_at": "2026-08-25T22:00:15.548Z"
   }
  ],
  "content_weights": {
