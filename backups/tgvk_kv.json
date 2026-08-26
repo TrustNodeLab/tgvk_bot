@@ -1,6 +1,6 @@
 {
- "at": "2026-08-25T22:00:19.167Z",
- "day": "2026-08-26",
+ "at": "2026-08-26T22:00:19.187Z",
+ "day": "2026-08-27",
  "schedule": {
   "mode": "auto",
   "windows": [
@@ -236,14 +236,14 @@
   ],
   "counters": {},
   "meta": {
-   "scan_chunk": 3,
+   "scan_chunk": 1,
    "last_fallback": 1786212693282,
    "last_daily_audit": "2026-08-07",
    "last_scan": {
-    "at": "2026-08-25T22:00:10.166Z",
-    "chunk": 2,
+    "at": "2026-08-26T22:00:09.006Z",
+    "chunk": 0,
     "found": 0,
-    "took_ms": 8000
+    "took_ms": 6853
    }
   },
   "blacklist": {
@@ -294,6 +294,40 @@
   "last_draft_id": "f0c2fa45de"
  },
  "publish_log": [
+  {
+   "id": "n20260826day",
+   "kind": "news",
+   "title": "Долина стала жертвой самой крупной схемы мошенничества в Москве за три года",
+   "guid": "https://gazeta.spb.ru/?p=2665185",
+   "link": "https://gazeta.spb.ru/2665185-dolina-stala-zhertvoj-samoj-krupnoj-shemy-moshennichestva-v-moskve-za-tri-goda/",
+   "tags": [],
+   "source": "gazeta.spb.ru",
+   "published_at": "2026-08-26T13:20:33.080Z",
+   "ekb_hour": 18,
+   "ekb_minute": 1100,
+   "window_slug": "evening",
+   "caption": "Разбираем, как работает схема — по шагам.\n\n<b>Долина стала жертвой самой крупной схемы мошенничества в Москве за три года</b>\n\nСхема старая, но работает до сих пор: вам звонят «из банка», пугают взломом и велят перевести деньги на «безопасный счёт»\n🔍 «Безопасный счёт»\n1. Звонок «сотрудника банка» или «службы безопасности» с тревогой о взломе\n2. Давят на страх и срочность: «деньги уже пытаются списать»\n3. Велят перевести всё на «безопасный счёт» — якобы для защиты\n\n🚩 Как распознать\n• Вас торопят, запрещают класть трубку и «ни с кем не советоваться»\n• Просят продиктовать код из SMS или перевести деньги «для сохранности»\n• Номер звонящего не совпадает с официальным номером банка\n\nИсточник: <a href=\"https://gazeta.spb.ru/2665185-dolina-stala-zhertvoj-samoj-krupnoj-shemy-moshennichestva-v-moskve-za-tri-goda/\">ссылка</a>\n\n🛡️ <b>TrustNode</b>\n📱 Приложение: <a href=\"https://www.rustore.ru/catalog/app/com.frauddetector.app\">RuStore</a>\n🌐 Сайт: <a href=\"https://trustnodelab.github.io\">trustnodelab.github.io</a>",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 233,
+   "vk_attachment": "doc-238449687_704450823",
+   "tg_message_id": 225,
+   "tg_digest_message_id": null,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": "safe_account",
+   "style_id": "razbor",
+   "topic_id": "call",
+   "llm_provider": null,
+   "card_types": [
+    "stat",
+    "list",
+    "list",
+    "list"
+   ],
+   "layout": "stat-list-list-list"
+  },
   {
    "id": "n20260825day",
    "kind": "news",
@@ -2541,13 +2575,23 @@
   },
   {
    "date": "2026-08-26",
+   "posts": 1,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 10,
+   "vk_members": null,
+   "collected_at": "2026-08-26T18:30:04.522Z"
+  },
+  {
+   "date": "2026-08-27",
    "posts": 0,
    "vk_views": 0,
    "vk_likes": 0,
    "vk_reposts": 0,
    "tg_members": 10,
    "vk_members": null,
-   "collected_at": "2026-08-25T22:00:15.548Z"
+   "collected_at": "2026-08-26T22:00:14.900Z"
   }
  ],
  "content_weights": {
