@@ -1,6 +1,6 @@
 {
- "at": "2026-08-26T22:00:19.187Z",
- "day": "2026-08-27",
+ "at": "2026-08-27T22:00:16.018Z",
+ "day": "2026-08-28",
  "schedule": {
   "mode": "auto",
   "windows": [
@@ -236,14 +236,14 @@
   ],
   "counters": {},
   "meta": {
-   "scan_chunk": 1,
+   "scan_chunk": 0,
    "last_fallback": 1786212693282,
    "last_daily_audit": "2026-08-07",
    "last_scan": {
-    "at": "2026-08-26T22:00:09.006Z",
-    "chunk": 0,
+    "at": "2026-08-27T22:00:06.777Z",
+    "chunk": 3,
     "found": 0,
-    "took_ms": 6853
+    "took_ms": 4672
    }
   },
   "blacklist": {
@@ -294,6 +294,104 @@
   "last_draft_id": "f0c2fa45de"
  },
  "publish_log": [
+  {
+   "id": "dg20260827day",
+   "kind": "digest",
+   "title": "Фишинг наступает",
+   "guid": "digest:2026-08-27:day",
+   "link": "",
+   "tags": [],
+   "source": "TrustNode",
+   "published_at": "2026-08-27T13:30:37.714Z",
+   "ekb_hour": 18,
+   "ekb_minute": 1110,
+   "window_slug": "evening",
+   "caption": "☀️ <b>Фишинг наступает</b>\n\n🛡️ <b>TrustNode</b>\n📱 Приложение: <a href=\"https://www.rustore.ru/catalog/app/com.frauddetector.app\">RuStore</a>\n🌐 Сайт: <a href=\"https://trustnodelab.github.io\">trustnodelab.github.io</a>",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 236,
+   "vk_attachment": "doc-238449687_704507773",
+   "tg_message_id": 228,
+   "tg_digest_message_id": 229,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": null,
+   "style_id": "digest",
+   "topic_id": "digest",
+   "llm_provider": null,
+   "card_types": [
+    "list"
+   ],
+   "layout": "list"
+  },
+  {
+   "id": "n20260827morning",
+   "kind": "news",
+   "title": "Россиян предупредили о СМС о «подозрительном человеке» от мошенников",
+   "guid": "https://lenta.ru/news/2026/08/27/rossiyan-predupredili-o-sms-o-podozritelnom-cheloveke-ot-moshennikov/",
+   "link": "https://lenta.ru/news/2026/08/27/rossiyan-predupredili-o-sms-o-podozritelnom-cheloveke-ot-moshennikov/",
+   "tags": [],
+   "source": "lenta.ru",
+   "published_at": "2026-08-27T09:25:29.751Z",
+   "ekb_hour": 14,
+   "ekb_minute": 865,
+   "window_slug": "day",
+   "caption": "Коротко о главном.\n\n<b>Россиян предупредили о СМС о «подозрительном человеке» от мошенников</b>\n\nТелефон, установивший «нужное приложение» от незнакомца, может работать на мошенников\n🔍 Вирус/троян\n• Источник: https://lenta.ru/news/2026/08/27/rossiyan-predupredili-o-sms-o-podozritelnom-cheloveke-ot-moshennikov/\n• Вместо обычного видео человеку могут прислать вредоносный файл либо ссылку на его загрузку\n• Под видом записи с камеры на устройство таким образом может попасть вредоносная программа, — рассказал Шейкин\n• В дальнейшем злоумышленники могут взламывать аккаунты или рассылать вредоносные файлы другим жертвам, подчеркнул сенатор\n\nИсточник: <a href=\"https://lenta.ru/news/2026/08/27/rossiyan-predupredili-o-sms-o-podozritelnom-cheloveke-ot-moshennikov/\">ссылка</a>\n\n🛡️ <b>TrustNode</b>\n📱 Приложение: <a href=\"https://www.rustore.ru/catalog/app/com.frauddetector.app\">RuStore</a>\n🌐 Сайт: <a href=\"https://trustnodelab.github.io\">trustnodelab.github.io</a>",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 235,
+   "vk_attachment": "doc-238449687_704492653",
+   "tg_message_id": 227,
+   "tg_digest_message_id": null,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": "malware",
+   "style_id": "fact",
+   "topic_id": "malware",
+   "llm_provider": null,
+   "card_types": [
+    "list",
+    "list",
+    "list"
+   ],
+   "layout": "list-list-list"
+  },
+  {
+   "id": "n20260826evening",
+   "kind": "news",
+   "title": "ТАСС: потери Долиной от мошенников стали рекордными в Москве с 2023 года",
+   "guid": "https://russian.rt.com/russia/news/1674478-dolina-moshenniki-rekord?utm_source=rss&utm_medium=rss&utm_campaign=RSS",
+   "link": "https://russian.rt.com/russia/news/1674478-dolina-moshenniki-rekord?utm_source=rss&utm_medium=rss&utm_campaign=RSS",
+   "tags": [],
+   "source": "russian.rt.com",
+   "published_at": "2026-08-27T03:00:32.204Z",
+   "ekb_hour": 8,
+   "ekb_minute": 480,
+   "window_slug": "morning",
+   "caption": "Что на самом деле происходит — и где подвох.\n\n<b>ТАСС: потери Долиной от мошенников стали рекордными в Москве с 2023 года</b>\n\nПароль из утёкшей базы может открыть мошенникам доступ к вашим аккаунтам\n🔍 Утечка данных\n1. База с логинами, паролями и телефонами попадает в открытый доступ\n2. Мошенники «пробивают» пароли через другие сервисы\n3. Совпадающий пароль открывает доступ к почте, банку, Госуслугам\n\n🛡️ Что делать\n• Смените пароли на сервисах, где использовали утёкший пароль\n• Заведите разные пароли для разных сайтов — менеджер паролей в помощь\n• Включите двухфакторную аутентификацию на почте, банке и Госуслугах\n\n\nИсточник: <a href=\"https://russian.rt.com/russia/news/1674478-dolina-moshenniki-rekord?utm_source=rss&amp;utm_medium=rss&amp;utm_campaign=RSS\">ссылка</a>\n\n🛡️ <b>TrustNode</b>\n📱 Приложение: <a href=\"https://www.rustore.ru/catalog/app/com.frauddetector.app\">RuStore</a>\n🌐 Сайт: <a href=\"https://trustnodelab.github.io\">trustnodelab.github.io</a>",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 234,
+   "vk_attachment": "doc-238449687_704476557",
+   "tg_message_id": 226,
+   "tg_digest_message_id": null,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": "leak",
+   "style_id": "myth",
+   "topic_id": "call",
+   "llm_provider": null,
+   "card_types": [
+    "stat",
+    "list",
+    "list",
+    "list"
+   ],
+   "layout": "stat-list-list-list"
+  },
   {
    "id": "n20260826day",
    "kind": "news",
@@ -2585,13 +2683,23 @@
   },
   {
    "date": "2026-08-27",
+   "posts": 3,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 10,
+   "vk_members": null,
+   "collected_at": "2026-08-27T18:30:04.120Z"
+  },
+  {
+   "date": "2026-08-28",
    "posts": 0,
    "vk_views": 0,
    "vk_likes": 0,
    "vk_reposts": 0,
    "tg_members": 10,
    "vk_members": null,
-   "collected_at": "2026-08-26T22:00:14.900Z"
+   "collected_at": "2026-08-27T22:00:12.327Z"
   }
  ],
  "content_weights": {
