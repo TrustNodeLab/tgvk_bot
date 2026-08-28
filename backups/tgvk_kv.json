@@ -1,6 +1,6 @@
 {
- "at": "2026-08-27T22:00:16.018Z",
- "day": "2026-08-28",
+ "at": "2026-08-28T22:00:18.877Z",
+ "day": "2026-08-29",
  "schedule": {
   "mode": "auto",
   "windows": [
@@ -236,14 +236,14 @@
   ],
   "counters": {},
   "meta": {
-   "scan_chunk": 0,
+   "scan_chunk": 3,
    "last_fallback": 1786212693282,
    "last_daily_audit": "2026-08-07",
    "last_scan": {
-    "at": "2026-08-27T22:00:06.777Z",
-    "chunk": 3,
+    "at": "2026-08-28T22:00:10.003Z",
+    "chunk": 2,
     "found": 0,
-    "took_ms": 4672
+    "took_ms": 8000
    }
   },
   "blacklist": {
@@ -294,6 +294,67 @@
   "last_draft_id": "f0c2fa45de"
  },
  "publish_log": [
+  {
+   "id": "n20260828evening",
+   "kind": "news",
+   "title": "В ОП рассказали о мошенниках, рассылающих письма под видом налоговиков",
+   "guid": "https://tass.ru/obschestvo/28051881",
+   "link": "https://tass.ru/obschestvo/28051881",
+   "tags": [],
+   "source": "tass.ru",
+   "published_at": "2026-08-28T14:10:21.995Z",
+   "ekb_hour": 19,
+   "ekb_minute": 1150,
+   "window_slug": "evening",
+   "caption": "С этим можно столкнуться уже сегодня.\n\n<b>В ОП рассказали о мошенниках, рассылающих письма под видом налоговиков</b>\n\nКлик по ссылке из «письма от банка» может закончиться списанием всех средств\n🔍 Фишинг-ссылка\n1. Вам присылают ссылку или QR-код «на акцию, выплату или проверку»\n2. Ссылка ведёт на копию настоящего сайта, неотличимую от оригинала\n3. Вы вводите логин, пароль или данные карты — они уходят мошенникам\n\n🚩 Как распознать\n• Адрес сайта отличается от официального на одну-две буквы\n• Ссылка пришла в сообщении от незнакомца или в подозрительном письме\n• Сайт просит «подтвердить данные» или код — настоящий сервис так не делает\n\nИсточник: <a href=\"https://tass.ru/obschestvo/28051881\">ссылка</a>\n\n🛡️ <b>TrustNode</b>\n📱 Приложение: <a href=\"https://www.rustore.ru/catalog/app/com.frauddetector.app\">RuStore</a>\n🌐 Сайт: <a href=\"https://trustnodelab.github.io\">trustnodelab.github.io</a>",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 238,
+   "vk_attachment": "doc-238449687_704567491",
+   "tg_message_id": 231,
+   "tg_digest_message_id": null,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": "phishing",
+   "style_id": "warning",
+   "topic_id": "phishing",
+   "llm_provider": null,
+   "card_types": [
+    "list",
+    "list"
+   ],
+   "layout": "list-list"
+  },
+  {
+   "id": "mmtcw6i9t577",
+   "kind": "generated",
+   "title": "Обман под видом доброго соседа Открыл файл — лишился смартфона",
+   "guid": "",
+   "link": "",
+   "tags": [],
+   "source": "",
+   "published_at": "2026-08-28T11:52:34.603Z",
+   "ekb_hour": 16,
+   "ekb_minute": 1012,
+   "window_slug": "day",
+   "caption": "Представьте себе: вечер, квартира тихая, вдруг сообщение от якобы соседа: «Кто-то странный возле вашей двери! Посмотрите видео!» Вы открываете файл... и теряете смартфон.\n\nВот как это происходит:\n\n✅ Получаете сообщение от неизвестного номера.\n✅ Вам предлагают срочно просмотреть видео.\n✅ Вместо ссылки отправляют файл.\n\nЕсли этот файл открывается, мошенник получает полный доступ ко всему телефону: контактам, фотографиям, банковским приложениям.\n\n❗ Остановитесь перед тем, как открывать файлы от незнакомцев!\n\nПроверяйте отправителя, игнорируйте сообщения с просьбами быстро что-то сделать. Ваш телефон стоит дороже минуты вашего времени.\n\n🛡️ <b>TrustNode</b>\n📱 Приложение: <a href=\"https://www.rustore.ru/catalog/app/com.frauddetector.app\">RuStore</a>\n🌐 Сайт: <a href=\"https://trustnodelab.github.io\">trustnodelab.github.io</a>",
+   "tg_ok": true,
+   "vk_ok": true,
+   "vk_post_id": 237,
+   "vk_attachment": "doc-238449687_704559077",
+   "tg_message_id": 230,
+   "tg_digest_message_id": null,
+   "tg_err": null,
+   "vk_err": null,
+   "target": "all",
+   "scheme_id": null,
+   "style_id": "case",
+   "topic_id": null,
+   "llm_provider": "gigachat+gemini",
+   "card_types": [],
+   "layout": ""
+  },
   {
    "id": "dg20260827day",
    "kind": "digest",
@@ -2693,13 +2754,23 @@
   },
   {
    "date": "2026-08-28",
+   "posts": 2,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 10,
+   "vk_members": null,
+   "collected_at": "2026-08-28T18:30:05.702Z"
+  },
+  {
+   "date": "2026-08-29",
    "posts": 0,
    "vk_views": 0,
    "vk_likes": 0,
    "vk_reposts": 0,
    "tg_members": 10,
    "vk_members": null,
-   "collected_at": "2026-08-27T22:00:12.327Z"
+   "collected_at": "2026-08-28T22:00:15.199Z"
   }
  ],
  "content_weights": {
