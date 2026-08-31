@@ -673,6 +673,23 @@ def run():
 
     st.save_state(state)
 
+    # --- мультигруппы (DGC / LostArt / LostLink) ---
+    # Очередь: сначала TrustNode (выше), затем dgc -> lostart -> lostlink.
+    # Каждая группа постит в VK, только если активен её слот (окна ЕКБ).
+    # Пропуски и успехи — сводкой админу в Telegram.
+    try:
+        import multigroups as mg
+        mg_results = mg.mg_tick()
+        if any(r["posted"] for r in mg_results):
+            try:
+                tg.send_message(admin_chat_id, mg.mg_summary(mg_results), parse_mode="HTML")
+            except Exception:
+                pass
+        else:
+            print("[multigroups] ничего не опубликовано:", mg.mg_summary(mg_results).replace("\n", " | "))
+    except Exception:
+        traceback.print_exc()
+
     # контекст для следующего запуска: сохраняем сетку последнего поста, чтобы
     # следующий автопост в новом запуске отличался от предыдущего
     if _last_post_summary:

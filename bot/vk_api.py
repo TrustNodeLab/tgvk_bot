@@ -51,17 +51,23 @@ class VKAPI:
         img = Image.open(png_path).convert("RGB")
         img.save(gif_path, format="GIF", save_all=False, optimize=False)
 
-    def _upload_wall_gif(self, image_path: str) -> str:
+    def _upload_wall_gif(self, image_path: str, skip_convert: bool = False) -> str:
         """Главный путь публикации картинки на стену токеном сообщества:
         PNG → GIF → docs.getWallUploadServer → docs.save → doc{owner}_{id}.
-        Возвращает attachment `doc{owner}_{id}` (VK рендерит его картинкой)."""
+        Возвращает attachment `doc{owner}_{id}` (VK рендерит его картинкой).
+
+        skip_convert=True — файл уже GIF (например, сконвертирован Pillow'ом
+        мультигруппами); не пересохраняем, чтобы не потерять анимацию."""
         if not os.path.exists(image_path):
             raise FileNotFoundError(image_path)
-        gif_path = image_path.rsplit(".", 1)[0] + ".gif"
-        try:
-            self._png_to_gif(image_path, gif_path)
-        except Exception as e:
-            raise RuntimeError(f"VK: не удалось сконвертировать карточку в GIF: {e}")
+        if skip_convert:
+            gif_path = image_path
+        else:
+            gif_path = image_path.rsplit(".", 1)[0] + ".gif"
+            try:
+                self._png_to_gif(image_path, gif_path)
+            except Exception as e:
+                raise RuntimeError(f"VK: не удалось сконвертировать карточку в GIF: {e}")
 
         last_err = None
         for attempt in range(MAX_ATTEMPTS):
