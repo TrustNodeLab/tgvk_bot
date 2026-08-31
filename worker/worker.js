@@ -1149,28 +1149,51 @@ function decodePng(b64) {
 }
 
 async function approveDraft(env, draft, dry, target = "all") {
-  await publishPackage(
-    env,
-    {
-      id: draft.id,
-      kind: draft.kind || "news",
-      title: draft.title || "",
-      caption: draft.caption || "",
-      digest_text: draft.digest_text || "",
-      png_key: draft.png_key || null,
-      png: decodePng(draft.png) || null,
-      link: draft.link || "",
-      guid: draft.guid || "",
-      source: draft.source || "",
-      tags: draft.tags || [],
-      scheme_id: draft.scheme_id || null,
-      style_id: draft.style_id || null,
-      topic_id: draft.topic_id || null,
-      llm_provider: draft.llm_provider || null,
-    },
-    dry,
-    target
-  );
+  const title = draft.title || "";
+  try {
+    const res = await publishPackage(
+      env,
+      {
+        id: draft.id,
+        kind: draft.kind || "news",
+        title,
+        caption: draft.caption || "",
+        digest_text: draft.digest_text || "",
+        png_key: draft.png_key || null,
+        png: decodePng(draft.png) || null,
+        link: draft.link || "",
+        guid: draft.guid || "",
+        source: draft.source || "",
+        tags: draft.tags || [],
+        scheme_id: draft.scheme_id || null,
+        style_id: draft.style_id || null,
+        topic_id: draft.topic_id || null,
+        llm_provider: draft.llm_provider || null,
+      },
+      dry,
+      target
+    );
+    // Уведомляем админа о результате публикации
+    if (!dry && res) {
+      const status = `${res.tgOk ? "🟢 TG ✓" : "TG ✗"} · ${res.vkOk ? "🔵 VK ✓" : "VK ✗"}`;
+      const vkUrl = res.vkPost && env.VK_GROUP_ID
+        ? `https://vk.com/wall-${env.VK_GROUP_ID}_${res.vkPost}` : "";
+      const line = vkUrl ? `${status} · ${vkUrl}` : status;
+      if (res.tgOk && res.vkOk) {
+        await sendMessage(env, env.TELEGRAM_ADMIN_CHAT_ID,
+          `✅ <b>Опубликовано</b>: ${title}\n${line}`, { parse_mode: "HTML" });
+      } else if (res.tgOk || res.vkOk) {
+        const missing = res.tgOk ? "VK" : "TG";
+        await sendMessage(env, env.TELEGRAM_ADMIN_CHAT_ID,
+          `⏳ <b>Частично опубликовано</b>: ${title}\n${line}\n🔜 Догоняю ${missing} в ближайшие тики.`,
+          { parse_mode: "HTML" });
+      }
+    }
+  } catch (e) {
+    await sendMessage(env, env.TELEGRAM_ADMIN_CHAT_ID,
+      `❌ <b>Не удалось опубликовать</b>: ${title}\n${escHtml(e.message)}`,
+      { parse_mode: "HTML" });
+  }
   await kv.deleteDraft(env, draft.id);
   try {
     await editMessageReplyMarkup(

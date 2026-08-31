@@ -22,7 +22,7 @@ import {
 import { sendPoll } from "./telegram.js";
 import { fmtTime, escHtml, fitCaption, htmlToPlain } from "./text.js";
 import { collectEngagement, maybeHealthAlert, maybeBackupToGitHub } from "./ops.js";
-import { multigroupTick, mgDailyReport, mgDeadManCheck } from "./multigroup.js";
+import { multigroupTick, mgDailyReport, mgDeadManCheck, toGifBytes } from "./multigroup.js";
 
 const CHUNK_COUNT = 4; // ���� �������� �� 4 ����� � �� ��� ���������� ~9 ����, ����� ��������� � ������
 const TICK_LOCK_TTL_MS = 4 * 60 * 1000; // анти-перекрытие крон: больше TTL, чем крон (5 мин) бы заставило пропускать каждый второй запуск.
@@ -561,6 +561,30 @@ async function preferWeights(env, pool) {
   return ranked.map((x) => x.c);
 }
 
+// Фолбэк: скачивает картинку из RSS и конвертирует в GIF (работает и для TG,
+// и для VK). Возвращает base64 GIF-байтов или пустую строку.
+async function fetchNewsImageFallback(imageUrl, { timeoutMs = 5000 } = {}) {
+  if (!imageUrl) return "";
+  try {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    const res = await fetch(imageUrl, {
+      signal: ctrl.signal,
+      headers: { "User-Agent": "Mozilla/5.0 TrustNode/1.0" },
+    });
+    clearTimeout(timer);
+    if (!res.ok) return "";
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (!buf || buf.length < 200) return "";
+    const gif = await toGifBytes(buf, { dither: false, maxSide: 720 });
+    if (!gif || gif.length < 200) return "";
+    return bytesToBase64(gif);
+  } catch (e) {
+    console.log("[scheduler] fetchNewsImageFallback failed:", e.message);
+    return "";
+  }
+}
+
 // Бюджетная сборка карточки: текст через LLM (или правила при недоступности/
 // перерасходе бюджета), картинка через рендер-сервис (или JS-фолбэк). Ничего
 // не публикует и не потребляет — только готовит. Возвращает pkg или null.
@@ -594,6 +618,10 @@ async function finalizeNewsPkg(env, cand, opts) {
     } catch (e) {
       console.log("[scheduler] JS-рендер не сработал:", e.message);
     }
+  }
+  if (!b64 && cand.image) {
+    console.log("[scheduler] рендер недоступен, беру картинку из RSS:", cand.image);
+    b64 = await fetchNewsImageFallback(cand.image);
   }
   if (!b64) return null;
 
@@ -896,6 +924,14 @@ async function finalizeDigestPkg(env, items, opts) {
     if (bytes && bytes.length > 100) b64 = bytesToBase64(bytes);
   } catch (e) {
     console.log("[scheduler] дайджест: обложку не собрали:", e.message);
+  }
+  if (!b64) {
+    // Пробуем картинку из первого кандидата (фолбэк при недоступном рендере)
+    const firstImg = items[0]?.image || "";
+    if (firstImg) {
+      console.log("[scheduler] дайджест: рендер недоступен, беру картинку из RSS:", firstImg);
+      b64 = await fetchNewsImageFallback(firstImg);
+    }
   }
   if (!b64) {
     // Обложка обязательна (TG/VK постят картинку) — без неё выпуск не выйдет,

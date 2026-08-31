@@ -260,6 +260,7 @@ export async function scanFeeds(env, chunkOffset = 0, chunkCount = 2) {
         link: cl.best.link,
         links: cl.items.map((i) => i.link),
         description: cl.best.description,
+        image: cl.best.image || "",
         pub_ts: pd ? pd.getTime() : null,
         fresh: pd ? now - pd.getTime() <= FRESH_MS : false,
         found_at: new Date().toISOString(),
