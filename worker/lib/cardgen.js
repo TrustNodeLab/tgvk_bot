@@ -626,11 +626,40 @@ function lzwEncode(indices, minCodeSize) {
   return buf;
 }
 
+// Nearest-neighbor даунскейл RGBA (для больших картинок перед квантизацией:
+// режет CPU и размер GIF пропорционально площади).
+function downscaleRgba(w, h, rgba, nw, nh) {
+  const out = new Uint8Array(nw * nh * 4);
+  for (let y = 0; y < nh; y++) {
+    const sy = Math.min(h - 1, Math.floor((y * h) / nh));
+    for (let x = 0; x < nw; x++) {
+      const sx = Math.min(w - 1, Math.floor((x * w) / nw));
+      const si = (sy * w + sx) * 4;
+      const di = (y * nw + x) * 4;
+      out[di] = rgba[si];
+      out[di + 1] = rgba[si + 1];
+      out[di + 2] = rgba[si + 2];
+      out[di + 3] = rgba[si + 3];
+    }
+  }
+  return { w: nw, h: nh, rgba: out };
+}
+
 // Основная точка входа: PNG-байты → GIF-байты (GIF89a, индексированный).
 // Конвертирует RGBA-пиксели в статичный GIF89a (те же шаги, что в pngToGif,
 // но без PNG-парсинга). Нужен мультигрупповому контуру: арты из TG приходят
 // JPEG'ами (decodeJpeg в lib/jpeg.js) или PNG'ами — оба сводятся к RGBA.
-export function rgbaToGif(w, h, rgba) {
+// opts.dither — Floyd-Steinberg дизеринг ошибок квантизации (плавные градиенты
+// без «полос»); ВЫКЛ по умолчанию: на мегапиксельных картинках сжигает лимит
+// CPU воркера (outcome=exceededCpu, тик умирал целиком).
+// opts.maxSide — уменьшить картинку до указанной стороны (nearest neighbor).
+export function rgbaToGif(w, h, rgba, opts = {}) {
+  if (opts.maxSide && (w > opts.maxSide || h > opts.maxSide)) {
+    const scale = opts.maxSide / Math.max(w, h);
+    const nw = Math.max(1, Math.round(w * scale));
+    const nh = Math.max(1, Math.round(h * scale));
+    ({ w, h, rgba } = downscaleRgba(w, h, rgba, nw, nh));
+  }
   const palette = buildPalette(rgba);
   // Точное сопоставление каждого уникального цвета с ближайшим цветом палитры.
   // Кэш по полному RGB, т.к. уникальных цветов обычно не много.
@@ -645,9 +674,41 @@ export function rgbaToGif(w, h, rgba) {
     return idx;
   };
   const indices = new Uint8Array(w * h);
-  for (let i = 0; i < w * h; i++) {
-    const r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
-    indices[i] = idxFor(r, g, b);
+  if (opts.dither) {
+    // Floyd-Steinberg: рабочая копия RGB во float, ошибку квантизации
+    // распределяем на соседей (вправо 7/16, влево-вниз 3/16, вниз 5/16, вправо-вниз 1/16).
+    const buf = new Float32Array(w * h * 3);
+    for (let i = 0; i < w * h; i++) {
+      buf[i * 3] = rgba[i * 4];
+      buf[i * 3 + 1] = rgba[i * 4 + 1];
+      buf[i * 3 + 2] = rgba[i * 4 + 2];
+    }
+    const clamp8 = (v) => (v < 0 ? 0 : v > 255 ? 255 : v);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        const i = y * w + x;
+        const r = clamp8(buf[i * 3]), g = clamp8(buf[i * 3 + 1]), b = clamp8(buf[i * 3 + 2]);
+        const pi = nearestPaletteIdx(null, palette, Math.round(r), Math.round(g), Math.round(b));
+        indices[i] = pi;
+        const er = r - palette[pi][0], eg = g - palette[pi][1], eb = b - palette[pi][2];
+        const push = (nx, ny, f) => {
+          if (nx < 0 || nx >= w || ny >= h) return;
+          const j = (ny * w + nx) * 3;
+          buf[j] += er * f;
+          buf[j + 1] += eg * f;
+          buf[j + 2] += eb * f;
+        };
+        push(x + 1, y, 7 / 16);
+        push(x - 1, y + 1, 3 / 16);
+        push(x, y + 1, 5 / 16);
+        push(x + 1, y + 1, 1 / 16);
+      }
+    }
+  } else {
+    for (let i = 0; i < w * h; i++) {
+      const r = rgba[i * 4], g = rgba[i * 4 + 1], b = rgba[i * 4 + 2];
+      indices[i] = idxFor(r, g, b);
+    }
   }
 
   const nColors = palette.length;
@@ -706,9 +767,9 @@ export function rgbaToGif(w, h, rgba) {
 }
 
 // PNG -> статичный GIF: парсинг PNG в RGBA, затем rgbaToGif.
-export async function pngToGif(pngBytes) {
+export async function pngToGif(pngBytes, opts = {}) {
   const { w, h, rgba } = await parsePngToRgba(pngBytes);
-  return rgbaToGif(w, h, rgba);
+  return rgbaToGif(w, h, rgba, opts);
 }
 
 // ---------- анимированный GIF (несколько кадров, общая палитра) ----------

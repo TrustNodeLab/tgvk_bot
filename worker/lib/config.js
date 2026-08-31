@@ -74,12 +74,34 @@ export function decodeEntities(s) {
 // Чистит сырой RSS-заголовок: убирает обёртки <![CDATA[...]]>, раскодирует
 // entities и срезает хвост «Источник: <url>», который некоторые ленты (tass,
 // gazeta) вставляют прямо в title.
-export function cleanRssTitle(s) {
+// Базовая чистка любого RSS-поля: снимает обёртки <![CDATA[...]]> (в т.ч.
+// задвоенные «&lt;![CDATA[»), вырезает HTML-теги (<img>, <br/>, <a ...>) и
+// схлопывает пробелы. decodeEntities вызывается ДО вырезания тегов — часть
+// лент (rt.com) кладёт разметку уже заэскейпленной.
+function cleanRssField(s) {
   let t = String(s || "")
+    .replace(/&lt;!\[CDATA\[/gi, "")
+    .replace(/\]\]&gt;/g, "")
     .replace(/<!\[CDATA\[/g, "")
-    .replace(/\]\]>/g, "")
-    .trim();
+    .replace(/\]\]>/g, "");
   t = decodeEntities(t);
+  t = t.replace(/<[^>]+>/g, " ");
+  return t.replace(/\s+/g, " ").trim();
+}
+
+// Чистка описания: как поле + срез хвостов «Источник: <url>», которые ленты
+// (tass) вставляют в конец description — иначе мусор протекает в лид и буллеты.
+function cleanRssDescription(s) {
+  let t = cleanRssField(s);
+  t = t
+    .replace(/\s*(?:[—–-]\s*)?источник\s*:\s*(?:https?:\/\/)?\S+\s*$/i, "")
+    .replace(/\s*источник\s*:\s*\S+\s*$/i, "")
+    .trim();
+  return t;
+}
+
+export function cleanRssTitle(s) {
+  let t = cleanRssField(s);
   t = t.replace(/\s*(?:[—–-]\s*)?источник\s*:\s*https?:\/\/\S+\s*$/i, "").trim();
   t = t.replace(/\s*[—–-]+\s*$/g, "").trim();
   return t;
@@ -97,11 +119,13 @@ export function parseRSS(xml) {
       return mm ? decodeEntities(mm[1]).trim() : "";
     };
     const title = cleanRssTitle(get("title"));
-    const link = get("link");
-    const guid = get("guid") || link || title;
-    const description = String(get("description") || "")
+    const link = get("link").replace(/&lt;!\[CDATA\[/gi, "").replace(/\]\]&gt;/g, "").replace(/<!\[CDATA\[/g, "").replace(/\]\]>/g, "").trim();
+    const guid = (get("guid") || link || title)
       .replace(/<!\[CDATA\[/g, "")
-      .replace(/\]\]>/g, "");
+      .replace(/\]\]>/g, "")
+      .trim();
+    const rawDescription = get("description");
+    const description = cleanRssDescription(rawDescription);
     const pub_date = get("pubDate") || get("dc:date");
     // Извлекаем картинку: <enclosure>, <media:content>, <media:thumbnail>, <img src>
     let image = "";
@@ -112,8 +136,10 @@ export function parseRSS(xml) {
       if (mediaMatch) image = decodeEntities(mediaMatch[1]).trim();
     }
     if (!image) {
-      const imgMatch = description.match(/<img[^>]+src=["']([^"']+)["']/i);
-      if (imgMatch) image = decodeEntities(imgMatch[1]).trim();
+      // <img> ищем в СЫРОМ описании: чистка вырезает теги до этого момента
+      const imgMatch = rawDescription.match(/<img[^>]+src=["']([^"']+)["']/i)
+        || decodeEntities(rawDescription).match(/<img[^>]+src=["']([^"']+)["']/i);
+      if (imgMatch) image = imgMatch[1].trim();
     }
     if (title && link) {
       items.push({ guid, title, link, description, pub_date, image });

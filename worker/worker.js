@@ -53,7 +53,16 @@ import {
   startEventDialog,
   handleEventDialogMessage,
 } from "./lib/support.js";
-import { multiStatus, multigroupTick } from "./lib/multigroup.js";
+import {
+  multiStatus,
+  multigroupTick,
+  multigroupTickGroup,
+  approvePending,
+  skipPending,
+  loadMgConfig,
+  saveMgConfig,
+  resetMgConfig,
+} from "./lib/multigroup.js";
 
 const VERSION = "3.0.2";
 
@@ -92,7 +101,10 @@ const HELP_TEXT =
   "/rescan — полный тик, /export — история, /version — версия\n" +
   "/healthcheck — здоровье студии (пропуски окон, срывы, опросы)\n" +
   "<b>Мультигруппы VK:</b>\n" +
-  "/mg — статус групп (DGC/LostLink/LostArt), /mg-tick — публикация по слотам";
+  "/mg — статус групп (DGC/LostLink/LostArt), /mg-tick — публикация по слотам\n" +
+  "/mg-edit — конфиг групп, /mg-approve on|off — согласование постов\n" +
+  "/mg-win · /mg-feed · /mg-chan — окна, ленты, арт-каналы\n" +
+  "/menu — дополнительные кнопки (здоровье, рескан, экспорт…)";
 
 const COMMANDS = [
   { command: "start", description: "Главное меню" },
@@ -128,6 +140,8 @@ const COMMANDS = [
   { command: "version", description: "Версия" },
   { command: "mg", description: "Мультигруппы VK: статус" },
   { command: "mg-tick", description: "Мультигруппы VK: публикация сейчас" },
+  { command: "mg-edit", description: "Мультигруппы VK: конфиг групп" },
+  { command: "mg-approve", description: "Мультигруппы VK: согласование on|off" },
   { command: "healthcheck", description: "Здоровье студии" },
 ];
 
@@ -148,6 +162,7 @@ const BTN_HELP = "📖 Помощь";
 const BTN_DRYRUN = "🧪 Dry-run";
 const BTN_EVENT = "🎪 Ивент";
 const BTN_MULTI = "👥 Мультигруппы";
+const BTN_MORE = "☰ Ещё";
 
 // Постоянная reply-клавиатура под строкой ввода.
 function replyKeyboard(rows) {
@@ -160,12 +175,12 @@ function replyKeyboard(rows) {
 }
 
 // Мониторинг и контент — сверху (рабочий поток админа), система — ниже.
-// Строки: контроль, контент/одобрение, расписание, служебное.
+// Мультигруппы вынесены в первую строку: это основной ежедневный поток.
 const MAIN_KB = replyKeyboard([
-  [BTN_STATUS, BTN_REPORT, BTN_ANALYTICS],
+  [BTN_MULTI, BTN_STATUS, BTN_REPORT],
   [BTN_DRAFTS, BTN_STOCK, BTN_NEW_POST],
-  [BTN_SCHEDULE, BTN_SOURCES, BTN_SETTINGS],
-  [BTN_MULTI, BTN_EVENT, BTN_DRYRUN],
+  [BTN_SCHEDULE, BTN_SOURCES, BTN_ANALYTICS],
+  [BTN_SETTINGS, BTN_STATS, BTN_MORE],
   [BTN_HELP],
 ]);
 
@@ -185,6 +200,29 @@ const BTN_CMDS = {
   [BTN_NOAI]: "/noai",
   [BTN_EVENT]: "/event",
   [BTN_MULTI]: "/mg",
+  [BTN_MORE]: "/menu",
+};
+
+// «☰ Ещё»: второстепенные команды, которым не место на главной клавиатуре.
+const MORE_KB = {
+  inline_keyboard: [
+    [
+      { text: "❤️ Здоровье", callback_data: "cmd:healthcheck" },
+      { text: "🔄 Рескан", callback_data: "cmd:rescan" },
+    ],
+    [
+      { text: "📤 Опубликовать всё", callback_data: "cmd:puball" },
+      { text: BTN_STATS, callback_data: "cmd:stats" },
+    ],
+    [
+      { text: "🎪 Ивент", callback_data: "cmd:event" },
+      { text: BTN_DRYRUN, callback_data: "cmd:dryrun" },
+    ],
+    [
+      { text: "🧪 Дайджест-тест", callback_data: "cmd:digesttest" },
+      { text: "💾 Экспорт", callback_data: "cmd:export" },
+    ],
+  ],
 };
 
 // Быстрые inline-действия под отчётами/статусом — не выходя из ответа.
@@ -195,7 +233,10 @@ const QUICK_STATUS_KB = {
       { text: BTN_STOCK, callback_data: "cmd:stock" },
       { text: BTN_REPORT, callback_data: "cmd:report" },
     ],
-    [{ text: "🤖 AI-план", callback_data: "sched:ai" }],
+    [
+      { text: "👥 Мультигруппы", callback_data: "cmd:mg" },
+      { text: "🤖 AI-план", callback_data: "sched:ai" },
+    ],
   ],
 };
 
@@ -209,13 +250,21 @@ const QUICK_ANALYTICS_KB = {
   ],
 };
 
-// Быстрые действия под /mg: принудительный тик и переход к общему статусу.
+// Быстрые действия под /mg: тик (всем/по группам), согласование, конфиг, статус.
 const QUICK_MULTI_KB = {
   inline_keyboard: [
     [
-      { text: "🚀 Публиковать сейчас", callback_data: "mg:tick" },
+      { text: "🚀 Всем", callback_data: "mg:tick" },
+      { text: "✅ Согласование", callback_data: "mg:approve" },
+    ],
+    [
+      { text: "🚀 DGC", callback_data: "mg:tick:dgc" },
+      { text: "🚀 LostLink", callback_data: "mg:tick:lostlink" },
+      { text: "🚀 LostArt", callback_data: "mg:tick:lostart" },
+    ],
+    [
+      { text: "⚙️ Конфиг групп", callback_data: "cmd:mg-edit" },
       { text: BTN_STATUS, callback_data: "cmd:status" },
-      { text: BTN_STOCK, callback_data: "cmd:stock" },
     ],
   ],
 };
@@ -1166,16 +1215,46 @@ async function handleCallback(env, cq, state) {
     return;
   }
 
-  // быстрые inline-действия мультигрупп (mg:tick)
+  // быстрые inline-действия мультигрупп (mg:tick[:slug] | mg:ok:<id> | mg:skip:<id>)
   if (action === "mg") {
     if (segs[1] === "tick") {
+      const slug = segs[2];
       try {
-        const results = await multigroupTick(env);
+        const results = slug
+          ? [await multigroupTickGroup(env, slug)]
+          : await multigroupTick(env, new Date(), { force: true });
         const lines = results.map(
           (r) => `${r.posted ? "✅" : "⏭"} <b>${escHtml(r.slug)}</b>: ${escHtml(r.detail)}`
         ).join("\n");
-        await sendMessage(env, chatId, "👥 <b>multigroupTick</b>\n" + lines, { parse_mode: "HTML" });
+        await sendMessage(env, chatId, "👥 <b>multigroupTick</b>\n" + lines, { parse_mode: "HTML", reply_markup: QUICK_MULTI_KB });
         try { await answerCallbackQuery(env, qid, "Готово"); } catch (e) { /* ignore */ }
+      } catch (e) {
+        try { await answerCallbackQuery(env, qid, `Ошибка: ${e.message.slice(0, 90)}`); } catch (e2) { /* ignore */ }
+      }
+      return;
+    }
+    if (segs[1] === "ok" || segs[1] === "skip") {
+      const pendingId = segs.slice(2).join(":");
+      try {
+        const verdict = segs[1] === "ok"
+          ? await approvePending(env, pendingId)
+          : await skipPending(env, pendingId);
+        // убираем кнопки у превью, чтобы не нажалось дважды
+        try { await editMessageReplyMarkup(env, chatId, msgId, null); } catch (e) { /* ignore */ }
+        try { await answerCallbackQuery(env, qid, verdict.slice(0, 190)); } catch (e) { /* ignore */ }
+        await sendMessage(env, chatId, `👥 ${escHtml(verdict)}`);
+      } catch (e) {
+        try { await answerCallbackQuery(env, qid, `Ошибка: ${e.message.slice(0, 90)}`); } catch (e2) { /* ignore */ }
+      }
+      return;
+    }
+    if (segs[1] === "approve") {
+      try {
+        const cfg = await loadMgConfig(env);
+        cfg.approval = !cfg.approval;
+        await saveMgConfig(env, cfg);
+        try { await answerCallbackQuery(env, qid, `Согласование: ${cfg.approval ? "вкл" : "выкл"}`); } catch (e) { /* ignore */ }
+        await handleCommand(env, state, chatId, "/mg-edit");
       } catch (e) {
         try { await answerCallbackQuery(env, qid, `Ошибка: ${e.message.slice(0, 90)}`); } catch (e2) { /* ignore */ }
       }
@@ -1187,7 +1266,7 @@ async function handleCallback(env, cq, state) {
   if (action === "cmd") {
     const command = segs[1] || "";
     try {
-      if (!/^[a-z]+$/.test(command)) throw new Error("неверная команда");
+      if (!/^[a-z][a-z-]*$/.test(command)) throw new Error("неверная команда");
       await handleCommand(env, state, chatId, `/${command}`);
       try { await answerCallbackQuery(env, qid, "Готово"); } catch (e) { /* ignore */ }
     } catch (e) {
@@ -1500,11 +1579,14 @@ async function handleCommand(env, state, chatId, text) {
 
   switch (cmd) {
     case "/start":
-    case "/menu":
       await sendMessage(env, chatId, WELCOME_TEXT, {
         parse_mode: "HTML",
         reply_markup: MAIN_KB,
       });
+      break;
+
+    case "/menu":
+      await sendMessage(env, chatId, "☰ <b>Дополнительные команды</b>", { parse_mode: "HTML", reply_markup: MORE_KB });
       break;
 
     case "/help":
@@ -1990,19 +2072,149 @@ async function handleCommand(env, state, chatId, text) {
         rows.map((r) => {
           const slotDot = r.slot === "активен" ? "🟢" : "⚪";
           return `${slotDot} <b>${escHtml(r.name)}</b> · токен ${r.token} · сегодня: ${r.postedToday} пост`
-            + (r.slot === "активен" ? ` (${r.slot})` : "");
+            + (r.slot === "активен" ? ` (${r.slot})` : "")
+            + (r.lastPostAgo ? ` · последний: ${escHtml(r.lastPostAgo)}` : "")
+            + `\n      🕐 окна: ${escHtml(r.wins || "—")} ЕКБ`;
         }).join("\n") +
-        "\n\nОкна: DGC 05/10/15/20:00 · LostLink 08/11/14/17/20:30 · LostArt 09/12/15/18:00 (ЕКБ)";
+        `\n\n📋 Согласование: ${rows.approval ? "включено" : "выключено"} (/mg-approve)` +
+        "\n⚙️ Настройка: /mg-edit";
       await sendMessage(env, chatId, msg, { parse_mode: "HTML", reply_markup: QUICK_MULTI_KB });
       break;
     }
 
     case "/mg-tick": {
-      const results = await multigroupTick(env);
+      const results = await multigroupTick(env, new Date(), { force: true });
       const lines = results.map(
         (r) => `${r.posted ? "✅" : "⏭"} <b>${escHtml(r.slug)}</b>: ${escHtml(r.detail)}`
       ).join("\n");
-      await sendMessage(env, chatId, "👥 <b>multigroupTick</b>\n" + lines, { parse_mode: "HTML" });
+      await sendMessage(env, chatId, "👥 <b>multigroupTick</b>\n" + lines, { parse_mode: "HTML", reply_markup: QUICK_MULTI_KB });
+      break;
+    }
+
+    case "/mg-edit": {
+      const cfg = await loadMgConfig(env);
+      const fmtWin = (arr) => (arr || []).slice().sort((a, b) => a - b)
+        .map((m) => `${String(Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`).join(" ");
+      const msg =
+        "⚙️ <b>Конфиг мультигрупп</b>\n\n" +
+        "<b>Окна (ЕКБ):</b>\n" +
+        Object.keys(cfg.windows).map((slug) => `  ${escHtml(slug)}: ${fmtWin(cfg.windows[slug])}`).join("\n") + "\n\n" +
+        `<b>Ленты RU</b> (${cfg.feeds.ru.length}): ${cfg.feeds.ru.map((u) => escHtml(u.replace(/^https?:\/\/(www\.)?/, "").split("/")[0])).join(", ")}\n` +
+        `<b>Ленты EN</b> (${cfg.feeds.en.length}): ${cfg.feeds.en.map((u) => escHtml(u.replace(/^https?:\/\/(www\.)?/, "").split("/")[0])).join(", ")}\n\n` +
+        `<b>Арт-каналы</b>: ${cfg.channels.map((c) => "@" + escHtml(c)).join(", ")}` +
+        `\n<b>Согласование</b>: ${cfg.approval ? "✅ включено" : "выключено"}` +
+        "\n\n<i>Команды:</i>\n" +
+        "<code>/mg-win dgc 05:00,10:00,15:00,20:00</code>\n" +
+        "<code>/mg-feed en add https://…/rss</code>\n" +
+        "<code>/mg-feed en del pcgamer.com/rss/</code>\n" +
+        "<code>/mg-chan add neuralart | del neuralart</code>\n" +
+        "<code>/mg-approve on|off</code> · <code>/mg-reset</code>";
+      const kb = {
+        inline_keyboard: [[
+          { text: cfg.approval ? "🚫 Выключить согласование" : "✅ Включить согласование", callback_data: "mg:approve" },
+        ]],
+      };
+      await sendMessage(env, chatId, msg, { parse_mode: "HTML", reply_markup: kb });
+      break;
+    }
+
+    case "/mg-win": {
+      // /mg-win dgc 05:00,10:00,15:00,20:00
+      const parts = (text || "").trim().split(/\s+/);
+      if (parts.length < 3) {
+        await sendMessage(env, chatId, "Формат: <code>/mg-win dgc 05:00,10:00,15:00,20:00</code>", { parse_mode: "HTML" });
+        break;
+      }
+      const slug = parts[1].toLowerCase();
+      const times = parts[2].split(",").map((s) => {
+        const m = s.trim().match(/^(\d{1,2}):(\d{2})$/);
+        if (!m) throw new Error(`неверное время: ${s}`);
+        return Number(m[1]) * 60 + Number(m[2]);
+      });
+      if (!times.length) throw new Error("пустой список окон");
+      const cfg = await loadMgConfig(env);
+      if (!(slug in cfg.windows)) throw new Error(`неизвестная группа: ${slug}`);
+      cfg.windows[slug] = times;
+      await saveMgConfig(env, cfg);
+      await sendMessage(env, chatId, `✅ Окна ${escHtml(slug)} обновлены: ${times.join(", ")} (мин от полуночи ЕКБ)`);
+      break;
+    }
+
+    case "/mg-feed": {
+      // /mg-feed <ru|en> add <url> | /mg-feed <ru|en> del <часть-url>
+      const parts = (text || "").trim().split(/\s+/);
+      if (parts.length < 4) {
+        await sendMessage(env, chatId, "Формат:\n<code>/mg-feed en add https://site/rss</code>\n<code>/mg-feed en del pcgamer.com/rss/</code>", { parse_mode: "HTML" });
+        break;
+      }
+      const lang = parts[1].toLowerCase();
+      const op = parts[2].toLowerCase();
+      const val = parts.slice(3).join(" ");
+      if (lang !== "ru" && lang !== "en") throw new Error("язык: ru или en");
+      const cfg = await loadMgConfig(env);
+      if (op === "add") {
+        if (!/^https?:\/\//.test(val)) throw new Error("URL должен начинаться с http(s)://");
+        if (cfg.feeds[lang].includes(val)) throw new Error("такая лента уже есть");
+        cfg.feeds[lang].push(val);
+        await saveMgConfig(env, cfg);
+        await sendMessage(env, chatId, `✅ Лента добавлена в ${lang}: ${escHtml(val)} (всего: ${cfg.feeds[lang].length})`);
+      } else if (op === "del") {
+        const before = cfg.feeds[lang].length;
+        cfg.feeds[lang] = cfg.feeds[lang].filter((u) => !u.includes(val));
+        if (cfg.feeds[lang].length === before) throw new Error("лента не найдена");
+        await saveMgConfig(env, cfg);
+        await sendMessage(env, chatId, `✅ Лента удалена из ${lang} (осталось: ${cfg.feeds[lang].length})`);
+      } else {
+        throw new Error("операция: add или del");
+      }
+      break;
+    }
+
+    case "/mg-chan": {
+      // /mg-chan add <channel> | /mg-chan del <channel>
+      const parts = (text || "").trim().split(/\s+/);
+      if (parts.length < 3) {
+        await sendMessage(env, chatId, "Формат: <code>/mg-chan add neuralart</code> или <code>/mg-chan del neuralart</code>", { parse_mode: "HTML" });
+        break;
+      }
+      const op = parts[1].toLowerCase();
+      const ch = parts[2].replace(/^@/, "").trim();
+      if (!/^[\w\d_]+$/.test(ch)) throw new Error("неверное имя канала");
+      const cfg = await loadMgConfig(env);
+      if (op === "add") {
+        if (cfg.channels.includes(ch)) throw new Error("канал уже есть");
+        cfg.channels.push(ch);
+        await saveMgConfig(env, cfg);
+        await sendMessage(env, chatId, `✅ Канал @${escHtml(ch)} добавлен (всего: ${cfg.channels.length})`);
+      } else if (op === "del") {
+        const before = cfg.channels.length;
+        cfg.channels = cfg.channels.filter((c) => c !== ch);
+        if (cfg.channels.length === before) throw new Error("канал не найден");
+        await saveMgConfig(env, cfg);
+        await sendMessage(env, chatId, `✅ Канал @${escHtml(ch)} удалён (осталось: ${cfg.channels.length})`);
+      } else {
+        throw new Error("операция: add или del");
+      }
+      break;
+    }
+
+    case "/mg-approve": {
+      const arg = (text || "").trim().split(/\s+/)[1];
+      if (arg !== "on" && arg !== "off") {
+        const cfg = await loadMgConfig(env);
+        await sendMessage(env, chatId, `Согласование сейчас: ${cfg.approval ? "включено" : "выключено"}.\nПереключить: <code>/mg-approve on</code> или <code>/mg-approve off</code>`, { parse_mode: "HTML" });
+        break;
+      }
+      const cfg = await loadMgConfig(env);
+      cfg.approval = arg === "on";
+      await saveMgConfig(env, cfg);
+      await sendMessage(env, chatId, `✅ Согласование ${cfg.approval ? "включено — черновики будут приходить с кнопками ✅/⏭" : "выключено — посты публикуются автоматически"}`);
+      break;
+    }
+
+    case "/mg-reset": {
+      await resetMgConfig(env);
+      await sendMessage(env, chatId, "✅ Конфиг мультигрупп сброшен к дефолтному");
       break;
     }
 

@@ -271,12 +271,13 @@ export async function vkUploadWallGifFor(env, gifBytes, token, groupId) {
 
 // Пост в стену указанной группы от её токена (per-group wall.post).
 export async function vkPostWallFor(env, token, groupId, message, attachment) {
-  return vkCall(env, "wall.post", {
+  const params = {
     owner_id: -groupId,
     from_group: 1,
     message,
-    attachments: attachment,
-  }, { token });
+  };
+  if (attachment) params.attachments = attachment;
+  return vkCall(env, "wall.post", params, { token });
 }
 
 // Загрузка изображения как GIF-документа на стену сообщества и возврат attachment

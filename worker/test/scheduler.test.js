@@ -899,6 +899,8 @@ test("tick: «зависший» диспатч игнорируется — а�
   const { tick } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/scheduler.js");
   const calls = installFetchMock(500);
   const env = makeEnv();
+  // мультигрупповые сервисные уведомления (отчёт/мёртвый выключатель) здесь не проверяем
+  delete env.TELEGRAM_ADMIN_CHAT_ID;
   // диспатч «завис» с 2023 года — раньше фолбэк публиковал бы по нему
   // «срочную сводку»; теперь автопостинг в воркере, фолбэк не нужен
   await kv.markDispatch(env, "guid-2023", {

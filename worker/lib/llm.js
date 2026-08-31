@@ -120,8 +120,14 @@ function stripLink(s) {
 // копирует из сырого текста новости в bullets. Сама ссылка добавляется отдельно.
 export function stripSourceTail(s) {
   return String(s || "")
+    .replace(/<!\[CDATA\[/g, "")
+    .replace(/\]\]>/g, "")
     .replace(/\s*[—–-]\s*источник\s*:\s*(?:https?:\/\/)?\S+\s*$/i, "")
+    // хвост «Источник: …» с чем угодно после двоеточия (URL, CDATA-обломки,
+    // «ссылка») — ссылка на источник добавляется отдельно, хвост всегда мусор
+    .replace(/\s*[—–-]\s*источник\s*:.*$/i, "")
     .replace(/\s*источник\s*:\s*(?:https?:\/\/)?\S+\s*$/i, "")
+    .replace(/\s*источник\s*:.*$/i, "")
     .trim();
 }
 
@@ -258,9 +264,10 @@ function ruleLead(analysis, scheme) {
   return "";
 }
 
-// Факты: пунш-обработка, максимум 4, без дублей заголовка.
+// Факты: пунш-обработка, максимум 4, без дублей заголовка и лида.
 function ruleFacts(analysis) {
   const headNorm = String(analysis.headline || "").toLowerCase().replace(/[.,!?…]+$/g, "").trim();
+  const leadNorm = String(analysis.lead || "").toLowerCase().slice(0, 40);
   const seen = new Set();
   const out = [];
   for (const f of analysis.facts || []) {
@@ -270,6 +277,8 @@ function ruleFacts(analysis) {
     if (seen.has(k)) continue;
     seen.add(k);
     if (pf.toLowerCase().startsWith(headNorm.slice(0, 30))) continue;
+    // факт не должен пересказывать лид — иначе в посте одна мысль дважды
+    if (leadNorm && pf.toLowerCase().startsWith(leadNorm.slice(0, 30))) continue;
     out.push(pf);
     if (out.length >= 4) break;
   }

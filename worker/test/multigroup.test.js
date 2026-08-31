@@ -11,6 +11,12 @@ import {
   artCaption,
   publishMultiGroup,
   multiStatus,
+  titleFingerprint,
+  titleSimilarity,
+  loadMgConfig,
+  saveMgConfig,
+  mgDailyReport,
+  mgDeadManCheck,
 } from "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/multigroup.js";
 import { ekbNow } from "file:///C:/Users/user/Desktop/tgvk_bot/worker/lib/config.js";
 
@@ -93,7 +99,7 @@ test("multigroup: подпись арта содержит канал и дат�
   const cap = artCaption({ channel: "aiart", time: "2026-08-20T09:00:00+00:00" });
   assert.match(cap, /@aiart/);
   assert.match(cap, /2026-08-20/);
-  assert.match(cap, /LostArt/);
+  assert.match(cap, /ИИ-арт/);
 });
 
 test("multigroup: публикация вне активного окна ничего не делает", async () => {
@@ -141,4 +147,49 @@ test("multigroup: status показывает токены и число пос�
   assert.ok(dgc.postedToday >= 1);
   const lostart = rows.find((r) => r.slug === "lostart");
   assert.equal(lostart.token, "✓");
+});
+
+test("multigroup: семантический дедуп ловит похожие заголовки", () => {
+  const a = titleFingerprint("CD Projekt показала геймплей Witcher 4 на конференции");
+  const b = titleFingerprint("CD Projekt RED показала геймплей Witcher 4");
+  const c = titleFingerprint("Куртка Кобейна ушла с молотка за миллион долларов");
+  assert.ok(titleSimilarity(a, b) >= 0.55, "похожие заголовки должны ловиться");
+  assert.ok(titleSimilarity(a, c) < 0.3, "разные новости не должны быть дублями");
+});
+
+test("multigroup: конфиг из KV переопределяет окна и режим согласования", async () => {
+  const kv = makeKV();
+  const env = makeEnv(kv);
+  await saveMgConfig(env, { windows: { dgc: [600, 1200] }, approval: true });
+  const cfg = await loadMgConfig(env);
+  assert.deepEqual(cfg.windows.dgc, [600, 1200]);
+  assert.equal(cfg.approval, true);
+  // дефолтные окна других групп не затёрты
+  assert.deepEqual(cfg.windows.lostart, MULTI_WINDOWS.lostart);
+  // активное окно учитывает оверрайд: 10:05 ЕКБ -> слот 600
+  const slot = activeMultiWindow(MULTI_GROUPS[0], new Date("2026-08-21T05:05:00Z"), cfg.windows);
+  assert.equal(slot, 600);
+});
+
+test("multigroup: ежедневный отчёт формируется в 21:00 ЕКБ один раз", async () => {
+  const kv = makeKV();
+  const env = makeEnv(kv);
+  const at21 = new Date("2026-08-21T16:03:00Z"); // 21:03 ЕКБ
+  const report = await mgDailyReport(env, at21);
+  assert.ok(report && report.includes("Отчёт мультигрупп"), "отчёт должен собраться в 21:00-21:10");
+  const again = await mgDailyReport(env, at21);
+  assert.equal(again, null, "повторно за день отчёт не отправляется");
+  const early = await mgDailyReport(env, new Date("2026-08-21T10:00:00Z"));
+  assert.equal(early, null, "днём отчёта быть не должно");
+});
+
+test("multigroup: мёртвый выключатель бьёт тревогу при пропущенном окне", async () => {
+  const kv = makeKV();
+  const env = makeEnv(kv);
+  // 12:40 ЕКБ: первое окно DGC (05:00) давно прошло, постов нет
+  const now = new Date("2026-08-21T07:40:00Z");
+  const alert = await mgDeadManCheck(env, now);
+  assert.ok(alert && alert.includes("DGC"), "алерт по DGC должен прийти");
+  const again = await mgDeadManCheck(env, now);
+  assert.equal(again, null, "повторный алерт в тот же день не шлётся");
 });

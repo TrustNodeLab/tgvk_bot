@@ -22,7 +22,7 @@ import {
 import { sendPoll } from "./telegram.js";
 import { fmtTime, escHtml, fitCaption, htmlToPlain } from "./text.js";
 import { collectEngagement, maybeHealthAlert, maybeBackupToGitHub } from "./ops.js";
-import { multigroupTick } from "./multigroup.js";
+import { multigroupTick, mgDailyReport, mgDeadManCheck } from "./multigroup.js";
 
 const CHUNK_COUNT = 4; // ���� �������� �� 4 ����� � �� ��� ���������� ~9 ����, ����� ��������� � ������
 const TICK_LOCK_TTL_MS = 4 * 60 * 1000; // анти-перекрытие крон: больше TTL, чем крон (5 мин) бы заставило пропускать каждый второй запуск.
@@ -34,16 +34,16 @@ const OPS_BUDGET_MS = 20 * 1000; // бюджет операционных дог
 // возвратом "timeout" с громким логом, а тяжёлые шаги (LLM/рендер) получают свои
 // короткие бюджеты с фолбэком на правила / JS-рендер, чтобы тик почти всегда
 // укладывался в бюджет и «не дожимался» там.
-const TICK_BUDGET_MS = 28000;
+const TICK_BUDGET_MS = 60000;
 const LLM_BUDGET_MS = 4000;
 const RENDER_BUDGET_MS = 4000;
 const DIGEST_BUDGET_MS = 4000;
-const SCAN_BUDGET_MS = 8000;
+const SCAN_BUDGET_MS = 6000;
 const ASSEMBLE_BUDGET_MS = 13000;
 // ��������������� ���: ���������� ���� + JPEG-����� + GIF + �������� � VK +
 // wall.post. ��� ������ ������ � ������ �� ������������ � 8-10 �; ���
 // �������� ���� ������ ������������ (��������������� ����� �� ��������� ����).
-const MULTIGROUP_BUDGET_MS = 12000;
+const MULTIGROUP_BUDGET_MS = 35000;
 
 // Запускает promise с жёстким бюджетом: по истечении ms реджектит (промис при
 // этом продолжает жить в фоне, но результат уже никому не нужен — тик не ждёт).
@@ -1349,12 +1349,25 @@ export async function tick(env, opts = {}) {
     }
     mark("publish", t);
 
-    // 6a. ��������������� ���������� (DGC / LostLink / LostArt): �� ������ �����
-    // �� ������ � �������� ���� (30 ��� ���). ��������������� � KV-����� ������.
+    // 6a. мультигрупповая публикация (DGC / LostLink / LostArt): на каждом тике
+    // проверяем окна и публикуем 1 пост за слот (30 мин от окна). Дедупликация по KV-ключу слота.
     currentStep = "multigroup";
     t = Date.now();
     try {
-      await bounded(MULTIGROUP_BUDGET_MS, "[scheduler] multigroup", multigroupTick(env, now));
+      const mgResults = await bounded(MULTIGROUP_BUDGET_MS, "[scheduler] multigroup", multigroupTick(env, now));
+      if (Array.isArray(mgResults)) {
+        const posted = mgResults.filter((r) => r.posted);
+        console.log("[scheduler] multigroup:", mgResults.map((r) => `${r.slug}:${r.posted ? "POSTED" : r.detail}`).join(" | "));
+        if (posted.length) {
+          const lines = posted.map((r) => `  ✅ ${r.slug}: ${r.detail}`).join("\n");
+          await notifyAdmin(env, `👥 <b>Мультигруппы: опубликовано</b>\n${lines}`);
+        }
+      }
+      // Ежедневный отчёт в 21:00 ЕКБ и «мёртвый выключатель» (алерт при пропусках).
+      const report = await bounded(5000, "[scheduler] mg-report", mgDailyReport(env, now));
+      if (report) await notifyAdmin(env, report);
+      const deadMan = await bounded(8000, "[scheduler] mg-deadman", mgDeadManCheck(env, now));
+      if (deadMan) await notifyAdmin(env, deadMan);
     } catch (e) {
       console.log("[scheduler] multigroup error:", e.message);
     }
@@ -1375,10 +1388,10 @@ export async function tick(env, opts = {}) {
     await kv.saveState(env, state);
     mark("save", t);
 
-    // 7. ������������ ��������� (������ ���������): ������� ������ VK + �������
-    // �������, ������ ����� ��������, ������ ����� � GitHub. ������ ������ �
-    // ������� ��� (������ 0 ���), ����� �� ���� ������ ������� ���� � ��
-    // ������� � ����-��������: ������������� � ��� ���������� �� 45 �����.
+    // 7.служебные операции (раз в полный час): сбор метрик VK + проверка
+    // состояния, отправка алертов, резервное копирование в GitHub. Запускается не на
+    // каждом тике (только на 0-й минуте), чтобы не тратить лимиты Воркера на
+    // повторные запросы к API-эндпоинтам: привязываемся к целым 45 минутам.
     currentStep = "ops";
     t = Date.now();
     if (ekbNow(now).minuteOfDay % 60 === 0) {
