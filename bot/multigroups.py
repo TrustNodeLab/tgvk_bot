@@ -597,7 +597,10 @@ def build_news_payload(group: dict, cfg: dict) -> dict:
     used = load_used_guids(group["slug"])
     candidates = [i for i in items if i["guid"][:120] not in used]
     candidates.sort(key=lambda i: image_score(i["image"]))
-    candidates = candidates[:4]
+    # Если есть хоть один кандидат с картинкой — берём только такие,
+    # чтобы пост не уходил текстом из-за фида без изображения.
+    with_img = [i for i in candidates if i["image"]]
+    candidates = (with_img or candidates)[:4]
     if not candidates:
         raise RuntimeError("все свежие новости уже опубликованы")
 
@@ -633,6 +636,10 @@ def build_news_payload(group: dict, cfg: dict) -> dict:
             text = text[:VK_POST_LIMIT]
 
             attachment = upload_image_as_doc(it["image"], group)
+            print(
+                f"[multigroups] {group['name']}: пост {title[:40]}: "
+                f"картинка {'есть' if attachment else 'НЕТ'}"
+            )
             return {"text": text, "attachment": attachment, "guid_key": it["guid"][:120]}
         except Exception as e:
             last_err = e
@@ -653,10 +660,23 @@ def build_art_payload(group: dict, cfg: dict) -> dict:
         gif = to_gif_bytes(art["bytes"])
         if not gif:
             continue
-        attachment = _upload_gif_attachment(
-            os.environ.get(group["token_key"], ""), group["groupId"], gif
-        )
-        return {"text": art_caption(art), "attachment": attachment, "guid_key": id_key}
+        attachment = None
+        try:
+            attachment = _upload_gif_attachment(
+                os.environ.get(group["token_key"], ""), group["groupId"], gif
+            )
+        except Exception as e:
+            print(f"[multigroups] {group['name']}: GIF не загрузился ({e}), арт-пост ссылкой")
+        if attachment:
+            text = art_caption(art)
+        else:
+            # Сообщения сообщества выключены в VK — docs.save недоступен.
+            # Публикуем ссылку на пост канала, чтобы слот не пропадал.
+            text = (
+                f"🌌 ИИ-арт в канале @{art['channel']}\n\n"
+                f"🔗 Смотреть: https://t.me/{art['channel']}/{art['post']}"
+            )
+        return {"text": text, "attachment": attachment, "guid_key": id_key}
     raise RuntimeError("нет доступных артов (все каналы без картинок или уже использованы)")
 
 
