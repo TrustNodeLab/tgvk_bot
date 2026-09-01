@@ -256,7 +256,16 @@ export async function vkUploadWallGifFor(env, gifBytes, token, groupId) {
       if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       continue;
     }
-    const saved = await vkCall(env, "docs.save", { file: ur.file, group_id: groupId }, { token });
+    let saved;
+    try {
+      saved = await vkCall(env, "docs.save", { file: ur.file, group_id: groupId }, { token });
+    } catch (e) {
+      // Групповой токен без права docs сохраняет документы только через
+      // механизм сообщений сообщества: при error 15 повторяем без group_id
+      // (работает, когда в настройках группы включены «Сообщения сообщества»).
+      if (!/: 15 /.test(e.message || "")) throw e;
+      saved = await vkCall(env, "docs.save", { file: ur.file }, { token });
+    }
     const wrap = Array.isArray(saved) ? saved[0] : saved;
     const doc = (wrap && (wrap.doc || wrap)) || null;
     if (!doc || !doc.id) {
@@ -321,7 +330,16 @@ export async function vkUploadWallGif(env, gifBytes) {
       if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       continue;
     }
-    const saved = await vkCall(env, "docs.save", { file: ur.file, group_id: env.VK_GROUP_ID });
+    let saved;
+    try {
+      saved = await vkCall(env, "docs.save", { file: ur.file, group_id: env.VK_GROUP_ID });
+    } catch (e) {
+      // Групповой токен без права docs сохраняет документы только через
+      // механизм сообщений сообщества: при error 15 повторяем без group_id
+      // (работает, когда в настройках группы включены «Сообщения сообщества»).
+      if (!/: 15 /.test(e.message || "")) throw e;
+      saved = await vkCall(env, "docs.save", { file: ur.file });
+    }
     const wrap = Array.isArray(saved) ? saved[0] : saved;
     const doc = (wrap && (wrap.doc || wrap)) || null;
     if (!doc || !doc.id) {

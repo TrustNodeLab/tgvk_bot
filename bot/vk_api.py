@@ -84,7 +84,16 @@ class VKAPI:
                 ur = r.json()
                 if not ur.get("file"):
                     raise RuntimeError(f"VK: docs upload вернул пустой file: {ur}")
-                saved = self._call("docs.save", file=ur["file"], group_id=self.group_id)
+                try:
+                    saved = self._call("docs.save", file=ur["file"], group_id=self.group_id)
+                except RuntimeError as e:
+                    # Групповой токен без права docs сохраняет документы только
+                    # через механизм сообщений сообщества: error 15 «group
+                    # messages are disabled» — повторяем без group_id (работает,
+                    # когда в настройках группы включены «Сообщения сообщества»).
+                    if "error_code': 15" not in str(e):
+                        raise
+                    saved = self._call("docs.save", file=ur["file"])
                 saved = saved[0] if isinstance(saved, list) else saved
                 doc = (saved or {}).get("doc") or saved or {}
                 if not doc.get("id"):
@@ -94,8 +103,11 @@ class VKAPI:
                 last_err = e
                 if attempt < MAX_ATTEMPTS - 1:
                     time.sleep(RETRY_DELAY * (attempt + 1))
+        msg = str(last_err)
+        if "group messages are disabled" in msg:
+            msg += " (включите «Сообщения сообщества» в настройках группы VK)"
         raise RuntimeError(
-            f"VK: не удалось загрузить GIF после {MAX_ATTEMPTS} попыток: {last_err}"
+            f"VK: не удалось загрузить GIF после {MAX_ATTEMPTS} попыток: {msg}"
         )
 
     def post_to_wall(self, image_path: str, message: str) -> dict:
