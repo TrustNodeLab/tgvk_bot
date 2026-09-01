@@ -22,13 +22,17 @@ def call(method, **params):
         return {"raw": r.text[:300]}
 
 
-def make_png() -> bytes:
+def make_img(fmt: str) -> tuple:
+    if fmt == "gif":
+        buf = io.BytesIO()
+        Image.new("RGB", (64, 64), (200, 60, 120)).save(buf, "GIF")
+        return buf.getvalue(), "card.gif", "image/gif"
     buf = io.BytesIO()
     Image.new("RGB", (64, 64), (200, 60, 120)).save(buf, "PNG")
-    return buf.getvalue()
+    return buf.getvalue(), "card.png", "image/png"
 
 
-def do_upload(server_method, save_method, save_keys, use_group=True, label=""):
+def do_upload(server_method, save_method, save_keys, use_group=True, label="", fmt="png"):
     sp = {"group_id": GID} if use_group else {}
     info = call(server_method, **sp)
     print(f"[{label}] {server_method} -> {json.dumps(info, ensure_ascii=False)[:400]}")
@@ -37,9 +41,15 @@ def do_upload(server_method, save_method, save_keys, use_group=True, label=""):
     if not url:
         print(f"[{label}] NO upload_url")
         return
-    png = make_png()
-    ur = requests.post(url, files={"file": ("card.png", png, "image/png")}, timeout=60).json()
-    print(f"[{label}] upload -> {json.dumps(ur, ensure_ascii=False)[:400]}")
+    data, fname, ctype = make_img(fmt)
+    ur_raw = requests.post(url, files={"file": (fname, data, ctype)}, timeout=60)
+    print(f"[{label}] upload http={ur_raw.status_code} raw={ur_raw.text[:300]!r}")
+    try:
+        ur = ur_raw.json()
+    except Exception:
+        print(f"[{label}] upload NOT JSON, abort")
+        return
+    print(f"[{label}] upload json={json.dumps(ur, ensure_ascii=False)[:300]}")
     params = {k: ur.get(k) for k in save_keys if ur.get(k) is not None}
     if use_group:
         params["group_id"] = GID
@@ -52,24 +62,26 @@ def do_upload(server_method, save_method, save_keys, use_group=True, label=""):
 print("TOKEN prefix:", TOKEN[:6], "len:", len(TOKEN))
 print("== 1. docs.getWallUploadServer БЕЗ group_id ==")
 print(json.dumps(call("docs.getWallUploadServer"), ensure_ascii=False)[:400])
-print("== 2. docs c group_id (ожидаем error 15) ==")
-do_upload("docs.getWallUploadServer", "docs.save", ["file"], use_group=True, label="docs-gid")
-print("== 3. photos.getWallUploadServer + saveWallPhoto c group_id ==")
+print("== 2. docs c group_id, upload PNG, docs.save (полный ответ) ==")
+do_upload("docs.getWallUploadServer", "docs.save", ["file"], use_group=True, label="docs-gid-png", fmt="png")
+print("== 3. docs c group_id, upload GIF, docs.save (полный ответ) ==")
+do_upload("docs.getWallUploadServer", "docs.save", ["file"], use_group=True, label="docs-gid-gif", fmt="gif")
+print("== 4. photos.getWallUploadServer + saveWallPhoto c group_id ==")
 do_upload(
     "photos.getWallUploadServer",
     "photos.saveWallPhoto",
     ["server", "photo", "hash"],
     use_group=True,
     label="photo-wall",
+    fmt="png",
 )
-print("== 4. photos.getUploadServer + photos.save (альбом) c group_id ==")
+print("== 5. photos.getUploadServer + photos.save (альбом) c group_id ==")
 do_upload(
     "photos.getUploadServer",
     "photos.save",
     ["server", "photos_list", "album_id", "hash"],
     use_group=True,
     label="photo-album",
+    fmt="png",
 )
-print("== 5. docs БЕЗ group_id: getWallUploadServer + save ==")
-do_upload("docs.getWallUploadServer", "docs.save", ["file"], use_group=False, label="docs-nogid")
 print("DONE")
