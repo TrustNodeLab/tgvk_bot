@@ -105,7 +105,7 @@ class VKAPI:
                     time.sleep(RETRY_DELAY * (attempt + 1))
         msg = str(last_err)
         if "group messages are disabled" in msg:
-            msg += " (включите «Сообщения сообщества» в настройках группы VK)"
+            msg = "включите «Сообщения сообщества» в настройках группы VK: " + msg
         raise RuntimeError(
             f"VK: не удалось загрузить GIF после {MAX_ATTEMPTS} попыток: {msg}"
         )
