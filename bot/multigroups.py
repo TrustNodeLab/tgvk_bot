@@ -733,8 +733,8 @@ def mg_summary(results: list) -> str:
         name = names.get(r["slug"], r["slug"])
         if r["posted"]:
             lines.append(f"✅ <b>{name}</b>: опубликовано · {r['detail']}")
-        elif r["detail"] == "не активный слот":
-            lines.append(f"⏭ {name}: не активный слот")
+        elif r["detail"] in ("не активный слот", "слот уже занят"):
+            lines.append(f"⏭ {name}: {r['detail']}")
         else:
             lines.append(f"⚠️ {name}: {r['detail']}")
     return "📊 <b>Мультигруппы</b>\n" + "\n".join(lines)

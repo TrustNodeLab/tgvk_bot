@@ -256,7 +256,7 @@ export async function vkUploadWallGifFor(env, gifBytes, token, groupId) {
       if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       continue;
     }
-    const saved = await vkCall(env, "docs.save", { file: ur.file }, { token });
+    const saved = await vkCall(env, "docs.save", { file: ur.file, group_id: groupId }, { token });
     const wrap = Array.isArray(saved) ? saved[0] : saved;
     const doc = (wrap && (wrap.doc || wrap)) || null;
     if (!doc || !doc.id) {
@@ -321,7 +321,7 @@ export async function vkUploadWallGif(env, gifBytes) {
       if (attempt < MAX_ATTEMPTS - 1) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
       continue;
     }
-    const saved = await vkCall(env, "docs.save", { file: ur.file });
+    const saved = await vkCall(env, "docs.save", { file: ur.file, group_id: env.VK_GROUP_ID });
     const wrap = Array.isArray(saved) ? saved[0] : saved;
     const doc = (wrap && (wrap.doc || wrap)) || null;
     if (!doc || !doc.id) {
