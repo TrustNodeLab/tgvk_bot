@@ -308,8 +308,6 @@ function drawTextCentered(canvas, text, centerX, y, scale, color, maxWidth) {
 
 function drawFooter(canvas, tier, y) {
   drawText(canvas, "TRUSTNODE", PAD, y, 2, SUB);
-  const right = "t.me / vk.com — кибербезопасность простыми словами";
-  drawText(canvas, right, W - PAD - measureLine(right, 2), y, 2, SUB);
   drawTextCentered(canvas, "СТУДИЯ ЦИФРОВОЙ БЕЗОПАСНОСТИ", W / 2, y + 34, 2, SUB);
 }
 
@@ -330,6 +328,48 @@ export async function renderCard(data, opts = {}) {
   return encodeGif(canvases, 8); // 8 fps
 }
 
+// Детерминированный вариант оформления шапки: 0 = classic, 1 = hero, 2 = split.
+function variantOf(data) {
+  const s = String(data.headline || "Безопасность в цифровом мире");
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return Math.abs(h) % 3;
+}
+
+// Вариант 0: классический — заголовок текстом + акцентный разделитель.
+function drawHeaderClassic(c, headline, y) {
+  y = drawHeadline(c, headline, PAD, y, W - PAD * 2);
+  y += 20;
+  c.fillRect(PAD, y, W - PAD * 2, 3, ACCENT);
+  return y + 40;
+}
+
+// Вариант 1: hero — тёмная плашка с акцентным баром слева, заголовок по центру.
+function drawHeaderHero(c, headline, y) {
+  const lines = wrapText(headline, W - PAD * 2 - 80, SCALE).slice(0, 4);
+  const boxH = 60 + lines.length * LINE_H;
+  c.fillRect(PAD, y, W - PAD * 2, boxH, CARD_BG);
+  c.fillRect(PAD, y + 24, 12, boxH - 48, ACCENT);
+  let ty = y + 30;
+  for (const line of lines) {
+    drawTextCentered(c, line, W / 2, ty, SCALE, TEXT, W - PAD * 2 - 80);
+    ty += LINE_H;
+  }
+  return y + boxH + 36;
+}
+
+// Вариант 2: split — вертикальный акцентный бар слева, заголовок со сдвигом.
+function drawHeaderSplit(c, headline, y) {
+  const lines = wrapText(headline, W - PAD * 2 - 80, SCALE).slice(0, 4);
+  c.fillRect(PAD, y, 14, lines.length * LINE_H + 20, ACCENT);
+  let ty = y;
+  for (const line of lines) {
+    drawText(c, line, PAD + 44, ty, SCALE, TEXT, W - PAD * 2 - 80);
+    ty += LINE_H;
+  }
+  return ty + 24;
+}
+
 // Рисует статичное содержимое карточки поверх уже нарисованного неба.
 function drawContent(c, data) {
   // верхняя акцентная полоса
@@ -339,14 +379,12 @@ function drawContent(c, data) {
 
   let y = 130;
 
-  // заголовок
+  // заголовок — вариант оформления зависит от самого заголовка (детерминированно)
   const headline = (data.headline || "Безопасность в цифровом мире").toUpperCase();
-  y = drawHeadline(c, headline, PAD, y, W - PAD * 2);
-  y += 20;
-
-  // разделитель
-  c.fillRect(PAD, y, W - PAD * 2, 3, ACCENT);
-  y += 40;
+  const variant = variantOf(data);
+  if (variant === 1) y = drawHeaderHero(c, headline, y);
+  else if (variant === 2) y = drawHeaderSplit(c, headline, y);
+  else y = drawHeaderClassic(c, headline, y);
 
   const cards = data.cards || [];
   const stat = cards.find((x) => x.type === "stat" && x.number);

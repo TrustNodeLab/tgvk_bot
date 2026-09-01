@@ -362,6 +362,159 @@ def _draw_sequence_connectors(d, row_boxes, row_mid, accent):
 
 # ---------- основная функция ----------
 
+def _variant_key(data: dict) -> int:
+    """Детерминированный выбор варианта оформления (0..3) по содержимому поста:
+    один и тот же пост всегда рисуется одинаково, разные посты — по-разному."""
+    seed = " ".join(data.get("headline", [])) + "|" + data.get("category", "") + "|" + " ".join(data.get("tags", []))
+    h = 0
+    for ch in seed:
+        h = (h * 31 + ord(ch)) & 0x7FFFFFFF
+    return h % 4
+
+
+def _draw_header(d, variant, tags, category, headline, accent, text_c, muted,
+                 panel_fill, border_c, f_tag, f_sub, f_hl) -> int:
+    """Верхняя часть карточки (теги, категория, заголовок) в одном из 4 вариантов
+    композиции: 0=classic, 1=hero, 2=split, 3=numeric. Возвращает y под контентом."""
+    if variant == 1:
+        return _draw_header_hero(d, tags, category, headline, accent, panel_fill, border_c, f_tag, f_sub, f_hl)
+    if variant == 2:
+        return _draw_header_split(d, tags, category, headline, accent, text_c, f_tag, f_sub, f_hl)
+    if variant == 3:
+        return _draw_header_numeric(d, tags, category, headline, accent, text_c, panel_fill, border_c, f_tag, f_sub, f_hl)
+    return _draw_header_classic(d, tags, category, headline, accent, text_c, f_tag, f_sub, f_hl)
+
+
+def _draw_header_classic(d, tags, category, headline, accent, text_c, f_tag, f_sub, f_hl) -> int:
+    """Вариант 0 — классика: теги контуром слева, категория //, заголовок."""
+    tx, ty = 40, 30
+    tag_row_h = 0
+    for tag in tags:
+        tw, th = _ts(d, tag, f_tag)
+        pw, ph = tw + 30, th + 22
+        if tx + pw > W - 40 and tx > 40:
+            tx = 40
+            ty += tag_row_h + 12
+            tag_row_h = 0
+        d.rounded_rectangle([tx, ty, tx + pw, ty + ph], radius=6, outline=accent, width=2)
+        d.text((tx + 15, ty + ph // 2), tag, font=f_tag, fill=accent, anchor="lm")
+        tx += pw + 14
+        tag_row_h = max(tag_row_h, ph)
+    sy = ty + tag_row_h + 30
+    d.text((40, sy), f"// {category}", font=f_sub, fill=accent)
+    hy = sy + 55
+    y_cursor = hy
+    for i, line in enumerate(headline):
+        col = accent if i == 0 else text_c
+        for wline in _wrap_px(d, line, f_hl, W - 80):
+            d.text((40, y_cursor), wline, font=f_hl, fill=col)
+            _, lh_ = _ts(d, wline, f_hl)
+            y_cursor += lh_ + 18
+    return y_cursor
+
+
+def _draw_header_hero(d, tags, category, headline, accent, panel_fill, border_c, f_tag, f_sub, f_hl) -> int:
+    """Вариант 1 — hero: панель-плашка на всю ширину, категория и заголовок по
+    центру, теги залитыми плашками, снизу акцентная полоса."""
+    hl_lines = []
+    for line in headline:
+        hl_lines.extend(_wrap_px(d, line, f_hl, W - 160))
+    sub_h = _ts(d, category, f_sub)[1]
+    hl_h = sum(_ts(d, l, f_hl)[1] + 18 for l in hl_lines)
+    tag_h = _ts(d, "Ag", f_tag)[1]
+    h0 = 24
+    h1 = h0 + 34 + sub_h + 28 + hl_h + 26 + (tag_h + 22) + 30
+    d.rounded_rectangle([24, h0, W - 24, h1], radius=14, fill=panel_fill, outline=accent, width=2)
+    d.rectangle([24, h1 - 6, W - 24, h1], fill=accent)
+    y = h0 + 34
+    sw, _ = _ts(d, category, f_sub)
+    d.text(((W - sw) // 2, y), category, font=f_sub, fill=accent)
+    y += sub_h + 28
+    for idx, l in enumerate(hl_lines):
+        lw, lh_ = _ts(d, l, f_hl)
+        d.text(((W - lw) // 2, y), l, font=f_hl, fill=(accent if idx == 0 else (255, 255, 255)))
+        y += lh_ + 18
+    y += 8
+    tag_fill = tuple(int(accent[j:j + 2], 16) for j in (1, 3, 5))
+    tx = 40
+    for tag in tags:
+        tw, th = _ts(d, tag, f_tag)
+        pw, ph = tw + 30, th + 22
+        if tx + pw > W - 40 and tx > 40:
+            break
+        d.rounded_rectangle([tx, y, tx + pw, y + ph], radius=8, fill=tag_fill)
+        d.text((tx + 15, y + ph // 2), tag, font=f_tag, fill=(17, 17, 17), anchor="lm")
+        tx += pw + 14
+    return h1 + 26
+
+
+def _draw_header_split(d, tags, category, headline, accent, text_c, f_tag, f_sub, f_hl) -> int:
+    """Вариант 2 — split: вертикальный акцентный бар слева, контент со сдвигом."""
+    x0 = 56
+    tx, ty = x0, 30
+    tag_row_h = 0
+    for tag in tags:
+        tw, th = _ts(d, tag, f_tag)
+        pw, ph = tw + 30, th + 22
+        if tx + pw > W - 40 and tx > x0:
+            tx = x0
+            ty += tag_row_h + 12
+            tag_row_h = 0
+        d.rounded_rectangle([tx, ty, tx + pw, ty + ph], radius=6, outline=accent, width=2)
+        d.text((tx + 15, ty + ph // 2), tag, font=f_tag, fill=accent, anchor="lm")
+        tx += pw + 14
+        tag_row_h = max(tag_row_h, ph)
+    sy = ty + tag_row_h + 30
+    d.text((x0, sy), f"// {category}", font=f_sub, fill=accent)
+    hy = sy + 55
+    y_cursor = hy
+    for i, line in enumerate(headline):
+        col = accent if i == 0 else text_c
+        for wline in _wrap_px(d, line, f_hl, W - x0 - 40):
+            d.text((x0, y_cursor), wline, font=f_hl, fill=col)
+            _, lh_ = _ts(d, wline, f_hl)
+            y_cursor += lh_ + 18
+    d.rectangle([24, 30, 32, y_cursor - 10], fill=accent)
+    return y_cursor
+
+
+def _draw_header_numeric(d, tags, category, headline, accent, text_c, panel_fill, border_c, f_tag, f_sub, f_hl) -> int:
+    """Вариант 3 — numeric: крупный номер поста слева в плашке, заголовок справа,
+    теги контуром под номером."""
+    h = 0
+    for ch in " ".join(headline):
+        h = (h * 31 + ord(ch)) & 0x7FFFFFFF
+    num = f"{h % 90 + 10:02d}"
+    box_x, box_y, box_s = 40, 30, 148
+    d.rounded_rectangle([box_x, box_y, box_x + box_s, box_y + box_s], radius=14, fill=panel_fill,
+                        outline=accent, width=2)
+    nf = _font(EXO2, 88, 900)
+    nw, nh = _ts(d, num, nf)
+    d.text((box_x + (box_s - nw) // 2, box_y + (box_s - nh) // 2 - 6), num, font=nf, fill=accent)
+    x0 = box_x + box_s + 32
+    ty = box_y + box_s + 26
+    tx = box_x
+    for tag in tags:
+        tw, th = _ts(d, tag, f_tag)
+        pw, ph = tw + 30, th + 22
+        if tx + pw > W - 40 and tx > box_x:
+            break
+        d.rounded_rectangle([tx, ty, tx + pw, ty + ph], radius=6, outline=accent, width=2)
+        d.text((tx + 15, ty + ph // 2), tag, font=f_tag, fill=accent, anchor="lm")
+        tx += pw + 14
+    sy = box_y + 8
+    d.text((x0, sy), f"// {category}", font=f_sub, fill=accent)
+    hy = sy + 52
+    y_cursor = hy
+    for i, line in enumerate(headline):
+        col = accent if i == 0 else text_c
+        for wline in _wrap_px(d, line, f_hl, W - x0 - 40):
+            d.text((x0, y_cursor), wline, font=f_hl, fill=col)
+            _, lh_ = _ts(d, wline, f_hl)
+            y_cursor += lh_ + 18
+    return max(y_cursor, ty + 22 + 14)
+
+
 def render_card(data: dict, out_path: str, dt_ekb: datetime = None) -> str:
     """
     data = {
@@ -372,9 +525,7 @@ def render_card(data: dict, out_path: str, dt_ekb: datetime = None) -> str:
       "cards": [{"number": "...", "label": "...", "desc": "текст описания"}], # 1-6 шт
       "sequence": true, # опц.: стрелки-коннекторы между карточками (последовательность шагов)
       "quote": "текст блока-вывода снизу (может быть пустым)",
-      "source": "РИА Новости · 2026",
-      "links": ["t.me/TrustNode_team", "vk.com/trustnode"],
-      "site": "trustnodelab.github.io"
+      "source": "РИА Новости · 2026"
     }
     """
 def _render_frame(data: dict, dt_ekb: datetime, phase: float = 0.0) -> Image.Image:
@@ -393,8 +544,6 @@ def _render_frame(data: dict, dt_ekb: datetime, phase: float = 0.0) -> Image.Ima
     cards = data["cards"]
     quote = data.get("quote", "")
     source = data.get("source", "")
-    links = data.get("links", [])
-    site = data.get("site", "trustnodelab.github.io")
 
     # стрелки в любом тексте карточки заменяем на «—»: шрифты Exo2/Jura не содержат
     # глифов стрелок, иначе вместо «→» в заголовке/описаниях рисуются квадратики.
@@ -439,44 +588,11 @@ def _render_frame(data: dict, dt_ekb: datetime, phase: float = 0.0) -> Image.Ima
     f_desc = _font(EXO2, 20, 500)
     f_quote = _font(EXO2, 32, 500)
     f_foot = _font(JURA, 20, 500)
-    f_site = _font(JURA, 20, 500)
 
-    # site url top right
-    sw, sh = _ts(d, site, f_site)
-    d.text((W - 40 - sw, 30), site, font=f_site, fill=muted)
-
-    # tags — переносим на новую строку, если сумма ширин вылезает за канву
-    tx, ty = 40, 30
-    tag_row_h = 0
-    for tag in tags:
-        tw, th = _ts(d, tag, f_tag)
-        pw, ph = tw + 30, th + 22
-        if tx + pw > W - 40 and tx > 40:
-            tx = 40
-            ty += tag_row_h + 12
-            tag_row_h = 0
-        d.rounded_rectangle([tx, ty, tx + pw, ty + ph], radius=6, outline=accent, width=2)
-        d.text((tx + 15, ty + ph // 2), tag, font=f_tag, fill=accent, anchor="lm")
-        tx += pw + 14
-        tag_row_h = max(tag_row_h, ph)
-
-    # subtitle
-    sy = ty + tag_row_h + 30
-    d.text((40, sy), f"// {category}", font=f_sub, fill=accent)
-
-    # headline — каждую логическую строку из data оборачиваем по ширине канвы:
-    # LLM иногда присылает вместо «рубленых» коротких строк целое предложение,
-    # и без переноса оно вылезает за правый край канвы.
-    hy = sy + 55
-    y_cursor = hy
-    max_hl_width = W - 80
-    for i, line in enumerate(headline):
-        col = accent if i == 0 else text_c
-        wrapped = _wrap_px(d, line, f_hl, max_hl_width)
-        for wline in wrapped:
-            d.text((40, y_cursor), wline, font=f_hl, fill=col)
-            _, lh_ = _ts(d, wline, f_hl)
-            y_cursor += lh_ + 18
+    # шапка: вариант оформления выбирается детерминированно по содержимому поста,
+    # чтобы карточки не были однотипными (classic/hero/split/numeric)
+    y_cursor = _draw_header(d, _variant_key(data), tags, category, headline, accent, text_c, muted,
+                            panel_fill, border_c, f_tag, f_sub, f_hl)
 
     # cards: гибкая сетка 1–6 карточек (см. _card_layout). Одиночная карточка в
     # ряду растягивается на всю ширину канвы, парные/тройные делят её с зазором.
@@ -542,16 +658,10 @@ def _render_frame(data: dict, dt_ekb: datetime, phase: float = 0.0) -> Image.Ima
         _draw_multiline_centered(d, [40, qy0, W - 40, qy1], quote_lines, f_quote, text_c)
         y_cursor = qy1 + 30
 
-    # footer
+    # footer — только источник, без ссылок и сайта (на карточке — краткая инфа о посте)
     fy = y_cursor
     d.line([(40, fy), (W - 40, fy)], fill=border_c, width=1)
     d.text((40, fy + 22), source, font=f_foot, fill=muted)
-    lx = W - 40
-    for link in reversed(links):
-        lw, _ = _ts(d, link, f_foot)
-        lx -= lw
-        d.text((lx, fy + 22), link, font=f_foot, fill=accent)
-        lx -= 30
 
     final_h = fy + 22 + 30 + 30
     return img.crop((0, 0, W, final_h))
@@ -569,9 +679,7 @@ def render_card(data: dict, out_path: str, dt_ekb: datetime = None, phase: float
       "cards": [{"number": "...", "label": "...", "desc": "текст описания"}], # 1-6 шт
       "sequence": true, # опц.: стрелки-коннекторы между карточками (последовательность шагов)
       "quote": "текст блока-вывода снизу (может быть пустым)",
-      "source": "РИА Новости · 2026",
-      "links": ["t.me/TrustNode_team", "vk.com/trustnode"],
-      "site": "trustnodelab.github.io"
+      "source": "РИА Новости · 2026"
     }
     """
     if dt_ekb is None:

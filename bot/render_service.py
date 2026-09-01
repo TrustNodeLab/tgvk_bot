@@ -89,8 +89,6 @@ def map_data(payload: dict) -> dict:
         "cards": cards,
         "quote": str(payload["quote"]) if "quote" in payload else DEFAULT_QUOTE,
         "source": f"TrustNode · {YEAR}",
-        "links": ["t.me/TrustNode_team", "vk.com/trustnode"],
-        "site": "trustnodelab.github.io",
     }
 
 
