@@ -1,6 +1,6 @@
 {
- "at": "2026-09-02T22:00:26.149Z",
- "day": "2026-09-03",
+ "at": "2026-09-03T22:00:25.449Z",
+ "day": "2026-09-04",
  "schedule": {
   "mode": "auto",
   "windows": [
@@ -26,7 +26,7 @@
     "label": "вечер"
    }
   ],
-  "updated_at": "2026-08-20T16:09:50.925Z",
+  "updated_at": "2026-09-03T02:01:28.037Z",
   "reason": "перенос окна «вечер» на 0ч (17:30–22:00)"
  },
  "state": {
@@ -236,12 +236,12 @@
   ],
   "counters": {},
   "meta": {
-   "scan_chunk": 3,
+   "scan_chunk": 1,
    "last_fallback": 1786212693282,
    "last_daily_audit": "2026-08-07",
    "last_scan": {
-    "at": "2026-09-02T22:00:15.754Z",
-    "chunk": 2,
+    "at": "2026-09-03T22:00:14.688Z",
+    "chunk": 0,
     "found": 0,
     "took_ms": 6000
    }
@@ -2814,13 +2814,23 @@
   },
   {
    "date": "2026-09-03",
+   "posts": 3,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 11,
+   "vk_members": null,
+   "collected_at": "2026-09-03T18:30:09.726Z"
+  },
+  {
+   "date": "2026-09-04",
    "posts": 0,
    "vk_views": 0,
    "vk_likes": 0,
    "vk_reposts": 0,
    "tg_members": 11,
    "vk_members": null,
-   "collected_at": "2026-09-02T22:00:21.615Z"
+   "collected_at": "2026-09-03T22:00:21.080Z"
   }
  ],
  "content_weights": {
