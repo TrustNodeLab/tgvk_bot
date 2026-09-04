@@ -1,6 +1,6 @@
 {
- "at": "2026-09-03T22:00:25.449Z",
- "day": "2026-09-04",
+ "at": "2026-09-04T22:00:23.386Z",
+ "day": "2026-09-05",
  "schedule": {
   "mode": "auto",
   "windows": [
@@ -236,12 +236,12 @@
   ],
   "counters": {},
   "meta": {
-   "scan_chunk": 1,
+   "scan_chunk": 3,
    "last_fallback": 1786212693282,
    "last_daily_audit": "2026-08-07",
    "last_scan": {
-    "at": "2026-09-03T22:00:14.688Z",
-    "chunk": 0,
+    "at": "2026-09-04T22:00:13.245Z",
+    "chunk": 2,
     "found": 0,
     "took_ms": 6000
    }
@@ -2824,13 +2824,23 @@
   },
   {
    "date": "2026-09-04",
+   "posts": 3,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 11,
+   "vk_members": null,
+   "collected_at": "2026-09-04T18:35:06.182Z"
+  },
+  {
+   "date": "2026-09-05",
    "posts": 0,
    "vk_views": 0,
    "vk_likes": 0,
    "vk_reposts": 0,
    "tg_members": 11,
    "vk_members": null,
-   "collected_at": "2026-09-03T22:00:21.080Z"
+   "collected_at": "2026-09-04T22:00:18.779Z"
   }
  ],
  "content_weights": {
