@@ -101,7 +101,7 @@ const HELP_TEXT =
   "/keyword add|remove &lt;слова&gt; — ключевые слова\n" +
   "/rescan — полный тик, /export — история, /version — версия\n" +
   "/healthcheck — здоровье студии (пропуски окон, срывы, опросы)\n" +
-  "/videotest [сек] — тестовая генерация видео (MP4 придёт сюда же)\n" +
+  "/videotest [сек] — видео: демо или ответом на свой текст (сценарий)\n" +
   "<b>Мультигруппы VK:</b>\n" +
   "/mg — статус групп (DGC/LostLink/LostArt), /mg-tick — публикация по слотам\n" +
   "/mg-edit — конфиг групп, /mg-approve on|off — согласование постов\n" +
@@ -1597,7 +1597,7 @@ async function handleCallback(env, cq, state) {
 
 // ---------- команды админа ----------
 
-async function handleCommand(env, state, chatId, text) {
+async function handleCommand(env, state, chatId, text, msg) {
   const parts = text.trim().split(/\s+/);
   const cmd = parts[0].toLowerCase();
   const args = parts.slice(1).join(" ").trim();
@@ -2091,16 +2091,22 @@ async function handleCommand(env, state, chatId, text) {
       break;
 
     case "/videotest": {
-      // /videotest [секунды] — тестовая генерация видео прямо из бота.
-      // Воркер ставит задачу в GitHub Actions, готовый MP4 workflow
-      // присылает админу сюда же (sendVideo). Секунды: 5..120, по умолчанию 30.
+      // /videotest [секунды] — демо-видео.
+      // Ответом (реплаем) на свой текст/статью — видео по этому сценарию:
+      // текст режется на разделы, каждый озвучивается, скролл идёт под голос.
+      // Готовый MP4 workflow присылает сюда же (sendVideo).
       const raw = parseInt(args, 10);
       const secs = Math.max(5, Math.min(120, Number.isFinite(raw) ? raw : 30));
+      const reply = (msg && msg.reply_to_message) || null;
+      const script = reply
+        ? String(reply.text || reply.caption || "").trim().slice(0, 3500)
+        : "";
       try {
-        const r = await dispatchVideoTest(env, secs);
+        const r = await dispatchVideoTest(env, secs, script);
         if (r.ok) {
           await sendMessage(env, chatId,
-            `🎬 <b>Видеотест запущен</b> (${r.seconds} сек)\n` +
+            `🎬 <b>Видеотест запущен</b>` +
+            (r.custom ? ` (твой сценарий, ~${Math.round(script.length / 12)} сек озвучки)` : ` (${r.seconds} сек, демо)`) + `\n` +
             `Собираю в GitHub Actions — это займёт ~3–5 мин.\n` +
             `Готовое видео пришлю сюда же, в этот чат.`);
         } else if (r.reason === "no github") {
@@ -2364,7 +2370,7 @@ async function handleMessage(env, msg, state) {
     return;
   }
   if (text.startsWith("/")) {
-    await handleCommand(env, state, chatId, text);
+    await handleCommand(env, state, chatId, text, msg);
   } else {
     await handleManualText(env, chatId, text, state);
   }

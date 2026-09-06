@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: "Длина видео в секундах"
+        description: "Длина видео в секундах (демо-режим; со сценарием длина = длина озвучки)"
         required: false
         default: "30"
+      script:
+        description: "Свой сценарий: текст/статья (пусто = демо). Разделы через '# Заголовок'"
+        required: false
+        default: ""
 
 jobs:
   video:
@@ -25,7 +29,15 @@ jobs:
         run: pip install -r requirements.txt imageio-ffmpeg edge-tts numpy
 
       - name: Generate video
-        run: python bot/video_gen.py --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4
+        env:
+          SCRIPT_TEXT: ${{ github.event.inputs.script }}
+        run: |
+          EXTRA=""
+          if [ -n "$SCRIPT_TEXT" ]; then
+            printf '%s' "$SCRIPT_TEXT" > script.txt
+            EXTRA="--script-file script.txt"
+          fi
+          python bot/video_gen.py --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4 $EXTRA
 
       - name: Upload video
         uses: actions/upload-artifact@v4
@@ -43,7 +55,7 @@ jobs:
             -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
             -F video="@out/video_test.mp4" \
             -F supports_streaming=true \
-            -F caption="🎬 Видеотест готов (${{ github.event.inputs.seconds }} сек, run ${{ github.run_id }})"
+            -F caption="🎬 Видеотест готов (${{ github.event.inputs.seconds }} сек, run ${{ github.run_id }})${{ github.event.inputs.script != '' && ' — свой сценарий' || '' }}"
 
       - name: Notify failure to Telegram
         if: failure()

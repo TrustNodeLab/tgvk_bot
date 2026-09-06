@@ -1183,6 +1183,7 @@ test("webhook: /videotest ставит задачу video-test.yml в GitHub и 
   const payload = JSON.parse(disp[0].opts.body || "{}");
   assert.equal(payload.ref, "main", "dispatch на ветку main");
   assert.equal(payload.inputs.seconds, "10", "секунды из аргумента команды");
+  assert.equal(payload.inputs.script, "", "без реплая — демо, script пустой");
   const tgText = (c) => (typeof c.body === "string" ? c.body : JSON.stringify(c.body || {}));
   assert.ok(
     calls.tg.some((c) => c.url.includes("/sendMessage") && tgText(c).includes("Видеотест запущен")),
@@ -1213,6 +1214,35 @@ test("webhook: /videotest без GITHUB_TOKEN — подсказка, dispatch �
   assert.ok(
     calls.tg.some((c) => c.url.includes("/sendMessage") && tgText(c).includes("GITHUB_TOKEN")),
     "админу ушла подсказка про секрет"
+  );
+});
+
+test("webhook: /videotest ответом на текст — сценарий уходит в dispatch", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const calls = installFetchMock(); // dispatch 204
+  const env = makeEnv();
+  const article = "# Фишинг\n\nМошенники шлют письма от имени банков.";
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 42,
+      message: {
+        message_id: 10, chat: { id: 1 }, from: { id: 1 }, text: "/videotest",
+        reply_to_message: { message_id: 7, chat: { id: 1 }, text: article },
+      },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  const disp = calls.github.filter((c) => c.url.includes("/actions/workflows/video-test.yml/dispatches"));
+  assert.equal(disp.length, 1, "dispatch вызван один раз");
+  const payload = JSON.parse(disp[0].opts.body || "{}");
+  assert.equal(payload.inputs.script, article, "текст реплая ушёл как сценарий");
+  const tgText = (c) => (typeof c.body === "string" ? c.body : JSON.stringify(c.body || {}));
+  assert.ok(
+    calls.tg.some((c) => c.url.includes("/sendMessage") && tgText(c).includes("твой сценарий")),
+    "админу ушло подтверждение про свой сценарий"
   );
 });
 

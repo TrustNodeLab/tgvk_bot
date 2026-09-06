@@ -9,6 +9,16 @@
     python bot/video_gen.py --seconds 10     # короткая версия
     python bot/video_gen.py --smoke          # быстрая проверка (6 сек, 10 fps)
     python bot/video_gen.py --no-audio       # без озвучки (без сети)
+    python bot/video_gen.py --script-file article.txt   # видео из своего текста:
+                               # длина = длина озвучки, скролл синхронен ей
+
+Свой сценарий: обычный текст или статья. `# Заголовок` начинает раздел,
+без заголовков текст режется на части ~600 символов. Каждая часть —
+блок на «сайте» + кусок озвучки; скролл идёт ровно под озвучку
+(время показа части = длительность её аудио), поэтому ничего не лагает:
+кадр в секунду всегда соответствует произносимому тексту.
+
+Плавность: 24 fps по умолчанию (было 15 — отсюда рывки скролла).
 
 Зависимости (не входят в requirements.txt прод-контура):
     pip install imageio-ffmpeg edge-tts numpy
@@ -20,9 +30,11 @@ ffmpeg-бинарник берётся из imageio-ffmpeg, иначе сист�
 import argparse
 import asyncio
 import os
+import re
 import shutil
 import subprocess
 import sys
+import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -31,7 +43,7 @@ from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 # ---------- константы ----------
 
 W, H = 1080, 1920          # вертикальное видео (формат клипов/шортсов)
-FPS_DEFAULT = 15
+FPS_DEFAULT = 24           # 24 fps: скролл плавный (15 fps давал рывки)
 BG = (11, 18, 32)
 PANEL = (19, 28, 48)
 ACCENT = (255, 210, 74)
@@ -261,30 +273,191 @@ def build_site():
     return site, anchors
 
 
-# ---------- озвучка ----------
+# ---------- свой сценарий: текст/статья пользователя ----------
 
-async def _tts_save(text, voice, out_mp3):
+SCRIPT_SECTION_MAX = 600  # макс. символов тела секции (дальше — новая «Часть»)
+
+
+def parse_script(text):
+    """Режет произвольный текст на секции [{heading, body, voice, caption}].
+
+    Строка `# Заголовок` начинает новую секцию; без заголовков текст
+    чанкуется по ~600 символов. voice — то, что произносит диктор.
+    """
+    text = (text or "").replace("\r\n", "\n").strip()
+    if not text:
+        raise ValueError("пустой сценарий")
+    raw = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    paras = []
+    for p in raw:
+        p = re.sub(r"\s+", " ", p)
+        if p.startswith("#"):
+            paras.append({"head": p.lstrip("#").strip() or "Раздел"})
+        elif p:
+            paras.append({"body": p})
+    sections, cur = [], {"heading": None, "body": []}
+
+    def body_len():
+        return sum(len(b) + 1 for b in cur["body"])
+
+    def flush():
+        if cur["body"] or cur["heading"]:
+            cur["body"] and sections.append(
+                {"heading": cur["heading"], "body": " ".join(cur["body"]).strip()})
+
+    for p in paras:
+        if "head" in p:
+            flush()
+            cur = {"heading": p["head"], "body": []}
+        else:
+            if cur["body"] and body_len() + len(p["body"]) > SCRIPT_SECTION_MAX:
+                flush()
+                cur = {"heading": None, "body": []}
+            cur["body"].append(p["body"])
+    flush()
+    out = []
+    n = 0
+    for s in sections:
+        if not s["body"]:
+            continue
+        n += 1
+        head = s["heading"] or f"Часть {n}"
+        voice = f"{head}. {s['body']}" if s["heading"] else s["body"]
+        out.append({"heading": head, "body": s["body"], "voice": voice,
+                    "caption": head[:40]})
+    if not out:
+        raise ValueError("в сценарии нет текста")
+    return out
+
+
+def build_site_custom(sections, title="Видеоразбор"):
+    """Строит высокий «сайт» из секций сценария. Возвращает (img, anchors)."""
+    site = Image.new("RGB", (W, 16000), BG)
+    d = ImageDraw.Draw(site)
+
+    f_nav = _font(JURA, 30, 700)
+    f_hero = _font(EXO2, 84, 900)
+    f_sub = _font(JURA, 36, 500)
+    f_h2 = _font(EXO2, 56, 900)
+    f_body = _font(JURA, 34, 500)
+
+    anchors = [{"caption": "Начало", "y_top": 0}]
+    for i in range(0, W, 4):
+        c = 11 + int(8 * (1 - abs(i - W / 2) / (W / 2)))
+        d.line([(i, 0), (i, 1050)], fill=(c, c + 7, c + 20))
+    d.rectangle([0, 0, W, 110], fill=(8, 13, 25))
+    d.text((48, 34), "TRUSTNODE", font=f_nav, fill=ACCENT)
+    for j, dot in enumerate(["•", "•", "•"]):
+        d.text((W - 200 + j * 55, 34), dot, font=f_nav, fill=SUB)
+    d.rectangle([48, 1050 - 8, W - 48, 1050], fill=ACCENT)
+    for ln in _wrap(d, title.upper(), f_hero, W - 160):
+        tw, th = _ts(d, ln, f_hero)
+        d.text(((W - tw) // 2, 260), ln, font=f_hero, fill=TEXT)
+        break
+    _center(d, 560, "видеоразбор статьи", f_sub, SUB)
+    d.rounded_rectangle([W // 2 - 260, 700, W // 2 + 260, 810], radius=24, fill=ACCENT)
+    _center(d, 730, "СМОТРЕТЬ", f_nav, (17, 17, 17), W // 2)
+    y = 1050
+
+    for s in sections:
+        anchors.append({"caption": s["caption"], "y_top": y})
+        _center(d, y + 50, f"// {s['heading'][:34].upper()}", f_sub, ACCENT)
+        yy = y + 140
+        for para in s["body"].split(". "):
+            for ln in _wrap(d, para.strip(), f_body, W - 160):
+                d.text((80, yy), ln, font=f_body, fill=TEXT)
+                yy += 52
+            yy += 26
+        yy += 60
+        d.rectangle([80, yy, W - 80, yy + 6], fill=LINE)
+        y = yy + 120
+
+    _center(d, y + 40, "СТУДИЯ ЦИФРОВОЙ БЕЗОПАСНОСТИ", f_nav, SUB)
+    y += 200
+    return site.crop((0, 0, W, y)), anchors
+
+
+# ---------- озвучка (посекционная, с замером длительностей) ----------
+
+async def _tts_many(items, voice, tmpdir):
     from edge_tts import Communicate
 
-    await Communicate(text, voice).save(out_mp3)
+    async def one(i, text):
+        out = os.path.join(tmpdir, f"sec_{i}.mp3")
+        await Communicate(text, voice).save(out)
+        return out
+
+    return await asyncio.gather(*[one(i, s["voice"]) for i, s in enumerate(items)])
 
 
-def make_voiceover(out_mp3, voice):
-    """Склеивает voice-тексты секций в один mp3. Возвращает True/False."""
+def mp3_duration(ffmpeg, path):
+    """Длительность mp3 в секундах через `ffmpeg -i` (без ffprobe)."""
+    r = subprocess.run([ffmpeg, "-i", path], capture_output=True, text=True)
+    m = re.search(r"Duration: (\d+):(\d+):([\d.]+)", r.stderr or "")
+    if not m:
+        return 0.0
+    return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
+
+
+def _estimate_weights(sections):
+    """Грубая оценка длительностей (русская речь ~12 симв/с), без сети."""
+    return [max(1.5, len(s["voice"]) / 12.0) for s in sections]
+
+
+def make_voiceover_sections(ffmpeg, sections, voice, tmpdir):
+    """Озвучивает каждую секцию отдельно, склеивает с паузами 0.5с.
+
+    Возвращает (voice_mp3 | None, weights) — weights[i] = время показа
+    секции = длительность её аудио + пауза. Скролл идёт ровно под голос,
+    поэтому рассинхрона и «лагов» нет.
+    """
     try:
         import edge_tts  # noqa: F401
     except ImportError:
         print("[video] edge-tts не установлен — видео будет без звука")
-        return False
-    full = " ".join(s["voice"] for s in SECTIONS)
-    print(f"[video] озвучка ({len(full)} символов, {voice})...")
+        return None, _estimate_weights(sections)
+    print(f"[video] озвучка {len(sections)} секций ({voice})...")
     try:
-        asyncio.run(_tts_save(full, voice, out_mp3))
-        print(f"[video] озвучка готова: {out_mp3}")
-        return True
+        files = asyncio.run(_tts_many(sections, voice, tmpdir))
     except Exception as e:
-        print(f"[video] TTS не удался ({e}) — видео будет без звука")
-        return False
+        print(f"[video] TTS не удался ({type(e).__name__}: {e}) — видео будет без звука")
+        traceback.print_exc()
+        return None, _estimate_weights(sections)
+    durs = []
+    for f, s in zip(files, sections):
+        dd = mp3_duration(ffmpeg, f)
+        durs.append(dd if dd > 0.3 else max(1.5, len(s["voice"]) / 12.0))
+    sil = os.path.join(tmpdir, "sil.mp3")
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+         "-t", "0.5", "-c:a", "libmp3lame", sil],
+        capture_output=True)
+    lst = os.path.join(tmpdir, "join.txt")
+    with open(lst, "w", encoding="utf-8") as fh:
+        # concat-демуксер резолвит относительные пути от папки join-файла,
+        # а не от cwd — поэтому только абсолютные пути; backslash заодно
+        # меняем на прямой слэш (в кавычках escape мешают)
+        def _jp(p):
+            return os.path.abspath(p).replace("\\", "/")
+        for i, f in enumerate(files):
+            fh.write("file '%s'\n" % _jp(f))
+            if i < len(files) - 1:
+                fh.write("file '%s'\n" % _jp(sil))
+    out = os.path.join(tmpdir, "voice.mp3")
+    r = subprocess.run(
+        [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", out],
+        capture_output=True)
+    if r.returncode != 0:
+        r = subprocess.run(
+            [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", lst,
+             "-c:a", "libmp3lame", out],
+            capture_output=True)
+        if r.returncode != 0:
+            print("[video] склейка аудио не удалась — видео будет без звука")
+            return None, [d + 0.5 for d in durs]
+    weights = [d + (0.5 if i < len(durs) - 1 else 0.0) for i, d in enumerate(durs)]
+    print(f"[video] озвучка готова: {out} ({sum(weights):.1f} c голоса)")
+    return out, weights
 
 
 # ---------- скролл и кадры ----------
@@ -294,15 +467,16 @@ def smoothstep(t):
     return t * t * (3 - 2 * t)
 
 
-def scroll_plan(site_h, seconds, anchors):
+def scroll_plan(site_h, seconds, anchors, weights=None):
     """Позиция верхнего края вьюпорта для каждого момента времени.
 
     1с — стоим на начале, 1.5с — стоим на конце, между — плавный скролл
-    через якоря секций (веса по длине озвучки).
+    через якоря секций. weights[i] — время показа секции i (в идеале =
+    длительность её озвучки: тогда кадр всегда соответствует голосу).
     """
     max_off = max(0, site_h - H)
-    weights = [max(1, len(s["voice"])) for s in SECTIONS]
-    total_w = sum(weights)
+    weights = list(weights) if weights else [max(1, len(s["voice"])) for s in SECTIONS]
+    total_w = sum(weights) or 1.0
     bounds = [1.0]  # время конца стояния на старте и конца каждого сегмента
     span = seconds - 1.0 - 1.5
     acc = 1.0
@@ -324,12 +498,13 @@ def scroll_plan(site_h, seconds, anchors):
     return pos, bounds
 
 
-def section_at(t, bounds):
+def section_at(t, bounds, sections=None):
+    sections = sections if sections is not None else SECTIONS
     idx = 0
-    for i in range(len(SECTIONS)):
+    for i in range(len(sections)):
         if t >= bounds[i]:
             idx = i
-    return SECTIONS[idx]["caption"]
+    return sections[idx]["caption"]
 
 
 def find_ffmpeg():
@@ -337,18 +512,22 @@ def find_ffmpeg():
         import imageio_ffmpeg
 
         exe = imageio_ffmpeg.get_ffmpeg_exe()
-        if os.path.exists(exe):
+        if exe and os.path.exists(exe):
             return exe
-    except ImportError:
+    except Exception:
+        # imageio-ffmpeg может быть без бинарника (RuntimeError) —
+        # тогда пробуем системный ffmpeg
         pass
     return shutil.which("ffmpeg")
 
 
-def render_video(site, anchors, seconds, fps, out_silent, caption_on=True):
+def render_video(site, anchors, seconds, fps, out_silent, caption_on=True,
+                 weights=None, sections=None):
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         raise RuntimeError("нет ffmpeg: pip install imageio-ffmpeg")
-    pos, bounds = scroll_plan(site.height, seconds, anchors)
+    pos, bounds = scroll_plan(site.height, seconds, anchors, weights)
+    sections = sections if sections is not None else SECTIONS
     n = int(seconds * fps)
     f_cap = _font(JURA, 30, 700)
     f_url = _font(JURA, 28, 700)
@@ -381,7 +560,7 @@ def render_video(site, anchors, seconds, fps, out_silent, caption_on=True):
         ov.rectangle([0, 96, W * frac, 104], fill=ACCENT)
         # подпись текущей секции
         if caption_on:
-            cap = section_at(t, bounds)
+            cap = section_at(t, bounds, sections)
             cw, ch = _ts(ov, cap, f_cap)
             px0 = (W - cw) // 2 - 28
             ov.rounded_rectangle([px0, H - 120, px0 + cw + 56, H - 120 + ch + 36],
@@ -419,19 +598,39 @@ def mux_audio(ffmpeg, silent_mp4, voice_mp3, out_mp4, seconds):
 
 
 def generate(seconds=30, out="out/video_test.mp4", fps=FPS_DEFAULT,
-             voice=VOICE_DEFAULT, no_audio=False, tmpdir="out/tmp_video"):
+              voice=VOICE_DEFAULT, no_audio=False, tmpdir="out/tmp_video",
+              script_text=None):
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     os.makedirs(tmpdir, exist_ok=True)
-    site, anchors = build_site()
-    print(f"[video] сайт {site.width}x{site.height}, секций: {len(anchors)}")
+    ffmpeg = find_ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError("нет ffmpeg: pip install imageio-ffmpeg")
+    if script_text:
+        # --- режим своего сценария: длина видео = длина озвучки ---
+        parsed = parse_script(script_text)
+        first = parsed[0]["heading"]
+        title = first if not first.startswith("Часть") else "Видеоразбор"
+        site, anchors = build_site_custom(parsed, title)
+        print(f"[video] свой сценарий: секций {len(parsed)}, сайт "
+              f"{site.width}x{site.height}")
+        sections = parsed
+    else:
+        site, anchors = build_site()
+        print(f"[video] сайт {site.width}x{site.height}, секций: {len(anchors)}")
+        sections = SECTIONS
+    if no_audio:
+        voice_mp3, weights = None, _estimate_weights(sections)
+    else:
+        voice_mp3, weights = make_voiceover_sections(ffmpeg, sections, voice, tmpdir)
+    if script_text or voice_mp3:
+        # длина по реальной озвучке: голос + стоянки 1с + 1.5с
+        seconds = round(sum(weights) + 1.0 + 1.5, 1)
+        print(f"[video] длина видео по озвучке: {seconds} c")
     silent = os.path.join(tmpdir, "silent.mp4")
-    render_video(site, anchors, seconds, fps, silent)
-    voice_mp3 = os.path.join(tmpdir, "voice.mp3")
-    has_audio = False
-    if not no_audio:
-        has_audio = make_voiceover(voice_mp3, voice)
-    if has_audio:
-        mux_audio(find_ffmpeg(), silent, voice_mp3, out, seconds)
+    render_video(site, anchors, seconds, fps, silent, weights=weights,
+                 sections=sections)
+    if voice_mp3:
+        mux_audio(ffmpeg, silent, voice_mp3, out, seconds)
     else:
         shutil.copy(silent, out)
     size = os.path.getsize(out)
@@ -440,7 +639,7 @@ def generate(seconds=30, out="out/video_test.mp4", fps=FPS_DEFAULT,
 
 
 def main():
-    ap = argparse.ArgumentParser(description="Тест: видео «футуристичный сайт» 30 сек")
+    ap = argparse.ArgumentParser(description="Видео «футуристичный сайт»")
     ap.add_argument("--seconds", type=int, default=30)
     ap.add_argument("--fps", type=int, default=FPS_DEFAULT)
     ap.add_argument("--out", default="out/video_test.mp4")
@@ -448,12 +647,20 @@ def main():
     ap.add_argument("--no-audio", action="store_true")
     ap.add_argument("--smoke", action="store_true",
                     help="быстрая проверка: 6 сек, 10 fps")
+    ap.add_argument("--script-text", default="",
+                    help="свой сценарий текстом (длина видео = длина озвучки)")
+    ap.add_argument("--script-file", default="",
+                    help="файл со сценарием (текст статьи)")
     a = ap.parse_args()
+    script = a.script_text
+    if a.script_file:
+        with open(a.script_file, encoding="utf-8") as fh:
+            script = fh.read()
     if a.smoke:
         a.seconds, a.fps = 6, 10
         a.out = "out/video_smoke.mp4"
     generate(seconds=a.seconds, out=a.out, fps=a.fps,
-             voice=a.voice, no_audio=a.no_audio)
+             voice=a.voice, no_audio=a.no_audio, script_text=script or None)
 
 
 if __name__ == "__main__":
