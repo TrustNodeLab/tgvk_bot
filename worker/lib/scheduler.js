@@ -220,13 +220,17 @@ export async function dispatchToGitHub(env, cand) {
 // Воркер не умеет рендерить видео (нет ffmpeg/PIL, лимит CPU), поэтому
 // /videotest только ставит задачу: workflow_dispatch video-test.yml,
 // а готовый MP4 workflow сам присылает админу в Telegram (sendVideo).
-export async function dispatchVideoTest(env, seconds, script) {
+export async function dispatchVideoTest(env, seconds, script, style, topic) {
   const { GITHUB_TOKEN, OWNER, REPO } = env;
   if (!GITHUB_TOKEN || !OWNER || !REPO) return { ok: false, reason: "no github" };
   const secs = Math.max(5, Math.min(120, Math.round(Number(seconds) || 30)));
   // Свой сценарий: текст статьи (режется до 3500 символов — лимит TG-сообщения
   // всё равно ~4096). Пусто = демо-режим.
   const scr = String(script || "").slice(0, 3500);
+  // Cinematic-режим: style из bot/video_styles.py + тема ролика.
+  // default = старый скролл сайта (обратная совместимость).
+  const st = String(style || "default").slice(0, 40);
+  const tp = String(topic || "").slice(0, 300);
   const res = await fetch(
     `https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/video-test.yml/dispatches`,
     {
@@ -237,11 +241,11 @@ export async function dispatchVideoTest(env, seconds, script) {
         "Content-Type": "application/json",
         "User-Agent": "tgvk-bot-webhook",
       },
-      body: JSON.stringify({ ref: "main", inputs: { seconds: String(secs), script: scr } }),
+      body: JSON.stringify({ ref: "main", inputs: { seconds: String(secs), script: scr, style: st, topic: tp } }),
     }
   );
   if (!res.ok) return { ok: false, reason: `github ${res.status}`, seconds: secs };
-  return { ok: true, seconds: secs, custom: scr.length > 0 };
+  return { ok: true, seconds: secs, custom: scr.length > 0, style: st, topic: tp };
 }
 
 // ---------- публикация ----------

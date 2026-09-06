@@ -1191,8 +1191,58 @@ test("webhook: /videotest ставит задачу video-test.yml в GitHub и 
   );
 });
 
-test("webhook: /videotest без GITHUB_TOKEN — подсказка, dispatch не вызывается", async () => {
+test("webhook: /cine ставит cinematic-задачу (style+topic) в video-test.yml", async () => {
   const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const calls = installFetchMock(); // dispatch 204
+  const env = makeEnv(); // GITHUB_TOKEN/OWNER/REPO есть
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 43,
+      message: { message_id: 11, chat: { id: 1 }, from: { id: 1 }, text: "/cine Как крадут сессии" },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  const disp = calls.github.filter((c) => c.url.includes("/actions/workflows/video-test.yml/dispatches"));
+  assert.equal(disp.length, 1, "dispatch вызван один раз");
+  const payload = JSON.parse(disp[0].opts.body || "{}");
+  assert.equal(payload.inputs.style, "cybersecurity_cinematic", "стиль cinematic ушёл в inputs");
+  assert.equal(payload.inputs.topic, "Как крадут сессии", "тема ушла в inputs");
+  const tgText = (c) => (typeof c.body === "string" ? c.body : JSON.stringify(c.body || {}));
+  assert.ok(
+    calls.tg.some((c) => c.url.includes("/sendMessage") && tgText(c).includes("Cinematic-трейлер запущен")),
+    "админу ушло подтверждение запуска"
+  );
+});
+
+test("webhook: /cine без темы — подсказка по использованию", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const calls = installFetchMock();
+  const env = makeEnv();
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 44,
+      message: { message_id: 12, chat: { id: 1 }, from: { id: 1 }, text: "/cine" },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(
+    calls.github.filter((c) => c.url.includes("/dispatches")).length, 0,
+    "без темы dispatch не вызывается"
+  );
+  const tgText = (c) => (typeof c.body === "string" ? c.body : JSON.stringify(c.body || {}));
+  assert.ok(
+    calls.tg.some((c) => c.url.includes("/sendMessage") && tgText(c).includes("/cine")),
+    "админу ушла подсказка по использованию"
+  );
+});
+
+test("webhook: /videotest без GITHUB_TOKEN — подсказка, dispatch не вызывается", async () => {  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
   const calls = installFetchMock();
   const env = makeEnv();
   delete env.GITHUB_TOKEN;

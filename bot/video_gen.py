@@ -651,7 +651,23 @@ def main():
                     help="свой сценарий текстом (длина видео = длина озвучки)")
     ap.add_argument("--script-file", default="",
                     help="файл со сценарием (текст статьи)")
+    ap.add_argument("--style", default="default",
+                    help="стиль: default (скролл сайта, как раньше) или "
+                         "cybersecurity_cinematic / cinematic / documentary / "
+                         "social_dynamic (см. bot/video_styles.py)")
+    ap.add_argument("--topic", default="",
+                    help="тема cinematic-ролика (только для engine=cine)")
     a = ap.parse_args()
+    if a.style != "default":
+        # --- cinematic-режим: тема -> shot list -> монтаж -> MP4 ---
+        import video_cine as cine
+        if a.smoke:
+            a.seconds, a.fps = 8, 10
+            a.out = "out/video_cine_smoke.mp4"
+        cine.generate_cinematic(topic=a.topic or None, seconds=a.seconds,
+                                style=a.style, out=a.out, fps=a.fps,
+                                voice=a.voice, no_audio=a.no_audio)
+        return
     script = a.script_text
     if a.script_file:
         with open(a.script_file, encoding="utf-8") as fh:

@@ -11,6 +11,14 @@ on:
         description: "Свой сценарий: текст/статья (пусто = демо). Разделы через '# Заголовок'"
         required: false
         default: ""
+      style:
+        description: "Стиль: default (скролл сайта) или cybersecurity_cinematic / cinematic / documentary / social_dynamic"
+        required: false
+        default: "default"
+      topic:
+        description: "Тема cinematic-ролика (только для engine=cine; пусто = тема по умолчанию)"
+        required: false
+        default: ""
 
 jobs:
   video:
@@ -31,13 +39,20 @@ jobs:
       - name: Generate video
         env:
           SCRIPT_TEXT: ${{ github.event.inputs.script }}
+          VIDEO_STYLE: ${{ github.event.inputs.style }}
+          VIDEO_TOPIC: ${{ github.event.inputs.topic }}
         run: |
           EXTRA=""
           if [ -n "$SCRIPT_TEXT" ]; then
             printf '%s' "$SCRIPT_TEXT" > script.txt
             EXTRA="--script-file script.txt"
           fi
-          python bot/video_gen.py --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4 $EXTRA
+          if [ -n "$VIDEO_STYLE" ] && [ "$VIDEO_STYLE" != "default" ]; then
+            python bot/video_gen.py --style "$VIDEO_STYLE" --topic "$VIDEO_TOPIC" \
+              --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4
+          else
+            python bot/video_gen.py --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4 $EXTRA
+          fi
 
       - name: Upload video
         uses: actions/upload-artifact@v4
