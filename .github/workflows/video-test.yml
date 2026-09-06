@@ -1,0 +1,32 @@
+name: Video test (futuristic site)
+
+on:
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Длина видео в секундах"
+        required: false
+        default: "30"
+
+jobs:
+  video:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt imageio-ffmpeg edge-tts numpy
+
+      - name: Generate video
+        run: python bot/video_gen.py --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4
+
+      - name: Upload video
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-test
+          path: out/video_test.mp4
+          retention-days: 7
