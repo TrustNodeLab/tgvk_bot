@@ -216,6 +216,31 @@ export async function dispatchToGitHub(env, cand) {
   return true;
 }
 
+// ---------- видеотест: генерация тестового видео в GitHub Actions ----------
+// Воркер не умеет рендерить видео (нет ffmpeg/PIL, лимит CPU), поэтому
+// /videotest только ставит задачу: workflow_dispatch video-test.yml,
+// а готовый MP4 workflow сам присылает админу в Telegram (sendVideo).
+export async function dispatchVideoTest(env, seconds) {
+  const { GITHUB_TOKEN, OWNER, REPO } = env;
+  if (!GITHUB_TOKEN || !OWNER || !REPO) return { ok: false, reason: "no github" };
+  const secs = Math.max(5, Math.min(120, Math.round(Number(seconds) || 30)));
+  const res = await fetch(
+    `https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/video-test.yml/dispatches`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GITHUB_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "User-Agent": "tgvk-bot-webhook",
+      },
+      body: JSON.stringify({ ref: "main", inputs: { seconds: String(secs) } }),
+    }
+  );
+  if (!res.ok) return { ok: false, reason: `github ${res.status}`, seconds: secs };
+  return { ok: true, seconds: secs };
+}
+
 // ---------- публикация ----------
 
 export async function publishPackage(env, pkg, dry, target = "all") {

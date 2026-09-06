@@ -12,6 +12,7 @@ import { loadSources } from "./lib/feeds.js";
 import {
   tick as schedulerTick,
   dispatchToGitHub,
+  dispatchVideoTest,
   publishPackage,
   nextFreeSlot,
   rebuildDigestPreview,
@@ -100,6 +101,7 @@ const HELP_TEXT =
   "/keyword add|remove &lt;слова&gt; — ключевые слова\n" +
   "/rescan — полный тик, /export — история, /version — версия\n" +
   "/healthcheck — здоровье студии (пропуски окон, срывы, опросы)\n" +
+  "/videotest [сек] — тестовая генерация видео (MP4 придёт сюда же)\n" +
   "<b>Мультигруппы VK:</b>\n" +
   "/mg — статус групп (DGC/LostLink/LostArt), /mg-tick — публикация по слотам\n" +
   "/mg-edit — конфиг групп, /mg-approve on|off — согласование постов\n" +
@@ -143,6 +145,7 @@ const COMMANDS = [
   { command: "mg-edit", description: "Мультигруппы VK: конфиг групп" },
   { command: "mg-approve", description: "Мультигруппы VK: согласование on|off" },
   { command: "healthcheck", description: "Здоровье студии" },
+  { command: "videotest", description: "Тестовая генерация видео (MP4 в чат)" },
 ];
 
 // ---------- меню: reply-клавиатура + инлайн-кнопки ----------
@@ -2086,6 +2089,32 @@ async function handleCommand(env, state, chatId, text) {
     case "/version":
       await sendMessage(env, chatId, `🧬 TrustNode SMM v${VERSION} (Worker publish contour)`);
       break;
+
+    case "/videotest": {
+      // /videotest [секунды] — тестовая генерация видео прямо из бота.
+      // Воркер ставит задачу в GitHub Actions, готовый MP4 workflow
+      // присылает админу сюда же (sendVideo). Секунды: 5..120, по умолчанию 30.
+      const raw = parseInt(args, 10);
+      const secs = Math.max(5, Math.min(120, Number.isFinite(raw) ? raw : 30));
+      try {
+        const r = await dispatchVideoTest(env, secs);
+        if (r.ok) {
+          await sendMessage(env, chatId,
+            `🎬 <b>Видеотест запущен</b> (${r.seconds} сек)\n` +
+            `Собираю в GitHub Actions — это займёт ~3–5 мин.\n` +
+            `Готовое видео пришлю сюда же, в этот чат.`);
+        } else if (r.reason === "no github") {
+          await sendMessage(env, chatId,
+            `⚠️ Видеотест недоступен: в воркере нет GITHUB_TOKEN/OWNER/REPO. ` +
+            `Добавьте секреты и задеплойте воркер заново.`);
+        } else {
+          await sendMessage(env, chatId, `⚠️ Не смог запустить видеотест: ${escHtml(r.reason || "ошибка")}`);
+        }
+      } catch (e) {
+        await sendMessage(env, chatId, `⚠️ Не смог запустить видеотест: ${escHtml(e.message)}`);
+      }
+      break;
+    }
 
     case "/mg":
     case "/mg-status": {

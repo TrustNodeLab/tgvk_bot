@@ -96,6 +96,9 @@ export function installFetchMock(dispatchStatus = 204, mixOptions = {}) {
       if (u.includes("/actions/workflows/poll.yml/dispatches")) {
         return new Response(dispatchStatus === 204 ? null : "boom", { status: dispatchStatus });
       }
+      if (u.includes("/actions/workflows/video-test.yml/dispatches")) {
+        return new Response(dispatchStatus === 204 ? null : "boom", { status: dispatchStatus });
+      }
       return jsonResp({});
     }
     // любые фиды — пустой RSS, чтобы скан не находил новостей
@@ -1159,6 +1162,58 @@ test("event dialog: админ создаёт ивент в два шага (т�
   assert.ok(ev, "ивент на складе");
   assert.equal(ev.caption, "Вебинар: защита от фишинга");
   assert.ok(ev.scheduled_for > Date.now() - 60 * 1000, "время публикации в будущем");
+});
+
+test("webhook: /videotest ставит задачу video-test.yml в GitHub и подтверждает админу", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const calls = installFetchMock(); // dispatch 204
+  const env = makeEnv(); // GITHUB_TOKEN/OWNER/REPO есть
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 40,
+      message: { message_id: 8, chat: { id: 1 }, from: { id: 1 }, text: "/videotest 10" },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  const disp = calls.github.filter((c) => c.url.includes("/actions/workflows/video-test.yml/dispatches"));
+  assert.equal(disp.length, 1, "workflow_dispatch video-test.yml вызван один раз");
+  const payload = JSON.parse(disp[0].opts.body || "{}");
+  assert.equal(payload.ref, "main", "dispatch на ветку main");
+  assert.equal(payload.inputs.seconds, "10", "секунды из аргумента команды");
+  const tgText = (c) => (typeof c.body === "string" ? c.body : JSON.stringify(c.body || {}));
+  assert.ok(
+    calls.tg.some((c) => c.url.includes("/sendMessage") && tgText(c).includes("Видеотест запущен")),
+    "админу ушло подтверждение запуска"
+  );
+});
+
+test("webhook: /videotest без GITHUB_TOKEN — подсказка, dispatch не вызывается", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const calls = installFetchMock();
+  const env = makeEnv();
+  delete env.GITHUB_TOKEN;
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 41,
+      message: { message_id: 9, chat: { id: 1 }, from: { id: 1 }, text: "/videotest" },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(
+    calls.github.filter((c) => c.url.includes("/dispatches")).length, 0,
+    "без токена GitHub не вызывается"
+  );
+  const tgText = (c) => (typeof c.body === "string" ? c.body : JSON.stringify(c.body || {}));
+  assert.ok(
+    calls.tg.some((c) => c.url.includes("/sendMessage") && tgText(c).includes("GITHUB_TOKEN")),
+    "админу ушла подсказка про секрет"
+  );
 });
 
 test("tick: autopost вкл -> одиночная новость публикуется и пишется в лог (без GitHub)", async () => {

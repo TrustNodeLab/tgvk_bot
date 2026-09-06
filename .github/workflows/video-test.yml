@@ -11,6 +11,9 @@ on:
 jobs:
   video:
     runs-on: ubuntu-latest
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
     steps:
       - uses: actions/checkout@v5
 
@@ -30,3 +33,21 @@ jobs:
           name: video-test
           path: out/video_test.mp4
           retention-days: 7
+
+      # Готовое видео — админу прямо в Telegram (тест «в самом боте»:
+      # команду /videotest отдают в чате, MP4 возвращается в тот же чат).
+      - name: Send video to Telegram
+        if: success()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+            -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
+            -F video="@out/video_test.mp4" \
+            -F supports_streaming=true \
+            -F caption="🎬 Видеотест готов (${{ github.event.inputs.seconds }} сек, run ${{ github.run_id }})"
+
+      - name: Notify failure to Telegram
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\":\"${TELEGRAM_ADMIN_CHAT_ID}\",\"text\":\"❌ Видеотест не собрался (run ${{ github.run_id }}). Смотри лог в Actions → Video test.\"}"
