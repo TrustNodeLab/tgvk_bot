@@ -156,7 +156,7 @@ _VALID = {
                   "speed_ramp"},
     "sfx": {"impact", "whoosh", "riser", "click", "notify", "bass",
              "silence", "none"},
-    "mode": {"pop", "tracking", "reveal", "rise", "whisper"},
+    "mode": {"pop", "tracking", "reveal", "rise", "whisper", "sub"},
 }
 
 # Safe area: текст НИКОГДА не выходит за эти границы (доля кадра 1080x1920).
@@ -165,6 +165,30 @@ SAFE_R = W - SAFE_L
 SAFE_T = int(H * 0.08)          # 154 px сверху/снизу
 SAFE_B = H - SAFE_T
 SAFE_W = SAFE_R - SAFE_L        # 886 px под текст
+
+
+def _text_chars(s):
+    """Все символы экранного текста шота (ударные + субтитр)."""
+    n = 0
+    for t in (s.get("texts") or []):
+        for ln in (t.get("lines") or []):
+            n += len(str(ln))
+    if s.get("sub"):
+        n += len(str(s["sub"]))
+    return n
+
+
+def _min_dur(s):
+    """Минимум длительности шота (M15, TikTok-читаемость): текст на экране
+    должен успеть прочитаться (~14 символов/сек + запас)."""
+    typ = s.get("type", "cinematic")
+    chars = _text_chars(s)
+    read = chars / 14.0 + 0.5 if chars else 0.0
+    if typ == "typography":
+        return max(0.9, read)
+    if typ == "graphic":
+        return max(0.4, read)
+    return max(0.6, read)
 
 
 def _coerce_shots(raw, seconds):
@@ -204,6 +228,12 @@ def _coerce_shots(raw, seconds):
             # автотип: чисто текстовый фон + текст = typography,
             # текст поверх кинокадра = cinematic (текст подчёркивает видео)
             typ = "typography" if (texts and vis in PURE_TYPO_VISUALS) else "cinematic"
+        voice = str(s.get("voice") or "").strip()[:140]
+        sub = str(s.get("sub") or "").strip()[:70]
+        # субтитр — только поверх кинокадра (TikTok: по центру, спокойный);
+        # на ударных текстовых вставках субтитр не нужен (там уже текст)
+        subs = ([{"lines": [sub], "mode": "sub"}]
+                if (sub and typ == "cinematic") else [])
         shots.append({
             "id": f"S{i + 1:02d}",
             "act": s.get("act") if s.get("act") in _VALID["act"] else "problem",
@@ -212,6 +242,9 @@ def _coerce_shots(raw, seconds):
             "visual": vis,
             "camera": cam,
             "texts": texts,
+            "subs": subs,
+            "sub": sub,
+            "voice": voice,
             "trans_out": tr,
             "sfx": s.get("sfx") if s.get("sfx") in _VALID["sfx"] else "none",
             "speed": speed,
@@ -221,11 +254,17 @@ def _coerce_shots(raw, seconds):
         })
     if len(shots) < 4:
         raise ValueError("слишком мало шотов")
-    # масштабируем длительности под целевую длину
+    # масштабируем длительности под целевую длину, но не ниже минимума
+    # читаемости (M15): текст должен успеть прочитаться
     total = sum(s["dur"] for s in shots)
     k = seconds / max(0.1, total)
     for s in shots:
-        s["dur"] = max(0.3, s["dur"] * k)
+        s["dur"] = max(_min_dur(s), s["dur"] * k)
+    total = sum(s["dur"] for s in shots)
+    if total > seconds:
+        k2 = seconds / total
+        for s in shots:
+            s["dur"] = max(0.4, s["dur"] * k2)
     return shots
 
 
@@ -243,12 +282,16 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
     k = max(0.4, seconds / 42.0)
 
     def sc(act, dur, visual, camera, texts, trans_out, sfx="none",
-           speed=(1.0, 1.0), accent="accent", fx="", typ=None):
+           speed=(1.0, 1.0), accent="accent", fx="", typ=None,
+           voice="", sub=""):
         if typ is None:
             typ = ("typography"
                    if (texts and visual in PURE_TYPO_VISUALS) else "cinematic")
+        subs = ([{"lines": [sub[:70]], "mode": "sub"}]
+                if (sub and typ == "cinematic") else [])
         return {"act": act, "dur": dur, "visual": visual, "camera": camera,
-                "texts": texts, "trans_out": trans_out, "sfx": sfx,
+                "texts": texts, "subs": subs, "sub": sub[:70], "voice": voice[:140],
+                "trans_out": trans_out, "sfx": sfx,
                 "speed": speed, "accent": accent, "fx": fx, "type": typ}
 
     def tx(*lines, mode="pop"):
@@ -261,6 +304,48 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
     peak_pool = ["attack_grid", "qr_scan", "token_panel", "server_corridor",
                  "phone_call", "switch_macro", "face_glow", "login_screen"]
     rnd.shuffle(peak_pool)
+
+    # Озвучка TikTok-стиля (M15): спокойные короткие фразы по актам.
+    # Пары (voice — что говорит диктор, sub — субтитр по центру кадра).
+    # Раздаются циклично по шотам акта; topic вплетён в hook/вопрос.
+    NARR = {
+        "hook": [
+            (f"Вас уже могут взламывать. {short}. Прямо сейчас.",
+             "ВЗЛОМ УЖЕ ИДЁТ"),
+        ],
+        "problem": [
+            ("Вам приходит самое обычное сообщение.", "Обычное сообщение"),
+            ("Звонок с незнакомого номера.", "Незнакомый номер"),
+            ("Знакомая страница входа. Почти.", "Почти знакомый вход"),
+            ("Одно нажатие — и вы внутри ловушки.", "Одно нажатие"),
+        ],
+        "escalation": [
+            ("Ссылка. Клик. Вход. Токен.", "Цепочка атаки"),
+            ("Так угоняют доступ за пару минут.", "Доступ за минуты"),
+            ("Серверы уже видят чужого.", "Чужой в сети"),
+        ],
+        "peak": [
+            ("Фишинг. Подмена. Украденная сессия.", "Сессия украдена"),
+            ("Звонки, коды, поддельные экраны.", "Атака со всех сторон"),
+            ("Устройство уже скомпрометировано.", "Устройство скомпрометировано"),
+        ],
+        "twist": [
+            ("Но самое страшное — дальше.", "Самое страшное"),
+            ("Тихо. Слушайте.", "Пауза"),
+            ("Дверь злоумышленникам открываете вы сами.", "Вы сами"),
+        ],
+        "accel": [
+            ("Одна ошибка превращается в один аккаунт.", "Одна ошибка"),
+            ("Одно устройство — и вся система.", "Вся система"),
+        ],
+        "climax": [
+            ("Темп растёт. Система тает на глазах.", "Система тает"),
+            (f"Так кто кого защищает в истории: {short}?", "Кто кого защищает"),
+            ("Вы систему. Или система — вас?", "Вы или вас"),
+            ("ТрастНод. Кибербезопасность простыми словами.", "ТрастНод"),
+        ],
+    }
+    _narr_i = {a: 0 for a in NARR}
 
     # Принцип: CINEMATIC -> TEXT -> CINEMATIC -> TEXT ... Текст ПОДЧЁРКИВАЕТ
     # видео (короткие ударные вставки 1-3 слова), а не заменяет его.
@@ -357,6 +442,19 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
     for i, s in enumerate(shots):
         s = dict(s)
         s["id"] = f"S{i + 1:02d}"
+        # озвучка/субтитр из пула акта (циклично, детерминированно)
+        pool = NARR.get(s.get("act")) or NARR["problem"]
+        v, b = pool[_narr_i[s.get("act", "problem")] % len(pool)] \
+            if s.get("act") in _narr_i else pool[0]
+        _narr_i[s.get("act", "problem")] = _narr_i.get(s.get("act", "problem"), 0) + 1
+        if not s.get("voice"):
+            s["voice"] = v[:140]
+        if not s.get("sub"):
+            s["sub"] = b[:70]
+            if s.get("type") == "cinematic":
+                s["subs"] = [{"lines": [s["sub"]], "mode": "sub"}]
+        # читаемость уже в шаблоне (M15): текст должен успеть прочитаться
+        s["dur"] = max(s["dur"], _min_dur(s))
         # подгон под seconds делает generate_cinematic; тут только id/seed
         s["seed"] = (abs(hash(topic)) + i * 131) % (2 ** 32)
         out.append(s)
@@ -813,6 +911,11 @@ def fit_text_block(d, lines, mode, fonts):
         sizes = [54, 44, 36]
         getf = lambda sz: _font(JURA, sz, 500)
         gap0 = 8
+    elif mode == "sub":
+        # TikTok-субтитр: читаемый, спокойный, максимум 2 строки по центру
+        sizes = [64, 54, 44]
+        getf = lambda sz: _font(JURA, sz, 500)
+        gap0 = 0
     else:
         sizes = [118, 88, 64, 48]
         getf = lambda sz: _font(EXO2, sz, 900)
@@ -822,7 +925,7 @@ def fit_text_block(d, lines, mode, fonts):
         fitted = []
         for ln in lines:
             fitted.extend(_wrap_to_width(d, ln, f, SAFE_W))
-        fitted = fitted[:3]
+        fitted = fitted[:2] if mode == "sub" else fitted[:3]
         if not fitted:
             continue
         if mode == "tracking":
@@ -864,6 +967,9 @@ def draw_texts(img, texts, p, fonts, P):
         block_h = len(fitted) * step
         if mode == "whisper":
             y_base = H // 2 - 120 - block_h // 2
+        elif mode == "sub":
+            # TikTok-субтитр строго по центру кадра
+            y_base = int(H * 0.58) - block_h // 2
         else:
             zone_h = 340
             y_base = H // 2 - (n * zone_h) // 2 + k * zone_h
@@ -897,7 +1003,7 @@ def draw_texts(img, texts, p, fonts, P):
                 for ch, cw in zip(line, widths):
                     d.text((xx, y), ch, font=f, fill=(245, 248, 255, alpha))
                     xx += cw + gap
-            elif mode == "whisper":
+            elif mode == "whisper" or mode == "sub":
                 # маленький текст, медленное проявление, лёгкий трекинг
                 a2 = int(255 * min(1.0, p / 0.35))
                 _, widths = _tracked_width(d, line, f, gap)
@@ -1117,8 +1223,13 @@ def synth_sfx(kind, sr=SR):
     return None
 
 
-def build_soundtrack(shots, bounds, seconds, bpm, pause_win=None, sr=SR):
-    """Микс: тёмный beat-bed по сетке + SFX на склейках. Возвращает int16 mono."""
+def build_soundtrack(shots, bounds, seconds, bpm, pause_win=None, sr=SR,
+                     bed=1.0, sfx_gain=1.0, duck=None):
+    """Микс: тёмный beat-bed по сетке + SFX на склейках. Возвращает int16 mono.
+
+    bed/sfx_gain — уровни из пресета стиля (M15: фон тихий, не мешает голосу).
+    duck — массив 0..1 (огибающая голоса): бит проседает под речью.
+    """
     if np is None:
         return None
     n = int(seconds * sr)
@@ -1132,14 +1243,14 @@ def build_soundtrack(shots, bounds, seconds, bpm, pause_win=None, sr=SR):
             continue  # в паузе — тишина (бит выпадает)
         m = min(len(k), n - i)
         if m > 0 and i < n:
-            mix[i:i + m] += k[:m].astype(np.float64) * 0.35
+            mix[i:i + m] += k[:m].astype(np.float64) * 0.35 * bed
     t = np.arange(n) / sr
     drone = (np.sin(2 * np.pi * 55 * t) * 0.5 + np.sin(2 * np.pi * 82.5 * t) * 0.3)
     drone *= (0.7 + 0.3 * np.sin(2 * np.pi * 0.15 * t))
     if pause_win:
         i0, i1 = int(pause_win[0] * sr), min(n, int(pause_win[1] * sr))
         drone[i0:i1] *= 0.15
-    mix += drone * 2600
+    mix += drone * 2600 * bed
     # SFX на склейках (время конца каждого шота, кроме последнего)
     for s, end in zip(shots, bounds[1:]):
         if s["sfx"] in ("none", "silence") or end >= seconds - 0.2:
@@ -1150,7 +1261,9 @@ def build_soundtrack(shots, bounds, seconds, bpm, pause_win=None, sr=SR):
         i = int(end * sr)
         m = min(len(sfx), n - i)
         if m > 0 and i < n:
-            mix[i:i + m] += sfx[:m].astype(np.float64) * 0.8
+            mix[i:i + m] += sfx[:m].astype(np.float64) * 0.8 * sfx_gain
+    if duck is not None and len(duck) == n:
+        mix *= (1.0 - 0.65 * np.clip(duck, 0.0, 1.0))
     mix = np.clip(mix, -32768, 32767)
     return mix.astype(np.int16)
 
@@ -1175,19 +1288,110 @@ def build_fonts():
     }
 
 
+# ---------- реальные сток-кадры (M15): микс живого видео с графикой ----------
+
+def fetch_stock_clips(tmpdir, queries, max_clips=4):
+    """Скачивает portrait-клипы с Pexels. Возвращает [mp4,...] или [].
+
+    Нужен PEXELS_API_KEY в окружении (бесплатный ключ pexels.com/api).
+    Без ключа / при любой ошибке — [] (движок рисует painters, ничего не падает).
+    """
+    import urllib.request as _rq
+    import urllib.parse as _up
+    import json as _json
+    key = os.environ.get("PEXELS_API_KEY", "").strip()
+    if not key:
+        print("[cine] PEXELS_API_KEY нет — только рисованные кадры")
+        return []
+    sdir = os.path.join(tmpdir, "stock")
+    os.makedirs(sdir, exist_ok=True)
+    clips = []
+    for qi, q in enumerate(list(queries or [])[:max_clips]):
+        try:
+            url = ("https://api.pexels.com/videos/search?" + _up.urlencode(
+                {"query": q, "per_page": 3, "orientation": "portrait",
+                 "size": "medium"}))
+            req = _rq.Request(url, headers={"Authorization": key})
+            data = _json.load(_rq.urlopen(req, timeout=20))
+            vids = data.get("videos") or []
+            if not vids:
+                continue
+            files = vids[0].get("video_files") or []
+            if not files:
+                continue
+            # предпочитаем вертикаль modest-размера (быстро качать/резать)
+            files = sorted(files, key=lambda f: (
+                0 if (f.get("width") or 0) < (f.get("height") or 1) else 1,
+                f.get("width") or 9999))
+            link = files[0].get("link")
+            if not link:
+                continue
+            dst = os.path.join(sdir, f"clip_{qi}.mp4")
+            _rq.urlretrieve(link, dst)
+            if os.path.getsize(dst) > 50000:
+                clips.append(dst)
+                print(f"[cine] сток {qi}: {q} ({os.path.getsize(dst)//1024} KB)")
+        except Exception as e:
+            print(f"[cine] сток пропущен ({q}): {type(e).__name__}")
+            continue
+    return clips
+
+
+def extract_stock_frames(ffmpeg, clips, outdir, each=12):
+    """Режет из клипов кадры 540x960 для фона. Возвращает [png,...]."""
+    os.makedirs(outdir, exist_ok=True)
+    frames = []
+    for c in clips:
+        for i in range(each):
+            out = os.path.join(outdir, f"st{len(frames):03d}.png")
+            r = subprocess.run(
+                [ffmpeg, "-y", "-ss", str(float(i)), "-i", c,
+                 "-frames:v", "1", "-vf", "scale=540:960", out],
+                capture_output=True)
+            if r.returncode == 0 and os.path.exists(out):
+                frames.append(out)
+            else:
+                break
+    print(f"[cine] сток-кадров: {len(frames)}")
+    return frames
+
+
+def paint_stock_bg(frame_path, seed, P, cache):
+    """Живой кадр как фон: cover-fit + тёмная грейдинг + виньетка + зерно."""
+    if frame_path not in cache:
+        bg = Image.open(frame_path).convert("RGB").resize((W, H), Image.BICUBIC)
+        bg = bg.point(lambda v: int(v * 0.5))  # гасим под текст/грейд
+        cache[frame_path] = bg
+    img = cache[frame_path].copy()
+    img = _vignette(img, 0.6)
+    img = _grain(img, seed % (2 ** 31), 380, 22)
+    return img
+
+
 TRANS_DUR = {"hard_cut": 0.08, "whip": 0.35, "zoom": 0.4, "glitch": 0.3,
              "dip": 0.5, "match": 0.25, "speed_ramp": 0.3}
 
 
-def render_frame(shot, p, fonts, P):
-    """Один кадр тела шота: сцена + камера + типографика."""
+def render_frame(shot, p, fonts, P, stock=None):
+    """Один кадр тела шота: сцена + камера + типографика.
+
+    stock: {"frames": [png...], "cache": {}} — если шоту назначен живой фон
+    (shot["stock"] = индекс), рисуем сток + субтитр вместо painter'а.
+    """
     pw = warp_progress(p, shot.get("speed", (1.0, 1.0)))
-    img = paint_scene(shot["visual"], pw, shot.get("seed", 1), P, fonts,
-                      shot.get("accent", "accent"))
+    si = shot.get("stock")
+    if stock and si is not None and 0 <= si < len(stock["frames"]):
+        img = paint_stock_bg(stock["frames"][si], shot.get("seed", 1), P,
+                             stock["cache"])
+    else:
+        img = paint_scene(shot["visual"], pw, shot.get("seed", 1), P, fonts,
+                          shot.get("accent", "accent"))
     img = apply_camera(img, shot.get("camera", "push_in"), pw,
                        shot.get("seed", 1), int(p * 1000))
     if shot.get("texts"):
         draw_texts(img, shot["texts"], p, fonts, P)
+    if shot.get("subs"):
+        draw_texts(img, shot["subs"], p, fonts, P)
     return img
 
 
@@ -1226,7 +1430,8 @@ def build_timeline(shots, seconds, fps, bpm):
     return segments, bounds, total
 
 
-def render_cinematic(shots, seconds, fps, out_silent, bpm, P, tmpdir="out/tmp_cine"):
+def render_cinematic(shots, seconds, fps, out_silent, bpm, P, tmpdir="out/tmp_cine",
+                     stock=None):
     ffmpeg = vg.find_ffmpeg()
     if not ffmpeg:
         raise RuntimeError("нет ffmpeg: pip install imageio-ffmpeg")
@@ -1246,19 +1451,19 @@ def render_cinematic(shots, seconds, fps, out_silent, bpm, P, tmpdir="out/tmp_ci
             s = sg["shot"]
             for j in range(sg["n"]):
                 p = j / max(1, sg["n"] - 1)
-                proc.stdin.write(render_frame(s, p, fonts, P).tobytes())
+                proc.stdin.write(render_frame(s, p, fonts, P, stock).tobytes())
                 done += 1
         elif sg["kind"] == "trans":
             a, b = sg["a"], sg["b"]
-            img_a = render_frame(a, 1.0, fonts, P)
-            img_b = render_frame(b, 0.0, fonts, P)
+            img_a = render_frame(a, 1.0, fonts, P, stock)
+            img_b = render_frame(b, 0.0, fonts, P, stock)
             for j in range(sg["n"]):
                 q = (j + 1) / sg["n"]
                 proc.stdin.write(
                     transition_frame(img_a, img_b, sg["trans"], q, b.get("seed", 1)).tobytes())
                 done += 1
         else:  # hold
-            img = render_frame(sg["shot"], 1.0, fonts, P)
+            img = render_frame(sg["shot"], 1.0, fonts, P, stock)
             raw = img.tobytes()
             for _ in range(sg["n"]):
                 proc.stdin.write(raw)
@@ -1337,9 +1542,11 @@ def qc_shots(shots, seconds):
     kinds = [shot_kind(s) for s in shots]
     rep["has_cinematic_shots"] = (sum(1 for k_ in kinds if k_ == "cinematic")
                                   >= max(1, len(shots) // 2))
-    # 6: variation длительностей
+    # 6: variation длительностей (M15: минимум поднят ради читаемости,
+    # поэтому проверяем разброс, а не наличие субсекундных кадров)
     durs = [round(s["dur"], 2) for s in shots]
-    rep["dur_variation"] = len(set(durs)) >= 5 and min(durs) < 1.0
+    rep["dur_variation"] = (len(set(durs)) >= 5
+                            and (max(durs) - min(durs)) >= 1.5)
     # 7: camera movement у каждого cinematic (чёрная пауза — исключение:
     # неподвижный чёрный кадр задуман, движение там невидимо)
     static_cine = [s.get("id") for s in shots
@@ -1370,6 +1577,21 @@ def qc_shots(shots, seconds):
         s.get("accent") != "accent2"
         or s.get("act") in ok_acts or s.get("visual") in threat_vis
         for s in shots)
+    # 13 (M15): субтитры тоже в safe area
+    bad_sub = []
+    for s in shots:
+        for t in s.get("subs") or []:
+            f, fitted, gap = fit_text_block(scratch, t["lines"], "sub", None)
+            for ln in fitted:
+                if _ts(scratch, ln, f)[0] > SAFE_W:
+                    bad_sub.append((s.get("id"), ln))
+    rep["subs_in_safe_area"] = not bad_sub
+    # 14 (M15): озвучка покрывает все акты (якорные шоты; непрерывный трек)
+    acts_voiced = {s.get("act") for s in shots if (s.get("voice") or "").strip()}
+    rep["voice_covers_all"] = {"hook", "problem", "climax"} <= acts_voiced
+    # 15 (M15): читаемость — длительность покрывает время чтения текста
+    slow = [s.get("id") for s in shots if s["dur"] < _min_dur(s) - 1e-6]
+    rep["reading_time_ok"] = not slow
     print("[cine][QC] " + " ".join(
         f"{k}={'OK' if v else 'FAIL'}" for k, v in rep.items()))
     if bad:
@@ -1392,20 +1614,72 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
     bpm = st.get("bpm", 100)
     topic = (topic or "Как вас взламывают через фишинг").strip()
     shots = list(script_shots) if script_shots else plan_shots(topic, seconds, key, True, provider)
-    # монтажная гигиена: баланс cinematic/text + QC-чеклист до рендера
+    # монтажная гигиена: баланс cinematic/text
     shots = enforce_balance(shots)
-    qc_shots(shots, seconds)
-    # подгон длительностей под целевую длину: масштаб -> минимум 0.3с ->
-    # повторный масштаб вниз при перелёте (clamp не должен раздувать хронометраж)
+    if voice_over is None:
+        voice_over = bool(st.get("voice_over"))
+    ffmpeg = vg.find_ffmpeg()
+    if not ffmpeg:
+        raise RuntimeError("нет ffmpeg: pip install imageio-ffmpeg")
+    # --- озвучка ДО рендера (M15, TikTok): длительности шотов подгоняются
+    # под голос, чтобы речь не обрезалась, а субтитр успевал прочитаться
+    vmp3 = None
+    if voice_over and not no_audio:
+        # озвучиваем только якорные шоты (каждый 3-й + hook/twist/бренд):
+        # непрерывный дикторский трек ~35-40с поверх 55с монтажа + субтитры
+        vmap = [(i, s) for i, s in enumerate(shots)
+                if ((s.get("voice") or "").strip()
+                    and (i % 3 == 0 or s.get("act") in ("hook", "twist")
+                         or s.get("visual") == "final_brand"))]
+        if vmap:
+            tsecs = [{"voice": s["voice"], "caption": s["id"]} for _, s in vmap]
+            _w = None
+            try:
+                vmp3, _w = vg.make_voiceover_sections(ffmpeg, tsecs, voice, tmpdir)
+            except Exception as e:
+                print(f"[cine] TTS не удался ({type(e).__name__}) — оценка по символам")
+                vmp3, _w = None, None
+            if _w and len(_w) == len(vmap):
+                for (_, s), w in zip(vmap, _w):
+                    s["dur"] = max(s["dur"], float(w) + 0.4)
+            else:
+                for _, s in vmap:
+                    s["dur"] = max(s["dur"], len(s["voice"]) / 12.0 + 0.5)
+                vmp3 = None
+    # подгон длительностей под целевую длину, но не ниже минимума
+    # читаемости (clamp не должен раздувать хронометраж)
     total_plan = sum(s["dur"] for s in shots)
     k = seconds / max(0.1, total_plan)
     for s in shots:
-        s["dur"] = max(0.3, s["dur"] * k)
+        s["dur"] = max(_min_dur(s), s["dur"] * k)
     total_plan = sum(s["dur"] for s in shots)
     if total_plan > seconds:
         k2 = seconds / total_plan
         for s in shots:
-            s["dur"] = max(0.2, s["dur"] * k2)
+            s["dur"] = max(0.4, s["dur"] * k2)
+    # QC-чеклист — по финальным длительностям, до рендера
+    rep = qc_shots(shots, seconds)
+    # --- живые сток-фоны (M15): микс реального видео с графикой.
+    # Без PEXELS_API_KEY / при ошибке — только painters, ничего не падает.
+    stock = None
+    try:
+        queries = st.get("stock_queries") or ()
+        clips = fetch_stock_clips(tmpdir, queries) if queries else []
+        if clips:
+            frames = extract_stock_frames(
+                ffmpeg, clips, os.path.join(tmpdir, "stock_frames"))
+            if frames:
+                stock = {"frames": frames, "cache": {}}
+                ci = 0
+                for idx, s in enumerate(shots):
+                    if (shot_kind(s) == "cinematic" and not s.get("texts")
+                            and idx % 3 == 1):
+                        s["stock"] = ci % len(frames)
+                        ci += 1
+                print(f"[cine] живые фоны назначены {ci} шотам")
+    except Exception as e:
+        print(f"[cine] сток недоступен ({type(e).__name__}) — только painters")
+        stock = None
     # окно паузы (twist) — для просадки бита
     pause_win = None
     acc = 0.0
@@ -1413,44 +1687,50 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
         if s["act"] == "twist" and pause_win is None:
             pause_win = (acc, acc + s["dur"])
         acc += s["dur"]
-    ffmpeg = vg.find_ffmpeg()
-    if not ffmpeg:
-        raise RuntimeError("нет ffmpeg: pip install imageio-ffmpeg")
     silent = os.path.join(tmpdir, "silent.mp4")
-    _, bounds = render_cinematic(shots, seconds, fps, silent, bpm, P, tmpdir)
+    _, bounds = render_cinematic(shots, seconds, fps, silent, bpm, P, tmpdir,
+                                 stock)
     real_dur = bounds[-1]
     if no_audio or np is None:
         if np is None:
             print("[cine] numpy нет — видео без звука")
         _sh.copy(silent, out)
     else:
-        mix = build_soundtrack(shots, bounds, real_dur, bpm, pause_win)
+        # голос -> wav + огибающая для дакинга бита под речью
+        duck = None
+        vw = None
+        vv = None
+        if vmp3:
+            vw = os.path.join(tmpdir, "voice.wav")
+            r = subprocess.run(
+                [ffmpeg, "-y", "-i", vmp3, "-ar", str(SR), "-ac", "1", vw],
+                capture_output=True)
+            if r.returncode == 0:
+                with wave.open(vw, "rb") as wf:
+                    raw = wf.readframes(wf.getnframes())
+                vv = np.frombuffer(raw, dtype=np.int16).astype(np.float64) * 1.1
+                # RMS-огибающая окном 0.2с -> 0..1
+                n = int(real_dur * SR)
+                a = np.abs(vv[:n])
+                wsize = max(1, int(SR * 0.2))
+                cs = np.cumsum(np.insert(a, 0, 0.0))
+                env = (cs[wsize:] - cs[:-wsize]) / wsize
+                env = np.concatenate([env, np.full(max(0, n - len(env)), 0.0)])[:n]
+                mx = env.max()
+                duck = (env / mx) if mx > 0 else np.zeros(n)
+        mix = build_soundtrack(shots, bounds, real_dur, bpm, pause_win,
+                               bed=float(st.get("bed_level", 1.0)),
+                               sfx_gain=float(st.get("sfx_level", 1.0)),
+                               duck=duck)
         bed_wav = os.path.join(tmpdir, "bed.wav")
         write_wav(bed_wav, mix)
-        if voice_over is None:
-            voice_over = bool(st.get("voice_over"))
-        if voice_over:
-            # голос поверх бита (переиспользуем посекционный TTS из video_gen)
-            secs = [{"voice": " ".join(sum([t["lines"] for t in s.get("texts", [])], [])) or s["act"],
-                     "caption": s["id"]} for s in shots]
-            secs = [x for x in secs if x["voice"].strip()] or None
-            if secs:
-                vmp3, _w = vg.make_voiceover_sections(ffmpeg, secs, voice, tmpdir)
-                if vmp3:
-                    # микшируем голос поверх bed
-                    vw = os.path.join(tmpdir, "voice.wav")
-                    r = subprocess.run(
-                        [ffmpeg, "-y", "-i", vmp3, "-ar", str(SR), "-ac", "1", vw],
-                        capture_output=True)
-                    if r.returncode == 0:
-                        with wave.open(vw, "rb") as wf:
-                            raw = wf.readframes(wf.getnframes())
-                        vv = np.frombuffer(raw, dtype=np.int16).astype(np.float64) * 1.1
-                        m = min(len(vv), len(mix))
-                        mix2 = mix.astype(np.float64)
-                        mix2[:m] += vv[:m]
-                        mix2 = np.clip(mix2, -32768, 32767).astype(np.int16)
-                        write_wav(bed_wav, mix2)
+        if vw is not None and vv is not None:
+            # голос поверх приглушённого бита
+            m = min(len(vv), len(mix))
+            mix2 = mix.astype(np.float64)
+            mix2[:m] += vv[:m]
+            mix2 = np.clip(mix2, -32768, 32767).astype(np.int16)
+            write_wav(bed_wav, mix2)
         vg.mux_audio(ffmpeg, silent, bed_wav, out, real_dur)
     size = os.path.getsize(out)
     print(f"[cine] ГОТОВО: {out} ({size / 1048576:.1f} MB, {real_dur:.1f} c, стиль {key})")

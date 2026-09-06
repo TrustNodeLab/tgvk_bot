@@ -45,8 +45,16 @@ STYLES = {
             "line": (28, 44, 76),
         },
         "bpm": 104,                        # сетка бита для монтажа
-        "voice_over": False,               # трейлер: только бит+SFX
+        "voice_over": True,                # TikTok: спокойная озвучка поверх тихого бита
         "sfx": True,
+        "bed_level": 0.35,                 # тихий фон: бит не мешает голосу (M15)
+        "sfx_level": 0.45,                 # SFX приглушены (M15)
+        "stock_queries": (                 # Pexels-поиск реальных кадров для микса (M15);
+            "smartphone dark close up",    # нужен PEXELS_API_KEY, иначе painters
+            "server room dark",
+            "hacker laptop night",
+            "city night bokeh",
+        ),
         "max_text_lines": 2,               # крупные короткие фразы, не субтитры
         "forbidden": (                     # НЕ использовать как стиль
             "matrix", "падающий код", "anonymous", "хакер в капюшоне",
