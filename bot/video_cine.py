@@ -120,27 +120,51 @@ def warp_progress(p, speed):
 SHOT_SCHEMA_HINT = (
     'Верни ТОЛЬКО валидный JSON без пояснений: {"shots":[{'
     '"act":"hook|problem|escalation|peak|twist|accel|climax",'
-    '"dur":2.5,"visual":"phone_dark|phone_message|phone_call|login_screen|'
-    'qr_panel|token_panel|chain|attack_grid|server_rack|cables|bokeh|eye|'
-    'person|consequence|pause_black|question|final_brand",'
-    '"camera":"push_in|push_out|drift|shake|static",'
-    '"texts":[{"lines":["СТРОКА 1","СТРОКА 2"],"mode":"pop|tracking|reveal|rise"}],'
-    '"trans_out":"hard_cut|whip|zoom|glitch|dip",'
+    '"type":"cinematic|typography|graphic",'
+    '"dur":1.5,"visual":"phone_dark|phone_message|phone_call|login_screen|'
+    'qr_panel|qr_scan|token_panel|chain|attack_grid|server_rack|server_corridor|'
+    'cables|switch_macro|keyboard|bokeh|eye|face_glow|person|consequence|'
+    'flash|pause_black|question|final_q|final_brand",'
+    '"camera":"push_in|push_out|drift|shake|static|snap|tilt|whip_pan",'
+    '"texts":[{"lines":["КОРОТКО"],"mode":"pop|tracking|reveal|rise|whisper"}],'
+    '"trans_out":"hard_cut|whip|zoom|glitch|dip|match|speed_ramp",'
     '"sfx":"impact|whoosh|riser|click|notify|bass|silence|none",'
-    '"speed":[1.0,1.0],"accent":"accent|accent2"}]}'
+    '"speed":[1.0,1.0],"accent":"accent|accent2"}]} '
+    'Правила монтажа: чередуй type cinematic->typography->cinematic '
+    '(текст ПОДЧЁРКИВАЕТ видео, а не заменяет); НИКАКИХ двух typography подряд; '
+    'тексты — 1-3 КОРОТКИХ слова (не фразы на весь экран); '
+    'длительности varied 0.3-2.8с (в climax 0.3-0.7с); '
+    'match — только между визуально похожими кадрами; '
+    'accent2 (красный) — ТОЛЬКО threat/compromised/warning/attack.'
 )
+
+# Чисто текстовые фоны: шот с texts на таком visual = ударная
+# типографическая вставка (допустимая доля — не более ~30%).
+PURE_TYPO_VISUALS = {"flash", "pause_black", "question", "final_q"}
 
 _VALID = {
     "act": {"hook", "problem", "escalation", "peak", "twist", "accel", "climax"},
+    "type": {"cinematic", "typography", "graphic"},
     "visual": {"phone_dark", "phone_message", "phone_call", "login_screen",
-               "qr_panel", "token_panel", "chain", "attack_grid", "server_rack",
-               "cables", "bokeh", "eye", "person", "consequence",
-               "pause_black", "question", "final_brand"},
-    "camera": {"push_in", "push_out", "drift", "shake", "static"},
-    "trans_out": {"hard_cut", "whip", "zoom", "glitch", "dip"},
+               "qr_panel", "qr_scan", "token_panel", "chain", "attack_grid",
+               "server_rack", "server_corridor", "cables", "switch_macro",
+               "keyboard", "bokeh", "eye", "face_glow", "person", "consequence",
+               "flash", "pause_black", "question", "final_q", "final_brand"},
+    "camera": {"push_in", "push_out", "drift", "shake", "static",
+               "snap", "tilt", "whip_pan"},
+    "trans_out": {"hard_cut", "whip", "zoom", "glitch", "dip", "match",
+                  "speed_ramp"},
     "sfx": {"impact", "whoosh", "riser", "click", "notify", "bass",
-            "silence", "none"},
+             "silence", "none"},
+    "mode": {"pop", "tracking", "reveal", "rise", "whisper"},
 }
+
+# Safe area: текст НИКОГДА не выходит за эти границы (доля кадра 1080x1920).
+SAFE_L = int(W * 0.09)          # 97 px слева/справа
+SAFE_R = W - SAFE_L
+SAFE_T = int(H * 0.08)          # 154 px сверху/снизу
+SAFE_B = H - SAFE_T
+SAFE_W = SAFE_R - SAFE_L        # 886 px под текст
 
 
 def _coerce_shots(raw, seconds):
@@ -156,10 +180,12 @@ def _coerce_shots(raw, seconds):
         for t in (s.get("texts") or [])[:2]:
             if not isinstance(t, dict):
                 continue
-            lines = [str(x).upper()[:42] for x in (t.get("lines") or [])][:2]
+            # короткие строки: типографика — 1-3 слова, не фразы на весь экран
+            lines = [str(x).upper().strip()[:24] for x in (t.get("lines") or [])][:3]
+            lines = [l for l in lines if l]
             if not lines:
                 continue
-            mode = t.get("mode") if t.get("mode") in ("pop", "tracking", "reveal", "rise") else "pop"
+            mode = t.get("mode") if t.get("mode") in _VALID["mode"] else "pop"
             texts.append({"lines": lines, "mode": mode})
         try:
             dur = float(s.get("dur", 1.5))
@@ -171,14 +197,22 @@ def _coerce_shots(raw, seconds):
             speed = (max(0.2, min(3.0, float(sp[0]))), max(0.2, min(3.0, float(sp[1]))))
         except (TypeError, ValueError, IndexError):
             speed = (1.0, 1.0)
+        cam = s.get("camera") if s.get("camera") in _VALID["camera"] else "push_in"
+        tr = s.get("trans_out") if s.get("trans_out") in _VALID["trans_out"] else "hard_cut"
+        typ = s.get("type") if s.get("type") in _VALID["type"] else None
+        if typ is None:
+            # автотип: чисто текстовый фон + текст = typography,
+            # текст поверх кинокадра = cinematic (текст подчёркивает видео)
+            typ = "typography" if (texts and vis in PURE_TYPO_VISUALS) else "cinematic"
         shots.append({
             "id": f"S{i + 1:02d}",
             "act": s.get("act") if s.get("act") in _VALID["act"] else "problem",
+            "type": typ,
             "dur": dur,
             "visual": vis,
-            "camera": s.get("camera") if s.get("camera") in _VALID["camera"] else "push_in",
+            "camera": cam,
             "texts": texts,
-            "trans_out": s.get("trans_out") if s.get("trans_out") in _VALID["trans_out"] else "hard_cut",
+            "trans_out": tr,
             "sfx": s.get("sfx") if s.get("sfx") in _VALID["sfx"] else "none",
             "speed": speed,
             "accent": "accent2" if s.get("accent") == "accent2" else "accent",
@@ -205,82 +239,118 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
     topic = (topic or "Как вас взламывают").strip()
     short = topic[:48]
     rnd = random.Random(abs(hash(topic)) % (2 ** 32))
-    # окна актов масштабируются под реальную длину (база — 55 сек)
-    k = max(0.4, seconds / 55.0)
+    # окна актов масштабируются под реальную длину (база — ~42 сек плана)
+    k = max(0.4, seconds / 42.0)
 
     def sc(act, dur, visual, camera, texts, trans_out, sfx="none",
-           speed=(1.0, 1.0), accent="accent", fx=""):
+           speed=(1.0, 1.0), accent="accent", fx="", typ=None):
+        if typ is None:
+            typ = ("typography"
+                   if (texts and visual in PURE_TYPO_VISUALS) else "cinematic")
         return {"act": act, "dur": dur, "visual": visual, "camera": camera,
                 "texts": texts, "trans_out": trans_out, "sfx": sfx,
-                "speed": speed, "accent": accent, "fx": fx}
+                "speed": speed, "accent": accent, "fx": fx, "type": typ}
 
     def tx(*lines, mode="pop"):
-        return [{"lines": [l.upper()[:42] for l in lines], "mode": mode}]
+        # короткие строки: максимум 24 символа (safe area следит за остальным)
+        return [{"lines": [l.upper().strip()[:24] for l in lines], "mode": mode}]
 
-    hook_line = short.upper()[:42]
+    hook_line = short.upper().strip()[:24]
     prob = ["phone_message", "phone_call", "login_screen", "person"]
     rnd.shuffle(prob)
-    chain_labels = ["MESSAGE", "CLICK", "LOGIN", "TOKEN", "ACCESS"]
-    peak_pool = ["attack_grid", "qr_panel", "token_panel", "server_rack",
-                 "phone_call", "cables", "eye", "login_screen"]
+    peak_pool = ["attack_grid", "qr_scan", "token_panel", "server_corridor",
+                 "phone_call", "switch_macro", "face_glow", "login_screen"]
     rnd.shuffle(peak_pool)
 
+    # Принцип: CINEMATIC -> TEXT -> CINEMATIC -> TEXT ... Текст ПОДЧЁРКИВАЕТ
+    # видео (короткие ударные вставки 1-3 слова), а не заменяет его.
+    # Чисто текстовые фоны (flash/pause_black/final_q) — не более ~30%.
     shots = [
         # 0-3с: HOOK — максимально сильный удар, без логотипа
         sc("hook", 2.8 * k, "phone_dark", "push_in",
            tx("ВАС УЖЕ МОГУТ", "ВЗЛОМАТЬ", mode="tracking"), "hard_cut",
-           "impact", (0.7, 1.3)),
-        # 3-10с: проблема
-        sc("problem", 1.8 * k, prob[0], "push_in",
-           tx(hook_line, mode="reveal"), "whip", "whoosh"),
-        sc("problem", 1.6 * k, prob[1], "drift",
-           tx("И НАЖИМАТЬ НИЧЕГО", "НЕ ПРИДЁТСЯ", mode="pop"), "hard_cut", "click"),
-        sc("problem", 1.7 * k, prob[2], "push_out",
-           tx("ДОСТАТОЧНО ОДНОГО", "СООБЩЕНИЯ", mode="rise"), "whip", "notify"),
-        sc("problem", 1.6 * k, prob[3], "push_in", [], "zoom", "bass", (1.2, 0.8)),
-        # 10-20с: ускорение, цепочка атаки
-        sc("escalation", 1.7 * k, "chain", "static",
-           tx(chain_labels[0], mode="pop"), "hard_cut", "click"),
-        sc("escalation", 1.5 * k, "chain", "static",
-           tx(chain_labels[1], chain_labels[2], mode="pop"), "hard_cut", "click"),
-        sc("escalation", 1.8 * k, "chain", "push_in",
-           tx(chain_labels[3], chain_labels[4], mode="pop"), "whip", "impact", (1.0, 1.5)),
-        sc("escalation", 2.0 * k, "qr_panel", "push_in",
-           tx("ОДИН QR —", "И ДОСТУП У НИХ", mode="reveal"), "zoom", "whoosh"),
-        # 20-30с: ПИК ДИНАМИКИ, очень короткие кадры
-        sc("peak", 1.0 * k, peak_pool[0], "shake", [], "hard_cut", "impact", (1.4, 1.4), "accent2"),
-        sc("peak", 0.8 * k, peak_pool[1], "shake", [], "hard_cut", "click", (1.5, 1.5)),
-        sc("peak", 0.9 * k, peak_pool[2], "push_in", [], "whip", "notify", (1.4, 1.4), "accent2"),
-        sc("peak", 0.7 * k, peak_pool[3], "shake", [], "hard_cut", "bass", (1.6, 1.6)),
-        sc("peak", 1.0 * k, peak_pool[4], "drift",
-           tx("СЕССИЯ УКРАДЕНА", mode="tracking"), "glitch", "impact", (1.3, 1.3),
-           "accent2", fx="glitch"),
-        sc("peak", 0.9 * k, peak_pool[5], "push_in", [], "hard_cut", "whoosh", (1.5, 1.5)),
-        sc("peak", 1.1 * k, "attack_grid", "static",
-           tx("ДОСТУП РАЗРЕШЁН", mode="pop"), "dip", "bass", (1.2, 0.6), "accent2"),
-        # 30-35с: РЕЗКАЯ ПАУЗА
-        sc("twist", 4.2 * k, "pause_black", "static",
-           tx("НО САМОЕ СТРАШНОЕ...", mode="reveal"), "dip", "silence", (0.4, 0.4)),
-        sc("twist", 2.2 * k, "eye", "push_in",
-           tx("ДВЕРЬ ИМ ОТКРОЕТЕ", "ВЫ САМИ", mode="tracking"), "zoom",
+           "impact", (0.7, 1.3), "accent2", typ="typography"),
+        # 3-10с: проблема — кинокадры, текст только вспышками
+        sc("problem", 2.0 * k, prob[0], "drift", [], "whip", "notify",
+           (1.0, 1.2)),
+        sc("problem", 0.9 * k, "flash", "static",
+           tx("ОДНА ССЫЛКА", mode="pop"), "hard_cut", "click",
+           typ="typography"),
+        sc("problem", 1.6 * k, prob[1], "push_in", [], "match", "notify",
+           (1.0, 1.1)),
+        sc("problem", 0.7 * k, "flash", "static",
+           tx("ОДИН ЗВОНОК", mode="pop"), "hard_cut", "click",
+           typ="typography"),
+        sc("problem", 1.5 * k, prob[2], "push_in", [], "zoom", "whoosh",
+           (1.1, 1.3)),
+        sc("problem", 0.7 * k, "flash", "static",
+           tx("ОДИН КЛИК", mode="pop"), "hard_cut", "impact",
+           typ="typography"),
+        # 10-20с: ускорение — цепочка атаки как монтаж, не инфографика
+        sc("escalation", 1.4 * k, "keyboard", "push_in", [], "hard_cut",
+           "click", (1.2, 1.6)),
+        sc("escalation", 0.8 * k, "qr_scan", "snap", [], "hard_cut",
+           "whoosh", (1.5, 2.0)),
+        sc("escalation", 1.1 * k, "token_panel", "drift", [], "whip",
+           "notify"),
+        sc("escalation", 0.7 * k, "flash", "static",
+           tx("ДОСТУП", mode="pop"), "hard_cut", "bass", typ="typography"),
+        sc("escalation", 1.6 * k, "server_corridor", "push_in", [], "match",
+           "riser", (0.9, 1.5)),
+        # 20-30с: ПИК ДИНАМИКИ, очень короткие кадры 0.5-0.9с
+        sc("peak", 0.8 * k, peak_pool[0], "shake", [], "hard_cut", "impact",
+           (1.4, 1.4), "accent2", typ="graphic"),
+        sc("peak", 0.5 * k, peak_pool[1], "shake", [], "hard_cut", "click",
+           (1.6, 1.6)),
+        sc("peak", 0.7 * k, peak_pool[2], "push_in", [], "whip", "bass",
+           (1.5, 1.5)),
+        sc("peak", 0.5 * k, peak_pool[3], "snap", [], "hard_cut", "whoosh",
+           (1.8, 1.8)),
+        sc("peak", 0.8 * k, peak_pool[4], "shake",
+           tx("СЕССИЯ УКРАДЕНА", mode="tracking"), "glitch", "impact",
+           (1.3, 1.3), "accent2", fx="glitch"),
+        sc("peak", 0.6 * k, peak_pool[5], "drift", [], "hard_cut", "click",
+           (1.6, 1.6)),
+        sc("peak", 0.9 * k, peak_pool[6], "push_in",
+           tx("ДОСТУП РАЗРЕШЁН", mode="pop"), "dip", "bass", (1.2, 0.6),
+           "accent2"),
+        # 30-35с: РЕЗКАЯ ПАУЗА — темп и звук падают
+        sc("twist", 1.6 * k, "pause_black", "static",
+           tx("НО САМОЕ", "СТРАШНОЕ...", mode="reveal"), "dip", "silence",
+           (0.4, 0.4), typ="typography"),
+        sc("twist", 1.2 * k, "pause_black", "static", [], "dip", "silence",
+           (0.3, 0.3)),
+        sc("twist", 2.0 * k, "eye", "push_in",
+           tx("ОТКРОЕТЕ ДВЕРЬ", "ВЫ САМИ", mode="tracking"), "zoom",
            "impact", (0.5, 1.8)),
         # 35-50с: ФИНАЛЬНОЕ УСКОРЕНИЕ, масштаб растёт
-        sc("accel", 2.4 * k, "consequence", "push_in",
+        sc("accel", 1.6 * k, "consequence", "push_in",
            tx("1 ОШИБКА", mode="pop"), "hard_cut", "bass", (1.0, 1.4)),
-        sc("accel", 2.4 * k, "consequence", "push_in",
-           tx("1 АККАУНТ", mode="pop"), "whip", "impact", (1.0, 1.4)),
-        sc("accel", 2.6 * k, "consequence", "push_in",
-           tx("1 УСТРОЙСТВО", mode="pop"), "whip", "impact", (1.0, 1.5), "accent2"),
-        sc("accel", 3.0 * k, "consequence", "push_out",
-           tx("ВСЯ СИСТЕМА", mode="tracking"), "zoom", "riser", (0.8, 1.6), "accent2"),
-        # 50-60с: КУЛЬМИНАЦИЯ + ПАНЧ
-        sc("climax", 2.6 * k, "question", "push_in",
-           tx("ТАК КТО КОГО", "ЗАЩИЩАЕТ?", mode="tracking"), "dip",
-           "bass", (0.6, 1.0)),
-        sc("climax", 3.0 * k, "question", "static",
-           tx("ВЫ — СИСТЕМУ.", "ИЛИ ОНА — ВАС?", mode="reveal"), "dip",
-           "silence", (0.5, 0.7)),
-        sc("climax", 3.2 * k, "final_brand", "push_out", [], "hard_cut", "impact", (0.7, 1.0)),
+        sc("accel", 1.3 * k, "consequence", "push_in",
+           tx("1 АККАУНТ", mode="pop"), "match", "impact", (1.0, 1.4)),
+        sc("accel", 1.2 * k, "consequence", "push_in",
+           tx("1 УСТРОЙСТВО", mode="pop"), "whip", "impact", (1.0, 1.6)),
+        sc("accel", 1.8 * k, "consequence", "push_out",
+           tx("ВСЯ СИСТЕМА", mode="tracking"), "zoom", "riser", (0.8, 1.6),
+           "accent2"),
+        # 50-60с: КУЛЬМИНАЦИЯ — быстрые кадры, затем резкое замедление
+        sc("climax", 0.7 * k, "attack_grid", "shake", [], "hard_cut",
+           "impact", (1.5, 1.5), "accent2", typ="graphic"),
+        sc("climax", 0.5 * k, "face_glow", "snap", [], "hard_cut", "bass",
+           (1.4, 1.4)),
+        sc("climax", 0.8 * k, "server_corridor", "push_in", [], "whip",
+           "whoosh", (1.0, 2.2)),
+        sc("climax", 1.2 * k, "pause_black", "static", [], "dip", "silence",
+           (0.4, 0.4)),
+        # финал — кинематографично: маленький текст, пауза, бренд
+        sc("climax", 2.0 * k, "final_q", "static",
+           tx("КТО КОГО", mode="whisper"), "dip", "bass", (0.6, 0.8),
+           typ="typography"),
+        sc("climax", 2.4 * k, "final_q", "static",
+           tx("ЗАЩИЩАЕТ?", mode="whisper"), "dip", "silence", (0.5, 0.6),
+           typ="typography"),
+        sc("climax", 3.4 * k, "final_brand", "push_out", [], "hard_cut",
+           "impact", (0.7, 1.0), typ="graphic"),
     ]
     total = sum(s["dur"] for s in shots)
     out = []
@@ -304,8 +374,14 @@ def plan_shots(topic, seconds=55, style_name="cybersecurity_cinematic",
                 f"Тема ролика: «{topic}». Разбей на акты hook/problem/escalation/"
                 f"peak/twist/accel/climax: сильный hook 0-3с, пик динамики 20-30с "
                 f"(кадры 0.3-1.2с), резкая пауза 30-35с, кульминация в конце. "
-                f"Тексты оверлея — крупно, по-русски, ЗАГЛАВНЫМИ, максимум 2 короткие "
-                f"строки на шот (это НЕ субтитры). Никаких Matrix/хакеров в капюшонах/"
+                f"Каждому шоту задай type: cinematic (кинокадр БЕЗ текста) / "
+                f"typography (короткая ударная вставка 1-3 СЛОВА) / graphic. "
+                f"Чередуй cinematic->typography->cinematic, НИКАКИХ двух "
+                f"typography подряд (доля typography ~25%). Тексты — по-русски, "
+                f"ЗАГЛАВНЫМИ, максимум 3 слова на строку, до 3 строк (это НЕ "
+                f"субтитры; длинные фразы разбивай на последовательные шоты). "
+                f"match — только между похожими кадрами; accent2 — только "
+                f"threat/compromised/warning. Никаких Matrix/хакеров в капюшонах/"
                 f"зелёных терминалов. {SHOT_SCHEMA_HINT}"
             )
             raw = _complete([{"role": "user", "content": prompt}], provider)
@@ -471,9 +547,10 @@ def paint_scene(visual, p, seed, P, fonts, accent_key="accent"):
         _bokeh_layer(d, seed + 1, P, 18)
         box = _phone_frame(d, P, W // 2, H // 2 + 120, glow=accent)
         _paint_phone_screen(d, "message", box, P, f_s, f_xs, 0.0, rnd, accent)
-        # красное свечение-тревога нарастает
+        # тревожное свечение нарастает — в цвете акцента шота
+        # (красный accent2 — только если шот помечен как threat/warning)
         img = _glow_spot(img.convert("RGBA"), W // 2, H // 2 + 120, int(300 + 200 * p),
-                         P.get("accent2") or accent, int(30 + 50 * p)).convert("RGB")
+                         accent, int(30 + 50 * p)).convert("RGB")
         d = ImageDraw.Draw(img, "RGBA")
     elif visual in ("phone_message", "phone_call", "login_screen", "qr_panel", "token_panel"):
         kind = {"phone_message": "message", "phone_call": "call",
@@ -540,6 +617,7 @@ def paint_scene(visual, p, seed, P, fonts, accent_key="accent"):
         img = _glow_spot(img.convert("RGBA"), W // 2, H // 2, 420, accent, 60).convert("RGB")
         d = ImageDraw.Draw(img, "RGBA")
     elif visual == "eye":
+        # тёмный глаз: концентрические дуги + зрачок (текст идёт оверлеем, не тут)
         cx, cy = W // 2, H // 2 - 100
         for i, rr in enumerate((300, 230, 160, 100)):
             col = accent if i % 2 == 0 else P["line"]
@@ -547,7 +625,6 @@ def paint_scene(visual, p, seed, P, fonts, accent_key="accent"):
         pr = int(60 + 20 * p)
         d.ellipse([cx - pr, cy - pr, cx + pr, cy + pr], fill=accent)
         d.line([(cx - 300, cy - 120), (cx - 60, cy - 40)], fill=(220, 235, 255), width=8)
-        _center_text(d, cy + 400, "ВЫ САМИ", f_s, P["sub"], cx)
     elif visual == "person":
         # абстрактный силуэт с контровым светом + светящийся телефон в руке
         cx = W // 2
@@ -559,12 +636,28 @@ def paint_scene(visual, p, seed, P, fonts, accent_key="accent"):
         img = _glow_spot(img.convert("RGBA"), cx + 170, 1190, 220, accent, 70).convert("RGB")
         d = ImageDraw.Draw(img, "RGBA")
     elif visual == "consequence":
+        # эскалация масштаба БЕЗ кругов: вложенные панели растут с прогрессом,
+        # угловые метки + микротекст. Текст тезиса идёт оверлеем поверх.
         cx, cy = W // 2, H // 2 - 60
+        grow = 0.55 + 0.45 * p
         for i in range(4):
-            rr = int((200 + i * 130) * (0.6 + 0.4 * p))
-            d.ellipse([cx - rr, cy - rr, cx + rr, cy + rr], outline=accent, width=3)
-        img = _glow_spot(img.convert("RGBA"), cx, cy, int(200 + 260 * p), accent, 90).convert("RGB")
+            hw = int((300 + i * 130) * grow)
+            hh = int((200 + i * 95) * grow)
+            col = accent if i == 3 else P["line"]
+            d.rounded_rectangle([cx - hw, cy - hh, cx + hw, cy + hh],
+                                radius=26, outline=col, width=4 if i == 3 else 2)
+        # угловые скобки внешней панели
+        L = 54
+        x0, y0 = cx - hw, cy - hh
+        x1, y1 = cx + hw, cy + hh
+        for (sx, sy) in ((x0, y0), (x1, y0), (x0, y1), (x1, y1)):
+            dx = 1 if sx == x0 else -1
+            dy = 1 if sy == y0 else -1
+            d.line([(sx, sy), (sx + dx * L, sy)], fill=accent, width=5)
+            d.line([(sx, sy), (sx, sy + dy * L)], fill=accent, width=5)
+        img = _glow_spot(img.convert("RGBA"), cx, cy, int(160 + 200 * p), accent, 70).convert("RGB")
         d = ImageDraw.Draw(img, "RGBA")
+        _center_text(d, y1 + 44, "// МАСШТАБ РАСТЁТ", f_xs, P["sub"], cx)
     elif visual == "pause_black":
         d.rectangle([0, 0, W, H], fill=(1, 2, 4))
         pulse = 0.5 + 0.5 * math.sin(p * math.pi * 2)
@@ -581,70 +674,258 @@ def paint_scene(visual, p, seed, P, fonts, accent_key="accent"):
         d.rectangle([W // 2 - 200, H // 2 + 40, W // 2 + 200, H // 2 + 52], fill=accent)
         _center_text(d, H // 2 + 120, "КИБЕРБЕЗОПАСНОСТЬ", f_s, accent, W // 2)
         _center_text(d, H // 2 + 190, "ПРОСТЫМИ СЛОВАМИ", f_s, P["sub"], W // 2)
+    elif visual == "flash":
+        # ударная типографическая вставка: почти чёрный + сканлайны +
+        # микро-метаданные по углам (без кругов и тяжёлой графики)
+        d.rectangle([0, 0, W, H], fill=(2, 3, 6))
+        for y in range(0, H, 9):
+            d.line([(0, y), (W, y)], fill=(16, 24, 42, 110))
+        d.rectangle([SAFE_L - 30, SAFE_T - 30, SAFE_R + 30, SAFE_B + 30],
+                    outline=P["line"], width=2)
+        _center_text(d, SAFE_T - 6, "// TRUSTNODE // 09:16", f_xs, P["sub"], W // 2)
+        slide = int(160 * (1 - min(1.0, p * 3)))
+        d.rectangle([SAFE_L - 30 + slide, SAFE_B - 60, SAFE_L + 220 + slide, SAFE_B - 52],
+                    fill=accent)
+    elif visual == "final_q":
+        # финал: почти чёрный кадр, faint-глоу снизу, текст — оверлеем whisper
+        d.rectangle([0, 0, W, H], fill=(1, 2, 4))
+        img = _glow_spot(img.convert("RGBA"), W // 2, H + 120, 620, accent, 40).convert("RGB")
+        d = ImageDraw.Draw(img, "RGBA")
+        pulse = 0.5 + 0.5 * math.sin(p * math.pi * 2)
+        d.line([(W // 2 - 90, H // 2 + 330), (W // 2 + 90, H // 2 + 330)],
+               fill=accent, width=int(2 + 3 * pulse))
+    elif visual == "keyboard":
+        # macro: клавиши ноутбука ночью + свет экрана на руках
+        _bokeh_layer(d, seed + 8, P, 10)
+        base_y = H // 2 - 120
+        for r_ in range(4):
+            y = base_y + r_ * 150
+            for c_ in range(6):
+                x = 90 + c_ * 155
+                lit = ((r_ * 5 + c_ * 2 + int(p * 8)) % 9 == 0)
+                d.rounded_rectangle([x, y, x + 120, y + 110], radius=16,
+                                    fill=(26, 38, 64) if lit else (10, 15, 28),
+                                    outline=accent if lit else P["line"],
+                                    width=3 if lit else 2)
+        # свет экрана сверху
+        for i in range(5):
+            yy = 120 + i * 26
+            d.rectangle([120, yy, W - 120, yy + 10], fill=accent)
+        img = _glow_spot(img.convert("RGBA"), W // 2, 200, 380, accent, 55).convert("RGB")
+        d = ImageDraw.Draw(img, "RGBA")
+    elif visual == "face_glow":
+        # лицо, освещённое смартфоном в темноте: тёмный овал + светящийся прямоугольник
+        cx = W // 2
+        d.ellipse([cx - 200, 560, cx + 200, 1080], fill=(10, 13, 22), outline=P["line"], width=3)
+        d.rounded_rectangle([cx - 130, 1150, cx + 130, 1450], radius=24, fill=(24, 44, 92),
+                            outline=accent, width=3)
+        img = _glow_spot(img.convert("RGBA"), cx, 1300, int(200 + 120 * p), accent, 80).convert("RGB")
+        d = ImageDraw.Draw(img, "RGBA")
+        _center_text(d, 1520, "// ЭКРАН ОСВЕЩАЕТ ЛИЦО", f_xs, P["sub"], cx)
+    elif visual == "switch_macro":
+        # macro сетевого оборудования: ряды портов + мигающие LED
+        _bokeh_layer(d, seed + 9, P, 8)
+        for r_ in range(5):
+            y = 420 + r_ * 220
+            d.rounded_rectangle([80, y, W - 80, y + 160], radius=12, fill=(9, 14, 27),
+                                outline=P["line"], width=2)
+            for u in range(8):
+                x = 140 + u * 105
+                led = accent if ((r_ * 3 + u * 5 + int(p * 14)) % 6 == 0) else (36, 56, 90)
+                d.ellipse([x, y + 66, x + 26, y + 92], fill=led)
+                d.rectangle([x + 34, y + 70, x + 66, y + 88], fill=(24, 34, 56))
+    elif visual == "server_corridor":
+        # коридор серверных стоек с перспективой к центру
+        cx = W // 2
+        for i in range(6):
+            t = i / 5
+            hw = int(420 * (1 - t * 0.72))
+            y0 = int(240 + t * 620)
+            y1 = int(y0 + 900 * (1 - t * 0.72))
+            col = accent if i == 5 else P["line"]
+            d.rounded_rectangle([cx - hw, y0, cx + hw, y1], radius=10,
+                                fill=(8, 12, 24), outline=col, width=4 if i == 5 else 2)
+            for u in range(4):
+                lx = cx - hw + 60 + u * ((2 * hw - 120) // 3)
+                led = accent if ((i + u + int(p * 10)) % 4 == 0) else (36, 56, 90)
+                d.ellipse([lx, y0 + 40, lx + 18, y0 + 58], fill=led)
+        img = _glow_spot(img.convert("RGBA"), cx, H // 2, 300, accent, 50).convert("RGB")
+        d = ImageDraw.Draw(img, "RGBA")
+    elif visual == "qr_scan":
+        # сканирование QR смартфоном: крупный QR + рамка видоискателя
+        qs, qn = 560, 25
+        qx, qy = (W - qs) // 2, H // 2 - 260
+        sc_q = 0.8 + 0.35 * p
+        qs2 = int(qs * sc_q)
+        qx2 = (W - qs2) // 2
+        qy2 = qy - (qs2 - qs) // 2
+        d.rectangle([qx2 - 20, qy2 - 20, qx2 + qs2 + 20, qy2 + qs2 + 20],
+                    fill=(235, 240, 250))
+        cell = qs2 / qn
+        for r_ in range(qn):
+            for c_ in range(qn):
+                in_f = (r_ < 7 and c_ < 7) or (r_ < 7 and c_ >= qn - 7) or (r_ >= qn - 7 and c_ < 7)
+                if in_f or rnd.random() < 0.42:
+                    d.rectangle([qx2 + c_ * cell, qy2 + r_ * cell,
+                                 qx2 + (c_ + 1) * cell, qy2 + (r_ + 1) * cell],
+                                fill=(8, 10, 16))
+        L = 90
+        for (sx, sy, dx, dy) in ((qx2 - 46, qy2 - 46, 1, 1), (qx2 + qs2 + 46, qy2 - 46, -1, 1),
+                                 (qx2 - 46, qy2 + qs2 + 46, 1, -1),
+                                 (qx2 + qs2 + 46, qy2 + qs2 + 46, -1, -1)):
+            d.line([(sx, sy), (sx + dx * L, sy)], fill=accent, width=7)
+            d.line([(sx, sy), (sx, sy + dy * L)], fill=accent, width=7)
 
     img = _vignette(img)
     img = _grain(img, seed)
     return img
 
 
-# ---------- kinetic typography ----------
+# ---------- kinetic typography (safe area: текст НИКОГДА не обрезается) ----------
+
+def _wrap_to_width(d, line, f, max_w):
+    """Жадный перенос строки по словам под max_w. Возвращает <=3 строк."""
+    words, out, cur = str(line).split(), [], ""
+    for w_ in words:
+        trial = (cur + " " + w_).strip()
+        if _ts(d, trial, f)[0] <= max_w or not cur:
+            cur = trial
+        else:
+            out.append(cur)
+            cur = w_
+    if cur:
+        out.append(cur)
+    return out[:3]
+
+
+def _tracked_width(d, line, f, gap):
+    widths = [_ts(d, ch, f)[0] for ch in line]
+    return sum(widths) + gap * max(0, len(line) - 1), widths
+
+
+def fit_text_block(d, lines, mode, fonts):
+    """Подбирает шрифт/переносы/трекинг так, чтобы блок влез в SAFE_W.
+
+    Возвращает (font, fitted_lines, gap). Гарантия: ни одна строка не шире
+    SAFE_W — обрезка краями кадра невозможна по построению.
+    """
+    if mode == "whisper":
+        sizes = [54, 44, 36]
+        getf = lambda sz: _font(JURA, sz, 500)
+        gap0 = 8
+    else:
+        sizes = [118, 88, 64, 48]
+        getf = lambda sz: _font(EXO2, sz, 900)
+        gap0 = 0
+    for sz in sizes:
+        f = getf(sz)
+        fitted = []
+        for ln in lines:
+            fitted.extend(_wrap_to_width(d, ln, f, SAFE_W))
+        fitted = fitted[:3]
+        if not fitted:
+            continue
+        if mode == "tracking":
+            gap = gap0 or min(46, max(0, (SAFE_W - max(
+                _tracked_width(d, ln, f, 0)[0] for ln in fitted)) // max(1, max(
+                    len(ln) for ln in fitted) - 1)))
+            ok = all(_tracked_width(d, ln, f, gap)[0] <= SAFE_W for ln in fitted)
+        else:
+            gap = 0
+            ok = all(_ts(d, ln, f)[0] <= SAFE_W for ln in fitted)
+        if ok:
+            return f, fitted, gap
+    # последний рубеж: самый мелкий шрифт + жёсткая нарезка по символам
+    f = getf(sizes[-1])
+    hard = []
+    for ln in lines:
+        s = ln
+        while s:
+            hard.append(s[:18])
+            s = s[18:]
+    return f, hard[:3], 0
+
 
 def draw_texts(img, texts, p, fonts, P):
-    """Крупная типографика поверх кадра. p — прогресс шота 0..1."""
+    """Типографика поверх кадра строго внутри safe area.
+
+    Возвращает список bbox нарисованных блоков (для QC-проверки).
+    """
     if not texts:
-        return
+        return []
     d = ImageDraw.Draw(img, "RGBA")
-    f_big = fonts["big"]
+    bboxes = []
     n = len(texts)
     for k, t in enumerate(texts):
         lines, mode = t["lines"], t.get("mode", "pop")
-        zone_h = 320
-        y_base = H // 2 - (n * zone_h) // 2 + k * zone_h
+        f, fitted, gap = fit_text_block(d, lines, mode, fonts)
+        lh = _ts(d, "АЙ", f)[1]
+        step = lh + (18 if mode == "whisper" else 26)
+        block_h = len(fitted) * step
+        if mode == "whisper":
+            y_base = H // 2 - 120 - block_h // 2
+        else:
+            zone_h = 340
+            y_base = H // 2 - (n * zone_h) // 2 + k * zone_h
+        # кламп по вертикали в safe area
+        y_base = max(SAFE_T, min(SAFE_B - block_h, y_base))
         q = min(1.0, p / 0.3) if p < 0.3 else 1.0
         alpha = int(255 * min(1.0, p / 0.12))
-        for j, line in enumerate(lines):
-            f = f_big
-            lw, lh = _ts(d, line, f)
-            if lw > W - 120:
-                f = fonts["big2"]
-                lw, lh = _ts(d, line, f)
-            y = y_base + j * (lh + 26)
-            x = (W - lw) // 2
-            # тёмная подложка — текст читается на любом фоне
-            d.rounded_rectangle([x - 34, y - 18, x + lw + 34, y + lh + 18],
-                                radius=22, fill=(3, 5, 10, 190))
+        for j, line in enumerate(fitted):
+            if mode == "tracking":
+                tw, _ = _tracked_width(d, line, f, gap)
+            else:
+                tw, _ = _ts(d, line, f)
+            y = y_base + j * step
+            x = (W - tw) // 2
+            # кламп по горизонтали в safe area (оборона в глубину)
+            x = max(SAFE_L, min(SAFE_R - tw, x))
+            d.rounded_rectangle([x - 30, y - 14, x + tw + 30, y + lh + 14],
+                                radius=20, fill=(3, 5, 10, 190))
+            bboxes.append((x, y, x + tw, y + lh))
             if mode == "pop":
                 sc = 0.6 + 0.4 * (1 - (1 - q) ** 3)
-                tmp = Image.new("RGBA", (lw + 80, lh + 60), (0, 0, 0, 0))
+                tmp = Image.new("RGBA", (int(tw) + 80, lh + 60), (0, 0, 0, 0))
                 td = ImageDraw.Draw(tmp)
                 td.text((40, 30), line, font=f, fill=(245, 248, 255, alpha))
                 nw, nh = max(1, int(tmp.width * sc)), max(1, int(tmp.height * sc))
                 tmp = tmp.resize((nw, nh), Image.BICUBIC)
                 img.paste(tmp, ((W - nw) // 2, int(y + (lh - nh) // 2)), tmp)
             elif mode == "tracking":
-                gap = int(46 * (1 - q))
-                draw_tracked(d, line, f, y, gap, alpha)
+                _, widths = _tracked_width(d, line, f, gap)
+                xx = x
+                for ch, cw in zip(line, widths):
+                    d.text((xx, y), ch, font=f, fill=(245, 248, 255, alpha))
+                    xx += cw + gap
+            elif mode == "whisper":
+                # маленький текст, медленное проявление, лёгкий трекинг
+                a2 = int(255 * min(1.0, p / 0.35))
+                _, widths = _tracked_width(d, line, f, gap)
+                xx = x
+                for ch, cw in zip(line, widths):
+                    d.text((xx, y), ch, font=f, fill=(235, 240, 252, a2))
+                    xx += cw + gap
             elif mode == "reveal":
                 if q < 1.0:
-                    # сначала шторка: текст виден частично
-                    tmp = Image.new("RGBA", (lw + 40, lh + 40), (0, 0, 0, 0))
+                    tmp = Image.new("RGBA", (int(tw) + 40, lh + 40), (0, 0, 0, 0))
                     td = ImageDraw.Draw(tmp)
                     td.text((20, 20), line, font=f, fill=(245, 248, 255, alpha))
                     vis = int(tmp.width * q)
                     if vis > 0:
                         img.paste(tmp.crop((0, 0, vis, tmp.height)),
-                                  (x - 20, y - 20), tmp.crop((0, 0, vis, tmp.height)))
+                                  (int(x) - 20, int(y) - 20),
+                                  tmp.crop((0, 0, vis, tmp.height)))
                 else:
                     d.text((x, y), line, font=f, fill=(245, 248, 255, alpha))
             else:  # rise
                 yy = int(y + 90 * (1 - q))
                 d.text((x, yy), line, font=f, fill=(245, 248, 255, alpha))
+    return bboxes
 
 
 def draw_tracked(d, line, f, y, gap, alpha):
-    widths = [_ts(d, ch, f)[0] for ch in line]
-    total = sum(widths) + gap * max(0, len(line) - 1)
-    x = (W - total) // 2
+    _, widths = _tracked_width(d, line, f, gap)
+    x = (W - (sum(widths) + gap * max(0, len(line) - 1))) // 2
     for ch, cw in zip(line, widths):
         d.text((x, y), ch, font=f, fill=(245, 248, 255, alpha))
         x += cw + gap
@@ -666,6 +947,30 @@ def apply_camera(img, camera, p, seed, frame_i):
         dx = int(-40 * p)
         big = img.resize((W + 80, H), Image.BICUBIC)
         return big.crop((80 + dx, 0, 80 + dx + W, H))
+    if camera == "snap":
+        # резкий наезд: snap-zoom к концу шота
+        s = 1.0 + 0.30 * (p ** 2)
+        bw, bh = int(W * s), int(H * s)
+        big = img.resize((bw, bh), Image.BICUBIC)
+        return big.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
+    if camera == "tilt":
+        # лёгкий наклон + дрейф (псевдо-тилт в посте)
+        ang = -2.0 + 4.0 * p
+        big = img.resize((int(W * 1.12), int(H * 1.12)), Image.BICUBIC)
+        big = big.rotate(ang, resample=Image.BICUBIC, center=(big.width // 2, big.height // 2))
+        bw, bh = big.size
+        return big.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
+    if camera == "whip_pan":
+        # хлыст-камера внутри шота: быстрый горизонтальный пролёт со streaks
+        dx = int(W * 0.55 * p)
+        big = img.resize((W + int(W * 0.55) + 40, H), Image.BICUBIC)
+        out = big.crop((dx, 0, dx + W, H))
+        d = ImageDraw.Draw(out, "RGBA")
+        rnd = random.Random(seed + frame_i // 3)
+        for _ in range(14):
+            y = rnd.randrange(H)
+            d.line([(0, y), (W, y)], fill=(150, 180, 230, 46))
+        return out
     # push_in / push_out
     s = (1.0 + 0.14 * p) if camera == "push_in" else (1.14 - 0.14 * p)
     bw, bh = int(W * s), int(H * s)
@@ -714,6 +1019,26 @@ def transition_frame(img_a, img_b, kind, q, seed):
         canvas = Image.new("RGB", (W, H), (0, 0, 0))
         canvas.paste(bb, ((W - bb.width) // 2, (H - bb.height) // 2))
         return Image.blend(ba, canvas, min(1.0, q * 1.4))
+    if kind == "match":
+        # match cut: A и B связаны масштабом — лёгкий общий наезд + кроссфейд.
+        # Работает между визуально похожими кадрами (экраны, серверы).
+        s = 1.0 + 0.10 * q
+        def _sc(im):
+            bw, bh = int(W * s), int(H * s)
+            big = im.resize((bw, bh), Image.BICUBIC)
+            return big.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
+        return Image.blend(_sc(img_a), _sc(img_b), q)
+    if kind == "speed_ramp":
+        # резкое ускорение сквозь кадр: сильный zoom-blur переход
+        sa = 1.0 + 0.9 * q
+        ba = img_a.resize((int(W * sa), int(H * sa)), Image.BICUBIC)
+        ba = ba.crop(((ba.width - W) // 2, (ba.height - H) // 2,
+                      (ba.width - W) // 2 + W, (ba.height - H) // 2 + H))
+        sb = 0.7 + 0.3 * q
+        bb = img_b.resize((max(1, int(W * sb)), max(1, int(H * sb))), Image.BICUBIC)
+        canvas = Image.new("RGB", (W, H), (0, 0, 0))
+        canvas.paste(bb, ((W - bb.width) // 2, (H - bb.height) // 2))
+        return Image.blend(ba, canvas, min(1.0, q * 1.5))
     if kind == "glitch":
         # короткий цифровой сбой: RGB-split + сдвиг полос (только тут!)
         base = img_b if q >= 0.4 else img_a
@@ -850,7 +1175,8 @@ def build_fonts():
     }
 
 
-TRANS_DUR = {"hard_cut": 0.08, "whip": 0.35, "zoom": 0.4, "glitch": 0.3, "dip": 0.5}
+TRANS_DUR = {"hard_cut": 0.08, "whip": 0.35, "zoom": 0.4, "glitch": 0.3,
+             "dip": 0.5, "match": 0.25, "speed_ramp": 0.3}
 
 
 def render_frame(shot, p, fonts, P):
@@ -947,6 +1273,112 @@ def render_cinematic(shots, seconds, fps, out_silent, bpm, P, tmpdir="out/tmp_ci
     return out_silent, bounds
 
 
+# ---------- баланс монтажа и QC перед export ----------
+
+def shot_kind(s):
+    """cinematic | typography | graphic для шота."""
+    t = s.get("type")
+    if t in ("cinematic", "typography", "graphic"):
+        return t
+    if s.get("texts") and s.get("visual") in PURE_TYPO_VISUALS:
+        return "typography"
+    return "cinematic"
+
+
+def enforce_balance(shots):
+    """Гарантия принципа CINEMATIC->TEXT->CINEMATIC: двух ударных
+    текстовых вставок подряд быть не должно (whisper-финал — исключение:
+    «КТО КОГО» / пауза / «ЗАЩИЩАЕТ?» задуманы парой)."""
+    out = [dict(s) for s in shots]
+    prev_typo = False
+    for s in out:
+        texts = s.get("texts") or []
+        is_typo = shot_kind(s) == "typography" and bool(texts)
+        modes = {t.get("mode") for t in texts}
+        if is_typo and prev_typo and not modes <= {"whisper"}:
+            s["texts"] = []
+            s["type"] = "cinematic"
+            is_typo = False
+        prev_typo = bool(is_typo)
+    return out
+
+
+def qc_shots(shots, seconds):
+    """Чеклист качества ПЕРЕД рендером (п.15 ТЗ). Возвращает dict проверок,
+    печатает отчёт. Текстовый fit — по построению в safe area, но проверяем."""
+    from PIL import Image as _I, ImageDraw as _D
+    scratch = _D.Draw(_I.new("RGB", (W, H)))
+    rep = {}
+    # 1-3: тексты в safe area, без обрезки и выхода за 1080x1920
+    bad = []
+    for s in shots:
+        for t in s.get("texts") or []:
+            f, fitted, gap = fit_text_block(scratch, t["lines"], t.get("mode", "pop"), None)
+            for ln in fitted:
+                w_ = (_tracked_width(scratch, ln, f, gap)[0]
+                      if t.get("mode") == "tracking" else _ts(scratch, ln, f)[0])
+                if w_ > SAFE_W:
+                    bad.append((s.get("id"), ln))
+    rep["texts_in_safe_area"] = not bad
+    rep["no_clipped_words"] = not bad
+    rep["no_text_outside_frame"] = not bad
+    # 4: нет двух огромных текстовых блоков подряд
+    dbl = False
+    prev = False
+    for s in shots:
+        texts = s.get("texts") or []
+        cur = shot_kind(s) == "typography" and bool(texts) and not (
+            {t.get("mode") for t in texts} <= {"whisper"})
+        if cur and prev:
+            dbl = True
+        prev = cur
+    rep["no_double_text_blocks"] = not dbl
+    # 5: есть cinematic shots (>=50%)
+    kinds = [shot_kind(s) for s in shots]
+    rep["has_cinematic_shots"] = (sum(1 for k_ in kinds if k_ == "cinematic")
+                                  >= max(1, len(shots) // 2))
+    # 6: variation длительностей
+    durs = [round(s["dur"], 2) for s in shots]
+    rep["dur_variation"] = len(set(durs)) >= 5 and min(durs) < 1.0
+    # 7: camera movement у каждого cinematic (чёрная пауза — исключение:
+    # неподвижный чёрный кадр задуман, движение там невидимо)
+    static_cine = [s.get("id") for s in shots
+                   if shot_kind(s) == "cinematic" and s.get("camera") == "static"
+                   and s.get("visual") != "pause_black"]
+    rep["camera_movement"] = not static_cine
+    # 8: transitions разнообразны
+    rep["transitions"] = len({s.get("trans_out") for s in shots}) >= 3
+    # 9: пауза перед кульминацией
+    rep["pause_before_climax"] = any(
+        s.get("act") == "twist" and (s.get("sfx") == "silence" or not s.get("texts"))
+        for s in shots)
+    # 10: rapid-часть climax быстрее пика (медленный финал whisper+brand
+    # в сравнение не входит — замедление там задумано)
+    SLOW_FINALE = {"pause_black", "final_q", "final_brand"}
+    pre = [s["dur"] for s in shots if s.get("act") == "peak"]
+    cli = [s["dur"] for s in shots if s.get("act") == "climax"
+           and s.get("visual") not in SLOW_FINALE]
+    rep["climax_faster"] = bool(pre and cli) and (
+        sum(cli) / len(cli) < sum(pre) / len(pre))
+    # 11: финал визуально отличается от начала
+    rep["final_differs"] = shots[-1].get("visual") != shots[0].get("visual")
+    # 12: красный только на threat (hook=warning, peak, accel-система;
+    # attack_grid в climax — тоже threat-кадр)
+    ok_acts = {"hook", "peak", "accel"}
+    threat_vis = {"attack_grid", "phone_dark"}
+    rep["red_discipline"] = all(
+        s.get("accent") != "accent2"
+        or s.get("act") in ok_acts or s.get("visual") in threat_vis
+        for s in shots)
+    print("[cine][QC] " + " ".join(
+        f"{k}={'OK' if v else 'FAIL'}" for k, v in rep.items()))
+    if bad:
+        print(f"[cine][QC] вне safe area: {bad[:4]}")
+    if static_cine:
+        print(f"[cine][QC] cinematic без движения камеры: {static_cine}")
+    return rep
+
+
 def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
                        out="out/video_cine.mp4", fps=FPS_CINE,
                        voice=vg.VOICE_DEFAULT, no_audio=False, voice_over=None,
@@ -960,6 +1392,9 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
     bpm = st.get("bpm", 100)
     topic = (topic or "Как вас взламывают через фишинг").strip()
     shots = list(script_shots) if script_shots else plan_shots(topic, seconds, key, True, provider)
+    # монтажная гигиена: баланс cinematic/text + QC-чеклист до рендера
+    shots = enforce_balance(shots)
+    qc_shots(shots, seconds)
     # подгон длительностей под целевую длину: масштаб -> минимум 0.3с ->
     # повторный масштаб вниз при перелёте (clamp не должен раздувать хронометраж)
     total_plan = sum(s["dur"] for s in shots)
