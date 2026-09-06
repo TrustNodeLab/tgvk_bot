@@ -422,12 +422,16 @@ def build_site_custom(sections, title="Видеоразбор"):
 async def _tts_many(items, voice, tmpdir):
     from edge_tts import Communicate
 
-    async def one(i, text):
+    async def one(i, s):
         out = os.path.join(tmpdir, f"sec_{i}.mp3")
-        await Communicate(text, voice).save(out)
+        # M19: интонация по чанкам (rate/pitch/volume), по умолчанию ровно
+        await Communicate(
+            s["voice"], voice,
+            rate=s.get("rate", "+0%"), pitch=s.get("pitch", "+0Hz"),
+            volume=s.get("volume", "+0%")).save(out)
         return out
 
-    return await asyncio.gather(*[one(i, s["voice"]) for i, s in enumerate(items)])
+    return await asyncio.gather(*[one(i, s) for i, s in enumerate(items)])
 
 
 def mp3_duration(ffmpeg, path):

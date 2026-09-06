@@ -1745,6 +1745,182 @@ TRANS_DUR = {"hard_cut": 0.08, "whip": 0.35, "zoom": 0.4, "glitch": 0.3,
              "dip": 0.5, "match": 0.25, "speed_ramp": 0.3}
 
 
+# ---------- M19: голос ведёт таймлайн ----------
+
+# Интонация диктора по актам: (темп, тон, громкость) для edge-tts.
+# hook — энергично, twist — медленно и зловеще, peak — громко и весомо.
+# База чуть замедлена (-4%): Dmitry тараторит, речь должна успевать
+# за картинку. Сырой SSML edge-tts 7.x экранирует — только параметры.
+_PROSODY = {
+    "hook": ("+2%", "+8Hz", "+0%"),
+    "problem": ("-4%", "+2Hz", "+0%"),
+    "escalation": ("-1%", "+4Hz", "+0%"),
+    "peak": ("-8%", "+0Hz", "+10%"),
+    "twist": ("-12%", "+6Hz", "+0%"),
+    "accel": ("+0%", "+5Hz", "+0%"),
+    "climax": ("-6%", "+3Hz", "+0%"),
+}
+
+# Один визуал — не дольше 3с (динамика TikTok): длинные реплики режутся
+# на несколько кадров.
+_MAX_VISUAL_SEC = 3.0
+
+
+def _prosody(act):
+    """Интонация акта -> (rate, pitch, volume) для edge-tts."""
+    return _PROSODY.get(act or "problem", ("-4%", "+2Hz", "+0%"))
+
+
+def _split_words(text, n):
+    """Делит текст на n частей по границам слов (субтитры подсерий)."""
+    words = (text or "").split()
+    if n <= 1 or not words:
+        return [text or ""]
+    base, rem = divmod(len(words), n)
+    out, k = [], 0
+    for i in range(n):
+        cnt = base + (1 if i < rem else 0)
+        out.append(" ".join(words[k:k + cnt]))
+        k += cnt
+    return out
+
+
+def _layout_voice_spans(shots, vmap, sec_durs):
+    """M19: spans озвученных шотов + нарезка длинных реплик на кадры ≤3с.
+
+    Мутирует shots (расширение на месте, первый подкадр — исходный dict).
+    Возвращает [{"sec": j, "refs": [shot, ...]}] — refs[0] звучит с sec-файла.
+    """
+    import math as _m
+    vpool = []
+    for s in shots:
+        if s.get("visual") not in vpool:
+            vpool.append(s.get("visual"))
+    cpool = []
+    for s in shots:
+        if s.get("camera") not in cpool:
+            cpool.append(s.get("camera"))
+    # проход 1: соседние одинаковые визуалы/камеры разводим (до нарезки)
+    for i in range(1, len(shots)):
+        if (shot_kind(shots[i]) == "cinematic"
+                and shots[i].get("visual") == shots[i - 1].get("visual")):
+            for cand in vpool:
+                if cand != shots[i - 1].get("visual"):
+                    shots[i]["visual"] = cand
+                    break
+        if shots[i].get("camera") == shots[i - 1].get("camera"):
+            for cand in cpool:
+                if cand != shots[i - 1].get("camera"):
+                    shots[i]["camera"] = cand
+                    break
+    # проход 2: нарезка (с конца, чтобы индексы vmap не плыли)
+    spans = []
+    order = sorted(range(len(vmap)), key=lambda j: vmap[j][0], reverse=True)
+    for j in order:
+        idx, s = vmap[j]
+        d = sec_durs[j]
+        span = max(0.9, float(d) + 0.35)
+        if shot_kind(s) == "cinematic":
+            n = max(1, int(_m.ceil(span / _MAX_VISUAL_SEC)))
+        else:
+            n = 1  # текстовые карточки читаются целиком
+        sub = span / n
+        parts = _split_words(s.get("sub", ""), n)
+        refs = [s]
+        s["dur"] = max(sub, 0.8)
+        if s.get("subs"):
+            s["subs"] = [{"lines": [parts[0][:70]], "mode": "sub"}] \
+                if parts[0] else []
+            s["sub"] = parts[0][:70]
+        prev_vis, prev_cam = s.get("visual"), s.get("camera")
+        for k in range(1, n):
+            vis = next((c for c in vpool if c != prev_vis), prev_vis)
+            cam = next((c for c in cpool
+                        if c != prev_cam and c != "static"), prev_cam)
+            c2 = dict(s)
+            c2["dur"] = max(sub, 0.8)
+            c2["visual"] = vis
+            c2["camera"] = cam
+            c2["texts"] = []
+            c2["voice"] = ""
+            c2["trans_out"] = "hard_cut"
+            c2["sfx"] = "none"
+            c2["seed"] = s.get("seed", 1) + k
+            c2["subs"] = [{"lines": [parts[k][:70]], "mode": "sub"}] \
+                if parts[k] else []
+            c2["sub"] = parts[k][:70]
+            refs.append(c2)
+            prev_vis, prev_cam = vis, cam
+        shots[idx:idx + 1] = refs
+        spans.append({"sec": j, "refs": refs})
+    spans.sort(key=lambda sp: sp["sec"])
+    # проход 3: границы спанов — соседние одинаковые визуалы разводим
+    for i in range(1, len(shots)):
+        if (shot_kind(shots[i]) == "cinematic"
+                and shots[i].get("visual") == shots[i - 1].get("visual")):
+            for cand in vpool:
+                if cand != shots[i - 1].get("visual"):
+                    shots[i]["visual"] = cand
+                    break
+    return spans
+
+
+def _fit_fillers(shots, voiced_ids, seconds, full_voice):
+    """Неозвученные кадры добивают остаток хронометража (голос не трогаем)."""
+    fills = [s for s in shots if id(s) not in voiced_ids]
+    if not fills:
+        return
+    if full_voice:
+        # статья: паузы короткие, без тянучки
+        for s in fills:
+            s["dur"] = min(max(float(s["dur"]), 0.6), 2.5)
+    else:
+        vtot = sum(float(s["dur"]) for s in shots if id(s) in voiced_ids)
+        budget = max(8.0, float(seconds) - vtot)
+        ftot = sum(float(s["dur"]) for s in fills) or 1.0
+        k = budget / ftot
+        for s in fills:
+            s["dur"] = max(0.6, float(s["dur"]) * k)
+
+
+def _assemble_voice(ffmpeg, tmpdir, items, total, sr=SR):
+    """M19: точная сборка голосового трека — чанк j стартует на своём шоте.
+
+    items: [(sec_mp3, start_sec)]. Возвращает wav-путь или None.
+    """
+    import wave as _wv
+    if np is None:
+        return None
+    n = int(total * sr)
+    if n <= 0:
+        return None
+    track = np.zeros(n, dtype=np.float64)
+    ok = False
+    for f, start in items:
+        w = os.path.join(tmpdir, "mix_" + os.path.basename(f) + ".wav")
+        r = subprocess.run(
+            [ffmpeg, "-y", "-i", f, "-ar", str(sr), "-ac", "1", w],
+            capture_output=True)
+        if r.returncode != 0:
+            continue
+        try:
+            with _wv.open(w, "rb") as wf:
+                raw = wf.readframes(wf.getnframes())
+            a = np.frombuffer(raw, dtype=np.int16).astype(np.float64)
+        except Exception:
+            continue
+        o = max(0, int(start * sr))
+        m = min(len(a), n - o)
+        if m > 0:
+            track[o:o + m] += a[:m]
+            ok = True
+    if not ok:
+        return None
+    out = os.path.join(tmpdir, "voice_mix.wav")
+    write_wav(out, np.clip(track, -32768, 32767).astype(np.int16))
+    return out
+
+
 def render_frame(shot, p, fonts, P, stock=None):
     """Один кадр тела шота: сцена + камера + типографика.
 
@@ -2007,13 +2183,15 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
     ffmpeg = vg.find_ffmpeg()
     if not ffmpeg:
         raise RuntimeError("нет ffmpeg: pip install imageio-ffmpeg")
-    # --- озвучка ДО рендера (M15, TikTok): длительности шотов подгоняются
-    # под голос, чтобы речь не обрезалась, а субтитр успевал прочитаться
+    # --- M19: голос ведёт таймлайн. Реплики озвучиваются SSML (интонация
+    # по актам, паузы между фразами), шоты встают под РЕАЛЬНУЮ длину голоса,
+    # длинные реплики режутся на кадры ≤3с. Глобального ресайза больше нет —
+    # именно он разъединял голос и картинку (монолит с t=0 поверх тянутых
+    # шотов: диктор заканчивал раньше, хвост шёл в тишине).
     vmp3 = None
+    voice_spans = []
     if voice_over and not no_audio:
-        # озвучиваем только якорные шоты (каждый 3-й + hook/twist/бренд):
-        # непрерывный дикторский трек ~35-40с поверх 55с монтажа + субтитры.
-        # Режим статьи (M17): диктор читает ВСЕ реплики по порядку.
+        # якорные шоты (каждый 3-й + hook/twist/бренд) или ВСЕ в статье
         if full_voice:
             vmap = [(i, s) for i, s in enumerate(shots)
                     if (s.get("voice") or "").strip()]
@@ -2023,31 +2201,35 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
                         and (i % 3 == 0 or s.get("act") in ("hook", "twist")
                              or s.get("visual") == "final_brand"))]
         if vmap:
-            tsecs = [{"voice": s["voice"], "caption": s["id"]} for _, s in vmap]
+            tsecs = []
+            for _, s in vmap:
+                rate, pitch, vol = _prosody(s.get("act"))
+                tsecs.append({"voice": s["voice"], "caption": s["id"],
+                              "rate": rate, "pitch": pitch, "volume": vol})
             _w = None
             try:
-                vmp3, _w = vg.make_voiceover_sections(ffmpeg, tsecs, voice, tmpdir)
+                vmp3, _w = vg.make_voiceover_sections(ffmpeg, tsecs, voice,
+                                                      tmpdir)
             except Exception as e:
-                print(f"[cine] TTS не удался ({type(e).__name__}) — оценка по символам")
+                print(f"[cine] TTS не удался ({type(e).__name__}) "
+                      f"— оценка по символам")
                 vmp3, _w = None, None
             if _w and len(_w) == len(vmap):
-                for (_, s), w in zip(vmap, _w):
-                    s["dur"] = max(s["dur"], float(w) + 0.4)
+                # w = голос + вшитая пауза 0.5 (у последнего чанка паузы нет)
+                sec_durs = [float(w) - (0.5 if j < len(vmap) - 1 else 0.0)
+                            for j, w in enumerate(_w)]
             else:
-                for _, s in vmap:
-                    s["dur"] = max(s["dur"], len(s["voice"]) / 12.0 + 0.5)
+                sec_durs = [max(1.5, len(s["voice"]) / 14.0)
+                            for _, s in vmap]
                 vmp3 = None
-    # подгон длительностей под целевую длину, но не ниже минимума
-    # читаемости (clamp не должен раздувать хронометраж)
-    total_plan = sum(s["dur"] for s in shots)
-    k = seconds / max(0.1, total_plan)
+            voice_spans = _layout_voice_spans(shots, vmap, sec_durs)
+            voiced_ids = {id(s) for sp in voice_spans for s in sp["refs"]}
+            _fit_fillers(shots, voiced_ids, seconds, full_voice)
+            seconds = sum(float(s["dur"]) for s in shots)
+    # минимум читаемости — только вверх (синхрон голоса не ломаем)
     for s in shots:
-        s["dur"] = max(_min_dur(s), s["dur"] * k)
-    total_plan = sum(s["dur"] for s in shots)
-    if total_plan > seconds:
-        k2 = seconds / total_plan
-        for s in shots:
-            s["dur"] = max(0.4, s["dur"] * k2)
+        if (s.get("texts") or s.get("subs")) and s["dur"] < _min_dur(s):
+            s["dur"] = float(_min_dur(s))
     # QC-чеклист — по финальным длительностям, до рендера
     rep = qc_shots(shots, seconds)
     # --- живые сток-фоны (M15): микс реального видео с графикой.
@@ -2082,6 +2264,26 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
     _, bounds = render_cinematic(shots, seconds, fps, silent, bpm, P, tmpdir,
                                  stock)
     real_dur = bounds[-1]
+    # M19: голос собирается точно на шоты — чанк j стартует на своём кадре
+    # (bounds = концы шотов после beat-снапа, bounds[i] = старт шота i)
+    if vmp3 and voice_spans and np is not None and not no_audio:
+        try:
+            idx_of = {id(s): i for i, s in enumerate(shots)}
+            items = []
+            for sp in voice_spans:
+                i0 = idx_of.get(id(sp["refs"][0]))
+                if i0 is None or i0 >= len(bounds):
+                    continue
+                items.append((os.path.join(tmpdir, f"sec_{sp['sec']}.mp3"),
+                              float(bounds[i0])))
+            total_v = sum(float(s["dur"]) for s in shots)
+            vmix = _assemble_voice(ffmpeg, tmpdir, items, total_v, SR)
+            if vmix:
+                vmp3 = vmix
+                print(f"[cine] голос собран на таймлайн: {len(items)} чанков")
+        except Exception as e:
+            print(f"[cine] сборка голоса не удалась ({type(e).__name__}) "
+                  f"— монолит с начала")
     if no_audio or np is None:
         if np is None:
             print("[cine] numpy нет — видео без звука")
