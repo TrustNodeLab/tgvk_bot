@@ -660,24 +660,23 @@ def build_art_payload(group: dict, cfg: dict) -> dict:
         gif = to_gif_bytes(art["bytes"])
         if not gif:
             continue
-        attachment = None
         try:
             attachment = _upload_gif_attachment(
                 os.environ.get(group["token_key"], ""), group["groupId"], gif
             )
         except Exception as e:
-            print(f"[multigroups] {group['name']}: GIF не загрузился ({e}), арт-пост ссылкой")
-        if attachment:
-            text = art_caption(art)
-        else:
-            # Сообщения сообщества выключены в VK — docs.save недоступен.
-            # Публикуем ссылку на пост канала, чтобы слот не пропадал.
-            text = (
-                f"🌌 ИИ-арт в канале @{art['channel']}\n\n"
-                f"🔗 Смотреть: https://t.me/{art['channel']}/{art['post']}"
-            )
+            print(f"[multigroups] {group['name']}: GIF не загрузился ({e}) — арт-пост пропущен")
+            continue
+        if not attachment:
+            print(f"[multigroups] {group['name']}: GIF не загрузился — арт-пост пропущен")
+            continue
+        # Пост публикуем ТОЛЬКО с картинкой. Текстовая ссылка «смотрите арт тут»
+        # пользователю не нужна — если картинку загрузить нельзя (у группы
+        # «Сообщения сообщества» выключены), слот пропускаем, чтобы не плодить
+        # пустые посты. Картинка появится, как только messages включат в VK.
+        text = art_caption(art)
         return {"text": text, "attachment": attachment, "guid_key": id_key}
-    raise RuntimeError("нет доступных артов (все каналы без картинок или уже использованы)")
+    raise RuntimeError("нет доступных артов (картинки не загрузились или каналы недоступны)")
 
 
 # ---------- публикация ----------

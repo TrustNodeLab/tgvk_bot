@@ -363,25 +363,24 @@ def _draw_sequence_connectors(d, row_boxes, row_mid, accent):
 # ---------- основная функция ----------
 
 def _variant_key(data: dict) -> int:
-    """Детерминированный выбор варианта оформления (0..3) по содержимому поста:
-    один и тот же пост всегда рисуется одинаково, разные посты — по-разному."""
+    """Детерминированный выбор варианта оформления (0..2) по содержимому поста:
+    один и тот же пост всегда рисуется одинаково, разные посты — по-разному.
+    Вариант 3 (numeric — большое число слева) убран по запросу пользователя."""
     seed = " ".join(data.get("headline", [])) + "|" + data.get("category", "") + "|" + " ".join(data.get("tags", []))
     h = 0
     for ch in seed:
         h = (h * 31 + ord(ch)) & 0x7FFFFFFF
-    return h % 4
+    return h % 3
 
 
 def _draw_header(d, variant, tags, category, headline, accent, text_c, muted,
                  panel_fill, border_c, f_tag, f_sub, f_hl) -> int:
-    """Верхняя часть карточки (теги, категория, заголовок) в одном из 4 вариантов
-    композиции: 0=classic, 1=hero, 2=split, 3=numeric. Возвращает y под контентом."""
+    """Верхняя часть карточки (теги, категория, заголовок) в одном из 3 вариантов
+    композиции: 0=classic, 1=hero, 2=split. Возвращает y под контентом."""
     if variant == 1:
-        return _draw_header_hero(d, tags, category, headline, accent, panel_fill, border_c, f_tag, f_sub, f_hl)
+        return _draw_header_hero(d, tags, category, headline, accent, text_c, panel_fill, border_c, f_tag, f_sub, f_hl)
     if variant == 2:
         return _draw_header_split(d, tags, category, headline, accent, text_c, f_tag, f_sub, f_hl)
-    if variant == 3:
-        return _draw_header_numeric(d, tags, category, headline, accent, text_c, panel_fill, border_c, f_tag, f_sub, f_hl)
     return _draw_header_classic(d, tags, category, headline, accent, text_c, f_tag, f_sub, f_hl)
 
 
@@ -413,9 +412,10 @@ def _draw_header_classic(d, tags, category, headline, accent, text_c, f_tag, f_s
     return y_cursor
 
 
-def _draw_header_hero(d, tags, category, headline, accent, panel_fill, border_c, f_tag, f_sub, f_hl) -> int:
+def _draw_header_hero(d, tags, category, headline, accent, text_c, panel_fill, border_c, f_tag, f_sub, f_hl) -> int:
     """Вариант 1 — hero: панель-плашка на всю ширину, категория и заголовок по
-    центру, теги залитыми плашками, снизу акцентная полоса."""
+    центру, теги залитыми плашками, снизу акцентная полоса. Текст плашки —
+    text_c (тёмный на светлом небе / белый на тёмном), чтобы контраст не ломался."""
     hl_lines = []
     for line in headline:
         hl_lines.extend(_wrap_px(d, line, f_hl, W - 160))
@@ -432,7 +432,7 @@ def _draw_header_hero(d, tags, category, headline, accent, panel_fill, border_c,
     y += sub_h + 28
     for idx, l in enumerate(hl_lines):
         lw, lh_ = _ts(d, l, f_hl)
-        d.text(((W - lw) // 2, y), l, font=f_hl, fill=(accent if idx == 0 else (255, 255, 255)))
+        d.text(((W - lw) // 2, y), l, font=f_hl, fill=(accent if idx == 0 else text_c))
         y += lh_ + 18
     y += 8
     tag_fill = tuple(int(accent[j:j + 2], 16) for j in (1, 3, 5))
@@ -478,43 +478,6 @@ def _draw_header_split(d, tags, category, headline, accent, text_c, f_tag, f_sub
     return y_cursor
 
 
-def _draw_header_numeric(d, tags, category, headline, accent, text_c, panel_fill, border_c, f_tag, f_sub, f_hl) -> int:
-    """Вариант 3 — numeric: крупный номер поста слева в плашке, заголовок справа,
-    теги контуром под номером."""
-    h = 0
-    for ch in " ".join(headline):
-        h = (h * 31 + ord(ch)) & 0x7FFFFFFF
-    num = f"{h % 90 + 10:02d}"
-    box_x, box_y, box_s = 40, 30, 148
-    d.rounded_rectangle([box_x, box_y, box_x + box_s, box_y + box_s], radius=14, fill=panel_fill,
-                        outline=accent, width=2)
-    nf = _font(EXO2, 88, 900)
-    nw, nh = _ts(d, num, nf)
-    d.text((box_x + (box_s - nw) // 2, box_y + (box_s - nh) // 2 - 6), num, font=nf, fill=accent)
-    x0 = box_x + box_s + 32
-    ty = box_y + box_s + 26
-    tx = box_x
-    for tag in tags:
-        tw, th = _ts(d, tag, f_tag)
-        pw, ph = tw + 30, th + 22
-        if tx + pw > W - 40 and tx > box_x:
-            break
-        d.rounded_rectangle([tx, ty, tx + pw, ty + ph], radius=6, outline=accent, width=2)
-        d.text((tx + 15, ty + ph // 2), tag, font=f_tag, fill=accent, anchor="lm")
-        tx += pw + 14
-    sy = box_y + 8
-    d.text((x0, sy), f"// {category}", font=f_sub, fill=accent)
-    hy = sy + 52
-    y_cursor = hy
-    for i, line in enumerate(headline):
-        col = accent if i == 0 else text_c
-        for wline in _wrap_px(d, line, f_hl, W - x0 - 40):
-            d.text((x0, y_cursor), wline, font=f_hl, fill=col)
-            _, lh_ = _ts(d, wline, f_hl)
-            y_cursor += lh_ + 18
-    return max(y_cursor, ty + 22 + 14)
-
-
 def render_card(data: dict, out_path: str, dt_ekb: datetime = None) -> str:
     """
     data = {
@@ -541,7 +504,21 @@ def _render_frame(data: dict, dt_ekb: datetime, phase: float = 0.0) -> Image.Ima
     tags = data["tags"]
     category = data["category"]
     headline = data["headline"]
-    cards = data["cards"]
+    # Карточка должна отражать суть поста кратко и чётко — без перегрузки.
+    # Ограничиваем число блоков и длину текстов, чтобы на карточке осталось
+    # только самое важное, а не простыня из всех данных LLM.
+    raw_cards = data["cards"]
+    trimmed_cards = []
+    for c in raw_cards[:3]:
+        tc = dict(c)
+        if tc.get("desc"):
+            tc["desc"] = tc["desc"][:90]
+        if tc.get("items"):
+            tc["items"] = tc["items"][:3]
+        if tc.get("label"):
+            tc["label"] = tc["label"][:60]
+        trimmed_cards.append(tc)
+    cards = trimmed_cards
     quote = data.get("quote", "")
     source = data.get("source", "")
 
