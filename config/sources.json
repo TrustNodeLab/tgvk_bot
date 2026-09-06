@@ -34,7 +34,10 @@
     "https://habr.com/ru/rss/news/?fl=ru",
     "https://www.anti-malware.ru/rss.xml",
     "https://www.kommersant.ru/RSS/section-auto.xml",
-    "https://www.kaspersky.ru/blog/feed"
+    "https://www.kaspersky.ru/blog/feed",
+    "https://securelist.ru/feed/",
+    "https://www.securenews.ru/feed",
+    "https://www.mk.ru/rss/incident/index.xml"
   ],
   "keywords": [
     "мошенник",

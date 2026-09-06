@@ -92,11 +92,18 @@ GRACE_MIN = 90
 
 # Ленты: RU — проверены живыми 2026-08-31; EN — polygon/vg247 заменены на
 # gamespot/gamesradar/videogameschronicle (мертвы/протухли).
+# 2026-09-06: добавлены RU app2top/3dnews/iguides, EN gematsu/siliconera/
+# xbox/playstation — все отдают HTTP 200 RSS и (кроме блогов xbox/playstation,
+# которые публикуют реже) подтверждены смоук-парсингом с картинками.
+# destructoid отклонён — реальный read timeout при парсинге.
 FEEDS_RU = [
     "https://www.playground.ru/rss/news.xml",
     "https://vgtimes.ru/news/rss.xml",
     "https://dtf.ru/rss/all",
     "https://igromania.ru/rss/news.xml",
+    "https://app2top.ru/feed/",
+    "https://3dnews.ru/software-news/rss/",
+    "https://www.iguides.ru/rss/",
 ]
 FEEDS_EN = [
     "https://www.pcgamer.com/rss/",
@@ -105,16 +112,23 @@ FEEDS_EN = [
     "https://www.gamespot.com/feeds/news/",
     "https://www.gamesradar.com/rss/",
     "https://www.videogameschronicle.com/feed/",
+    "https://www.gematsu.com/feed",
+    "https://www.siliconera.com/feed/",
+    "https://news.xbox.com/en-us/feed/",
+    "https://blog.playstation.com/feed/",
 ]
 MULTI_FEEDS = {"ru": FEEDS_RU, "en": FEEDS_EN}
 
 # aiart исключён — стабильно отдаёт таймаут и тормозит рабочие каналы.
+# midjourney (официальный канал) добавлен 2026-09-06. Новые каналы не
+# выдумывались — недоступные бот тихо пропускает (continue).
 ART_CHANNELS = [
     "aiartcommunity",
     "neuralart",
     "promptart",
     "aipainting",
     "psychedelic_ai",
+    "midjourney",
 ]
 
 MG_CONFIG_KEY = "mg_config"

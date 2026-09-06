@@ -138,28 +138,41 @@ export const MULTI_WINDOWS = {
 };
 export const MULTI_WINDOW_LEN_MIN = 30;
 
+// 2026-09-06: синхронизировано с Python-контуром. RU app2top/3dnews/iguides,
+// EN gematsu/siliconera/xbox/playstation добавлены (HTTP 200 RSS; 3dnews/iguides/
+// gematsu подтверждены смоук-парсингом с картинками); мёртвые polygon/vg247 и
+// нестабильный destructoid (read timeout) удалены.
 const FEEDS_RU = [
   "https://www.playground.ru/rss/news.xml",
   "https://vgtimes.ru/news/rss.xml",
   "https://dtf.ru/rss/all",
+  "https://igromania.ru/rss/news.xml",
+  "https://app2top.ru/feed/",
+  "https://3dnews.ru/software-news/rss/",
+  "https://www.iguides.ru/rss/",
 ];
 const FEEDS_EN = [
   "https://www.pcgamer.com/rss/",
-  "https://www.polygon.com/rss/index.xml",
   "https://www.eurogamer.net/feed/",
   "https://www.rockpapershotgun.com/feed/",
-  "https://www.vg247.com/feed/",
+  "https://www.gamespot.com/feeds/news/",
+  "https://www.gamesradar.com/rss/",
+  "https://www.videogameschronicle.com/feed/",
+  "https://www.gematsu.com/feed",
+  "https://www.siliconera.com/feed/",
+  "https://news.xbox.com/en-us/feed/",
+  "https://blog.playstation.com/feed/",
 ];
 export const MULTI_FEEDS = { ru: FEEDS_RU, en: FEEDS_EN };
 
+// Синхронизировано с Python-контуром (aiart исключён — стабильный таймаут).
 export const ART_CHANNELS = [
-  // aiart последним: стабильно отдаёт таймаут, не должен тормозить рабочие каналы
   "aiartcommunity",
   "neuralart",
   "promptart",
   "aipainting",
   "psychedelic_ai",
-  "aiart",
+  "midjourney",
 ];
 
 const MG_CONFIG_KEY = "mg_config";
