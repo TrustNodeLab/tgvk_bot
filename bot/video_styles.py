@@ -47,8 +47,8 @@ STYLES = {
         "bpm": 104,                        # сетка бита для монтажа
         "voice_over": True,                # TikTok: спокойная озвучка поверх тихого бита
         "sfx": True,
-        "bed_level": 0.35,                 # тихий фон: бит не мешает голосу (M15)
-        "sfx_level": 0.45,                 # SFX приглушены (M15)
+        "bed_level": 0.12,                 # очень тихий фон: голос доминирует (M16)
+        "sfx_level": 0.20,                 # SFX еле слышны на склейках (M16)
         "stock_queries": (                 # Pexels-поиск реальных кадров для микса (M15);
             "smartphone dark close up",    # нужен PEXELS_API_KEY, иначе painters
             "server room dark",

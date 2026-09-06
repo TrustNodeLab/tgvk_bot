@@ -299,79 +299,134 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
         return [{"lines": [l.upper().strip()[:24] for l in lines], "mode": mode}]
 
     hook_line = short.upper().strip()[:24]
-    prob = ["phone_message", "phone_call", "login_screen", "person"]
-    rnd.shuffle(prob)
     peak_pool = ["attack_grid", "qr_scan", "token_panel", "server_corridor",
                  "phone_call", "switch_macro", "face_glow", "login_screen"]
     rnd.shuffle(peak_pool)
 
-    # Озвучка TikTok-стиля (M15): спокойные короткие фразы по актам.
+    # Озвучка TikTok-стиля (M16): 10+ фраз на акт, без повторов в одном видео.
     # Пары (voice — что говорит диктор, sub — субтитр по центру кадра).
-    # Раздаются циклично по шотам акта; topic вплетён в hook/вопрос.
+    # topic вплетён в hook/вопрос; реплики разнообразные, не шаблонные.
     NARR = {
         "hook": [
             (f"Вас уже могут взламывать. {short}. Прямо сейчас.",
              "ВЗЛОМ УЖЕ ИДЁТ"),
+            (f"Пока вы это читаете, {short} под угрозой.",
+             "УГРОЗА УЖЕ ЗДЕСЬ"),
+            (f"Каждый день {short} теряет тысячи пользователей.",
+             "ТЫСЯЧИ ПОТЕРЬ"),
+            (f"Кибератаки стали нормой. {short} — цель.",
+             "НОРМАЛЬНАЯ ЦЕЛЬ"),
+            (f"Ничего не заметили? {short} уже под контролем.",
+             "УЖЕ ПОД КОНТРОЛЕМ"),
+            (f"Среднее время взлома — четыре минуты. {short}.",
+             "4 МИНУТЫ ДО ВЗЛОМА"),
         ],
         "problem": [
             ("Вам приходит самое обычное сообщение.", "Обычное сообщение"),
             ("Звонок с незнакомого номера.", "Незнакомый номер"),
             ("Знакомая страница входа. Почти.", "Почти знакомый вход"),
             ("Одно нажатие — и вы внутри ловушки.", "Одно нажатие"),
+            ("Письмо от банка. Почти настоящее.", "Почти настоящее"),
+            ("Ссылка в мессенджере от друга.", "Ссылка от друга"),
+            ("Обновление системы. Срочное. Настоящее?", "Срочное обновление"),
+            ("QR-код на парковке. Бесплатный Wi-Fi.", "Бесплатный Wi-Fi"),
+            ("Файл в письме. Important.docx.exe.", "Поддельный файл"),
+            ("Сообщение в Telegram: «Это ты?»", "Это ты?"),
+            ("Реклама в соцсети. Слишком выгодное предложение.", "Выгодное предложение"),
+            ("Знакомый логотип. Почти правильный URL.", "Почти правильный URL"),
         ],
         "escalation": [
             ("Ссылка. Клик. Вход. Токен.", "Цепочка атаки"),
             ("Так угоняют доступ за пару минут.", "Доступ за минуты"),
             ("Серверы уже видят чужого.", "Чужой в сети"),
+            ("Пароль утек. Сессия скомпрометирована.", "Пароль утек"),
+            ("Двухфакторка? Обходим. Через тебя же.", "Обходим 2FA"),
+            ("Токен сессии — и админ доступ ваш.", "Токен = доступ"),
+            ("Cookies подменены. Браузер доверяет.", "Браузер доверяет"),
+            ("DNS-спуфинг. Вы на чужом сервере.", "Чужой сервер"),
+            ("Сертификат поддельный. Замок не спасает.", "Поддельный замок"),
+            ("Через SMS-пароль. Прямиком к аккаунту.", "Через SMS"),
         ],
         "peak": [
             ("Фишинг. Подмена. Украденная сессия.", "Сессия украдена"),
             ("Звонки, коды, поддельные экраны.", "Атака со всех сторон"),
             ("Устройство уже скомпрометировано.", "Устройство скомпрометировано"),
+            ("Вся сеть видит ваш пароль.", "Пароль на виду"),
+            ("Данные утекают. Терабайтами.", "Терабайты утечек"),
+            ("Крипто-майнер в фоне. Сервер горит.", "Сервер горит"),
+            ("Бэкдор открыт. И закрыть его нечем.", "Бэкдор открыт"),
+            ("Рейнсомшифр. Ваши файлы — заложники.", "Файлы — заложники"),
+            ("Компания молчит. Утечка — миллионы.", "Молчание = миллионы"),
+            ("Права root у злоумышленника.", "Root доступ"),
         ],
         "twist": [
             ("Но самое страшное — дальше.", "Самое страшное"),
             ("Тихо. Слушайте.", "Пауза"),
             ("Дверь злоумышленникам открываете вы сами.", "Вы сами"),
+            ("Замок есть. Но ключ — у них.", "Ключ у них"),
+            ("Вы думаете, это не про вас?", "Не про вас?"),
+            ("Спойлер: это про всех.", "Про всех"),
+            ("Каждый считает, что его не тронут.", "Не тронут?"),
+            ("Пока не тронут. Пока.", "Пока не тронут"),
         ],
         "accel": [
             ("Одна ошибка превращается в один аккаунт.", "Одна ошибка"),
             ("Одно устройство — и вся система.", "Вся система"),
+            ("Секунда — и пароль ваш.", "Секунда"),
+            ("Один клик — и доступ потерян.", "Один клик"),
+            ("Три секунды. Всё. Конец.", "Три секунды"),
+            ("Ноль уведомлений. Ноль шансов.", "Ноль шансов"),
+            ("Тихо. Без следов. Без возможности.", "Без следов"),
+            ("Файлы. Деньги. Репутация. Всё сразу.", "Всё сразу"),
         ],
         "climax": [
             ("Темп растёт. Система тает на глазах.", "Система тает"),
             (f"Так кто кого защищает в истории: {short}?", "Кто кого защищает"),
             ("Вы систему. Или система — вас?", "Вы или вас"),
             ("ТрастНод. Кибербезопасность простыми словами.", "ТрастНод"),
+            ("Защита начинается с вас.", "Начните сейчас"),
+            ("Не ждите взлома. Действуйте.", "Действуйте"),
+            ("Кибербезопасность — это привычка.", "Привычка безопасности"),
+            ("Один шаг назад — и вы впереди.", "Один шаг"),
+            ("Ваша безопасность — ваш выбор.", "Ваш выбор"),
+            ("ТрастНод. Мы объясняем просто.", "ТрастНод"),
         ],
     }
     _narr_i = {a: 0 for a in NARR}
+    _narr_used = {a: set() for a in NARR}  # M16: не повторять в одном видео
 
     # Принцип: CINEMATIC -> TEXT -> CINEMATIC -> TEXT ... Текст ПОДЧЁРКИВАЕТ
     # видео (короткие ударные вставки 1-3 слова), а не заменяет его.
     # Чисто текстовые фоны (flash/pause_black/final_q) — не более ~30%.
+    # M16: логичная группировка — каждый акт = своя визуальная логика.
     shots = [
         # 0-3с: HOOK — максимально сильный удар, без логотипа
         sc("hook", 2.8 * k, "phone_dark", "push_in",
            tx("ВАС УЖЕ МОГУТ", "ВЗЛОМАТЬ", mode="tracking"), "hard_cut",
            "impact", (0.7, 1.3), "accent2", typ="typography"),
-        # 3-10с: проблема — кинокадры, текст только вспышками
-        sc("problem", 2.0 * k, prob[0], "drift", [], "whip", "notify",
-           (1.0, 1.2)),
+        # 3-10с: ПРОБЛЕМА — бытовые ситуации: сообщение, звонок, ссылка.
+        # Чередование: живой кадр → текст-вспышка → живой кадр → текст.
+        # Камера drift/push_in (вовлечение), текст pop (быстрый удар).
+        sc("problem", 2.0 * k, "phone_message", "drift", [], "whip",
+           "notify", (1.0, 1.2)),
         sc("problem", 0.9 * k, "flash", "static",
            tx("ОДНА ССЫЛКА", mode="pop"), "hard_cut", "click",
            typ="typography"),
-        sc("problem", 1.6 * k, prob[1], "push_in", [], "match", "notify",
-           (1.0, 1.1)),
+        sc("problem", 1.6 * k, "phone_call", "push_in", [], "match",
+           "notify", (1.0, 1.1)),
         sc("problem", 0.7 * k, "flash", "static",
            tx("ОДИН ЗВОНОК", mode="pop"), "hard_cut", "click",
            typ="typography"),
-        sc("problem", 1.5 * k, prob[2], "push_in", [], "zoom", "whoosh",
-           (1.1, 1.3)),
+        sc("problem", 1.5 * k, "login_screen", "push_in", [], "zoom",
+           "whoosh", (1.1, 1.3)),
         sc("problem", 0.7 * k, "flash", "static",
            tx("ОДИН КЛИК", mode="pop"), "hard_cut", "impact",
            typ="typography"),
-        # 10-20с: ускорение — цепочка атаки как монтаж, не инфографика
+        sc("problem", 1.3 * k, "person", "drift", [], "whip", "notify",
+           (0.9, 1.1)),
+        # 10-20с: ЭСКАЛАЦИЯ — технические средства атаки по цепочке.
+        # keyboard → qr → token → server: нарастание масштаба.
+        # Камера push_in/snap (напряжение), текст — редкие вспышки.
         sc("escalation", 1.4 * k, "keyboard", "push_in", [], "hard_cut",
            "click", (1.2, 1.6)),
         sc("escalation", 0.8 * k, "qr_scan", "snap", [], "hard_cut",
@@ -380,36 +435,43 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
            "notify"),
         sc("escalation", 0.7 * k, "flash", "static",
            tx("ДОСТУП", mode="pop"), "hard_cut", "bass", typ="typography"),
-        sc("escalation", 1.6 * k, "server_corridor", "push_in", [], "match",
-           "riser", (0.9, 1.5)),
-        # 20-30с: ПИК ДИНАМИКИ, очень короткие кадры 0.5-0.9с
-        sc("peak", 0.8 * k, peak_pool[0], "shake", [], "hard_cut", "impact",
-           (1.4, 1.4), "accent2", typ="graphic"),
-        sc("peak", 0.5 * k, peak_pool[1], "shake", [], "hard_cut", "click",
-           (1.6, 1.6)),
-        sc("peak", 0.7 * k, peak_pool[2], "push_in", [], "whip", "bass",
-           (1.5, 1.5)),
-        sc("peak", 0.5 * k, peak_pool[3], "snap", [], "hard_cut", "whoosh",
-           (1.8, 1.8)),
+        sc("escalation", 1.6 * k, "server_corridor", "push_in", [],
+           "match", "riser", (0.9, 1.5)),
+        sc("escalation", 0.9 * k, "cables", "snap", [], "hard_cut",
+           "click", (1.3, 1.7)),
+        # 20-30с: ПИК ДИНАМИКИ — быстрые кадры 0.5-0.9с, красный accent2.
+        # Визуал: лицо,.GridView, замки, серверы — хаос атаки.
+        # Камера shake/snap (паника), glitch на ключевых моментах.
+        sc("peak", 0.8 * k, peak_pool[0], "shake", [], "hard_cut",
+           "impact", (1.4, 1.4), "accent2", typ="graphic"),
+        sc("peak", 0.5 * k, peak_pool[1], "shake", [], "hard_cut",
+           "click", (1.6, 1.6)),
+        sc("peak", 0.7 * k, peak_pool[2], "push_in", [], "whip",
+           "bass", (1.5, 1.5)),
+        sc("peak", 0.5 * k, peak_pool[3], "snap", [], "hard_cut",
+           "whoosh", (1.8, 1.8)),
         sc("peak", 0.8 * k, peak_pool[4], "shake",
            tx("СЕССИЯ УКРАДЕНА", mode="tracking"), "glitch", "impact",
            (1.3, 1.3), "accent2", fx="glitch"),
-        sc("peak", 0.6 * k, peak_pool[5], "drift", [], "hard_cut", "click",
-           (1.6, 1.6)),
+        sc("peak", 0.6 * k, peak_pool[5], "drift", [], "hard_cut",
+           "click", (1.6, 1.6)),
         sc("peak", 0.9 * k, peak_pool[6], "push_in",
            tx("ДОСТУП РАЗРЕШЁН", mode="pop"), "dip", "bass", (1.2, 0.6),
            "accent2"),
-        # 30-35с: РЕЗКАЯ ПАУЗА — темп и звук падают
+        # 30-35с: РЕЗКАЯ ПАУЗА — темп и звук падают. Только чёрный + eye.
+        # Камера static (стоп-кадр), текст reveal (медленно появляется).
         sc("twist", 1.6 * k, "pause_black", "static",
            tx("НО САМОЕ", "СТРАШНОЕ...", mode="reveal"), "dip", "silence",
            (0.4, 0.4), typ="typography"),
-        sc("twist", 1.2 * k, "pause_black", "static", [], "dip", "silence",
-           (0.3, 0.3)),
+        sc("twist", 1.2 * k, "pause_black", "static", [], "dip",
+           "silence", (0.3, 0.3)),
         sc("twist", 2.0 * k, "eye", "push_in",
            tx("ОТКРОЕТЕ ДВЕРЬ", "ВЫ САМИ", mode="tracking"), "zoom",
            "impact", (0.5, 1.8)),
-        # 35-50с: ФИНАЛЬНОЕ УСКОРЕНИЕ, масштаб растёт
-        sc("accel", 1.6 * k, "consequence", "push_in",
+        # 35-50с: ФИНАЛЬНОЕ УСКОРЕНИЕ — масштаб растёт: ошибка→аккаунт→система.
+        # Визуал: consequence (нарастание), камера push_in→push_out (расширение).
+        # Один кадр keyboards как « корень ошибки».
+        sc("accel", 1.6 * k, "keyboard", "push_in",
            tx("1 ОШИБКА", mode="pop"), "hard_cut", "bass", (1.0, 1.4)),
         sc("accel", 1.3 * k, "consequence", "push_in",
            tx("1 АККАУНТ", mode="pop"), "match", "impact", (1.0, 1.4)),
@@ -418,15 +480,17 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
         sc("accel", 1.8 * k, "consequence", "push_out",
            tx("ВСЯ СИСТЕМА", mode="tracking"), "zoom", "riser", (0.8, 1.6),
            "accent2"),
-        # 50-60с: КУЛЬМИНАЦИЯ — быстрые кадры, затем резкое замедление
+        # 50-60с: КУЛЬМИНАЦИЯ — быстрые кадры, затем резкое замедление.
+        # Визуал: attack_grid → face_glow → server → пауза → бренд.
+        # Камера shake→snap→push_in→static: от хаоса к тишине.
         sc("climax", 0.7 * k, "attack_grid", "shake", [], "hard_cut",
            "impact", (1.5, 1.5), "accent2", typ="graphic"),
-        sc("climax", 0.5 * k, "face_glow", "snap", [], "hard_cut", "bass",
-           (1.4, 1.4)),
+        sc("climax", 0.5 * k, "face_glow", "snap", [], "hard_cut",
+           "bass", (1.4, 1.4)),
         sc("climax", 0.8 * k, "server_corridor", "push_in", [], "whip",
            "whoosh", (1.0, 2.2)),
-        sc("climax", 1.2 * k, "pause_black", "static", [], "dip", "silence",
-           (0.4, 0.4)),
+        sc("climax", 1.2 * k, "pause_black", "static", [], "dip",
+           "silence", (0.4, 0.4)),
         # финал — кинематографично: маленький текст, пауза, бренд
         sc("climax", 2.0 * k, "final_q", "static",
            tx("КТО КОГО", mode="whisper"), "dip", "bass", (0.6, 0.8),
@@ -442,11 +506,24 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
     for i, s in enumerate(shots):
         s = dict(s)
         s["id"] = f"S{i + 1:02d}"
-        # озвучка/субтитр из пула акта (циклично, детерминированно)
-        pool = NARR.get(s.get("act")) or NARR["problem"]
-        v, b = pool[_narr_i[s.get("act", "problem")] % len(pool)] \
-            if s.get("act") in _narr_i else pool[0]
-        _narr_i[s.get("act", "problem")] = _narr_i.get(s.get("act", "problem"), 0) + 1
+        # озвучка/субтитр из пула акта (M16: без повторов в одном видео)
+        act = s.get("act", "problem")
+        pool = NARR.get(act) or NARR["problem"]
+        used = _narr_used.get(act, set())
+        # ищем первый неиспользованный индекс
+        idx = _narr_i.get(act, 0)
+        start = idx
+        while idx % len(pool) in used and (idx - start) < len(pool):
+            idx += 1
+        if (idx - start) >= len(pool):
+            # все использованы — сбрасываем used и берём первый
+            _narr_used[act] = set()
+            used = set()
+            idx = start
+        chosen = idx % len(pool)
+        v, b = pool[chosen]
+        _narr_i[act] = idx + 1
+        _narr_used[act] = used | {chosen}
         if not s.get("voice"):
             s["voice"] = v[:140]
         if not s.get("sub"):
@@ -1243,14 +1320,14 @@ def build_soundtrack(shots, bounds, seconds, bpm, pause_win=None, sr=SR,
             continue  # в паузе — тишина (бит выпадает)
         m = min(len(k), n - i)
         if m > 0 and i < n:
-            mix[i:i + m] += k[:m].astype(np.float64) * 0.35 * bed
+            mix[i:i + m] += k[:m].astype(np.float64) * 0.15 * bed
     t = np.arange(n) / sr
     drone = (np.sin(2 * np.pi * 55 * t) * 0.5 + np.sin(2 * np.pi * 82.5 * t) * 0.3)
     drone *= (0.7 + 0.3 * np.sin(2 * np.pi * 0.15 * t))
     if pause_win:
         i0, i1 = int(pause_win[0] * sr), min(n, int(pause_win[1] * sr))
         drone[i0:i1] *= 0.15
-    mix += drone * 2600 * bed
+    mix += drone * 1200 * bed
     # SFX на склейках (время конца каждого шота, кроме последнего)
     for s, end in zip(shots, bounds[1:]):
         if s["sfx"] in ("none", "silence") or end >= seconds - 0.2:
@@ -1261,7 +1338,7 @@ def build_soundtrack(shots, bounds, seconds, bpm, pause_win=None, sr=SR,
         i = int(end * sr)
         m = min(len(sfx), n - i)
         if m > 0 and i < n:
-            mix[i:i + m] += sfx[:m].astype(np.float64) * 0.8 * sfx_gain
+            mix[i:i + m] += sfx[:m].astype(np.float64) * 0.5 * sfx_gain
     if duck is not None and len(duck) == n:
         mix *= (1.0 - 0.65 * np.clip(duck, 0.0, 1.0))
     mix = np.clip(mix, -32768, 32767)
@@ -1291,49 +1368,76 @@ def build_fonts():
 # ---------- реальные сток-кадры (M15): микс живого видео с графикой ----------
 
 def fetch_stock_clips(tmpdir, queries, max_clips=4):
-    """Скачивает portrait-клипы с Pexels. Возвращает [mp4,...] или [].
+    """Скачивает portrait-клипы с Pexels или Pixabay. Возвращает [mp4,...] или [].
 
-    Нужен PEXELS_API_KEY в окружении (бесплатный ключ pexels.com/api).
-    Без ключа / при любой ошибке — [] (движок рисует painters, ничего не падает).
+    M16: добавлен Pixabay как альтернатива (бесплатный ключ pixabay.com/docs/api).
+    Без ключей / при любой ошибке — [] (движок рисует painters, ничего не падает).
     """
     import urllib.request as _rq
     import urllib.parse as _up
     import json as _json
-    key = os.environ.get("PEXELS_API_KEY", "").strip()
-    if not key:
-        print("[cine] PEXELS_API_KEY нет — только рисованные кадры")
+    pexels_key = os.environ.get("PEXELS_API_KEY", "").strip()
+    pixabay_key = os.environ.get("PIXABAY_API_KEY", "").strip()
+    if not pexels_key and not pixabay_key:
+        print("[cine] нет ключей стока (PEXELS/PIXABAY) — только рисованные кадры")
         return []
     sdir = os.path.join(tmpdir, "stock")
     os.makedirs(sdir, exist_ok=True)
     clips = []
-    for qi, q in enumerate(list(queries or [])[:max_clips]):
-        try:
-            url = ("https://api.pexels.com/videos/search?" + _up.urlencode(
-                {"query": q, "per_page": 3, "orientation": "portrait",
-                 "size": "medium"}))
-            req = _rq.Request(url, headers={"Authorization": key})
-            data = _json.load(_rq.urlopen(req, timeout=20))
-            vids = data.get("videos") or []
-            if not vids:
+    # --- Pexels ---
+    if pexels_key:
+        for qi, q in enumerate(list(queries or [])[:max_clips]):
+            try:
+                url = ("https://api.pexels.com/videos/search?" + _up.urlencode(
+                    {"query": q, "per_page": 3, "orientation": "portrait",
+                     "size": "medium"}))
+                req = _rq.Request(url, headers={"Authorization": pexels_key})
+                data = _json.load(_rq.urlopen(req, timeout=20))
+                vids = data.get("videos") or []
+                if not vids:
+                    continue
+                files = vids[0].get("video_files") or []
+                if not files:
+                    continue
+                files = sorted(files, key=lambda f: (
+                    0 if (f.get("width") or 0) < (f.get("height") or 1) else 1,
+                    f.get("width") or 9999))
+                link = files[0].get("link")
+                if not link:
+                    continue
+                dst = os.path.join(sdir, f"clip_{qi}.mp4")
+                _rq.urlretrieve(link, dst)
+                if os.path.getsize(dst) > 50000:
+                    clips.append(dst)
+                    print(f"[cine] pexels {qi}: {q} ({os.path.getsize(dst)//1024} KB)")
+            except Exception as e:
+                print(f"[cine] pexels пропущен ({q}): {type(e).__name__}")
                 continue
-            files = vids[0].get("video_files") or []
-            if not files:
+    # --- Pixabay (fallback если Pexels не дал результатов) ---
+    if not clips and pixabay_key:
+        for qi, q in enumerate(list(queries or [])[:max_clips]):
+            try:
+                url = ("https://pixabay.com/api/videos/?" + _up.urlencode({
+                    "key": pixabay_key, "q": q, "per_page": 3,
+                    "video_type": "film", "min_width": 360, "min_height": 640}))
+                data = _json.load(_rq.urlopen(_rq.Request(url), timeout=20))
+                hits = data.get("hits") or []
+                if not hits:
+                    continue
+                vids = hits[0].get("videos") or {}
+                # предпочитаем medium (960px) или small (480px) — вертикаль
+                vid = vids.get("medium") or vids.get("small") or vids.get("large")
+                link = vid.get("url") if vid else None
+                if not link:
+                    continue
+                dst = os.path.join(sdir, f"clip_px{qi}.mp4")
+                _rq.urlretrieve(link, dst)
+                if os.path.getsize(dst) > 50000:
+                    clips.append(dst)
+                    print(f"[cine] pixabay {qi}: {q} ({os.path.getsize(dst)//1024} KB)")
+            except Exception as e:
+                print(f"[cine] pixabay пропущен ({q}): {type(e).__name__}")
                 continue
-            # предпочитаем вертикаль modest-размера (быстро качать/резать)
-            files = sorted(files, key=lambda f: (
-                0 if (f.get("width") or 0) < (f.get("height") or 1) else 1,
-                f.get("width") or 9999))
-            link = files[0].get("link")
-            if not link:
-                continue
-            dst = os.path.join(sdir, f"clip_{qi}.mp4")
-            _rq.urlretrieve(link, dst)
-            if os.path.getsize(dst) > 50000:
-                clips.append(dst)
-                print(f"[cine] сток {qi}: {q} ({os.path.getsize(dst)//1024} KB)")
-        except Exception as e:
-            print(f"[cine] сток пропущен ({q}): {type(e).__name__}")
-            continue
     return clips
 
 
