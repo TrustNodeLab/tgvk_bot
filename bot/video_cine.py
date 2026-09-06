@@ -538,6 +538,241 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
     return out
 
 
+def script_to_shots(script_text, topic=None, seconds=55,
+                    style_name="cybersecurity_cinematic"):
+    """СТАТЬЯ -> SHOT LIST (M17): озвучка и субтитры — из текста статьи.
+
+    Каждая секция parse_script -> кинокадры (voice-чанки ≤140 символов,
+    sub = тот же чанк ≤70, синхрон TikTok) + одна ударная типографика
+    из заголовка. Акты: hook -> problem -> escalation/peak/twist/accel ->
+    climax + финал (whisper + бренд). Generic-пулы NARR НЕ используются —
+    ни одной чужой фразы в видео по статье.
+    Возвращает (shots, target_seconds): длина подгоняется под озвучку
+    статьи (как /videotest script-режим), но не более 120с.
+    """
+    import re as _re
+    sections = vg.parse_script(script_text)
+    topic = ((topic or "").strip()
+             or sections[0]["heading"] or "Разбор").strip()
+    short = topic[:48]
+    k = max(0.4, seconds / 42.0)
+
+    def sc(act, dur, visual, camera, texts, trans_out, sfx="none",
+           speed=(1.0, 1.0), accent="accent", fx="", typ=None,
+           voice="", sub=""):
+        if typ is None:
+            typ = ("typography"
+                   if (texts and visual in PURE_TYPO_VISUALS) else "cinematic")
+        subs = ([{"lines": [sub[:70]], "mode": "sub"}]
+                if (sub and typ == "cinematic") else [])
+        return {"act": act, "dur": dur, "visual": visual, "camera": camera,
+                "texts": texts, "subs": subs, "sub": sub[:70], "voice": voice[:140],
+                "trans_out": trans_out, "sfx": sfx,
+                "speed": speed, "accent": accent, "fx": fx, "type": typ}
+
+    def tx(*lines, mode="pop"):
+        return [{"lines": [l.upper().strip()[:24] for l in lines], "mode": mode}]
+
+    def _hard_split(text, limit):
+        # жёсткая нарезка по словам (длинные слова — по символам)
+        words, cur, out = str(text).split(), "", []
+        for w in words:
+            t = (cur + " " + w).strip()
+            if len(t) <= limit:
+                cur = t
+            else:
+                if cur:
+                    out.append(cur)
+                while len(w) > limit:
+                    out.append(w[:limit])
+                    w = w[limit:]
+                cur = w
+        if cur:
+            out.append(cur)
+        return out or [str(text)[:limit]]
+
+    def _sentences(body):
+        parts = _re.split(r"(?<=[.!?…;:])\s+", body.strip())
+        return [p.strip() for p in parts if p.strip()]
+
+    def _smart_sub(chunk, limit=70):
+        # субтитр по границе слов, синхронен чанку озвучки
+        if len(chunk) <= limit:
+            return chunk
+        cut = chunk[:limit].rsplit(" ", 1)
+        return cut[0] if len(cut) == 2 and len(cut[0]) >= limit // 2 else chunk[:limit]
+
+    def _typo_lines(heading):
+        # ударная вставка из заголовка: до 3 слов, до 2 строк ≤24
+        words = [w.strip("«»\"'.,!?—–-").upper()
+                 for w in (heading or "").split()]
+        words = [w for w in words if w
+                 and not (len(words) == 1 and w.startswith("ЧАСТЬ"))][:3]
+        if not words:
+            return None
+        lines, cur = [], ""
+        for w in words:
+            t = (cur + " " + w).strip()
+            if len(t) <= 24:
+                cur = t
+            elif not lines:
+                lines.append(cur or w[:24])
+                cur = "" if cur else ""
+            else:
+                break
+        if cur:
+            lines.append(cur)
+        return lines[:2] or None
+
+    # 1-2 ключевых предложения секции (лиды несут суть); остальное —
+    # монтажный ритм, иначе 3500 символов не влезут и в 5 минут
+    sps = 2 if len(sections) <= 4 else 1
+    sec_chunks = []
+    for sec in sections:
+        sents = _sentences(sec["body"])[:max(1, sps)]
+        chunks = []
+        for sent in sents:
+            chunks.extend(_hard_split(sent, 140))
+        sec_chunks.append({"heading": sec["heading"],
+                           "chunks": chunks[:3] or [sec["body"][:140]]})
+
+    def _voice_est():
+        return sum(len(c) / 12.0 + 0.5
+                   for s in sec_chunks for c in s["chunks"] if c)
+
+    # бюджет озвучки ~100с: сначала режем лишние чанки, потом — средние секции
+    for _ in range(64):
+        if _voice_est() <= 100:
+            break
+        cand = [s for s in sec_chunks if len(s["chunks"]) > 1]
+        if not cand:
+            break
+        longest = max(cand, key=lambda s: sum(map(len, s["chunks"])))
+        longest["chunks"].pop()
+    for _ in range(64):
+        if _voice_est() <= 100 or len(sec_chunks) <= 2:
+            break
+        sec_chunks.pop(len(sec_chunks) // 2)
+
+    pairs = [(si, c) for si, s in enumerate(sec_chunks)
+             for c in s["chunks"] if c]
+    if len(pairs) == 1 and len(pairs[0][1]) > 70:
+        # вырожденный вход (одно предложение): делим на hook + climax,
+        # иначе QC voice_covers_all не закроется
+        txt = pairs[0][1]
+        cut = txt[:len(txt) // 2].rsplit(" ", 1)
+        mid = len(cut[0]) if len(cut) == 2 and len(cut[0]) >= 20 else len(txt) // 2
+        pairs = [(pairs[0][0], txt[:mid].strip()),
+                 (pairs[0][0], txt[mid:].strip())]
+    n = len(pairs)
+
+    # Акты по длине чанков (best-effort под QC climax_faster: финал короче
+    # пика). Порядок контента не трогаем — только метки актов.
+    acts = [None] * n
+    acts[0] = "hook"
+    if n >= 2:
+        # climax — самый короткий из хвоста, сосед — accel
+        tail = [n - 1] if n < 4 else [n - 2, n - 1]
+        cl = min(tail, key=lambda i: len(pairs[i][1]))
+        acts[cl] = "climax"
+        for i in tail:
+            if acts[i] is None:
+                acts[i] = "accel"
+    if n >= 3 and acts[1] is None:
+        acts[1] = "problem"
+    free_mid = [i for i in range(2, n - 1) if acts[i] is None]
+    if free_mid and "peak" not in acts:
+        # peak — самому длинному среднему чанку
+        acts[max(free_mid, key=lambda i: len(pairs[i][1]))] = "peak"
+    cyc = ["escalation", "peak", "twist", "accel"]
+    ci = 0
+    for i in range(n):
+        if acts[i] is None:
+            acts[i] = cyc[ci % len(cyc)]
+            ci += 1
+
+    visuals = ["phone_message", "login_screen", "keyboard", "qr_scan",
+               "token_panel", "server_corridor", "cables", "person",
+               "phone_call", "face_glow", "eye", "server_rack",
+               "switch_macro", "consequence", "bokeh"]
+    peak_pool = ["attack_grid", "face_glow", "server_corridor",
+                 "eye", "consequence"]
+    cameras = ["push_in", "drift", "push_out", "tilt", "whip_pan", "push_in"]
+    trans = ["hard_cut", "whip", "zoom", "match", "hard_cut", "dip"]
+
+    shots, vi = [], 0
+    for i, (si, chunk) in enumerate(pairs):
+        act = acts[i]
+        if act == "peak":
+            vis, accent = peak_pool[i % len(peak_pool)], "accent2"
+        else:
+            vis, accent = visuals[vi % len(visuals)], "accent"
+            vi += 1
+        sfx = "impact" if act == "peak" else ("bass" if act == "hook" else "none")
+        dur = max(1.0, len(chunk) / 12.0 + 0.6)
+        shots.append(
+            {"sec": si,
+             "shot": sc(act, dur, vis, cameras[i % len(cameras)], [],
+                        trans[i % len(trans)], sfx, (1.2, 1.2),
+                        accent, "", None, chunk, _smart_sub(chunk))})
+
+    # сборка по секциям: кадры + ударная типографика из заголовка;
+    # посередине — резкая пауза (QC pause_before_climax)
+    out = []
+    half = max(1, len(sec_chunks) // 2)
+    for si, sec in enumerate(sec_chunks):
+        for item in shots:
+            if item["sec"] == si:
+                out.append(item["shot"])
+        tl = _typo_lines(sec["heading"])
+        if tl:
+            out.append(sc("accel" if si else "problem", 1.2 * k,
+                          "flash" if si % 2 else "question", "snap",
+                          tx(*tl), "hard_cut", "click", (1.4, 1.4),
+                          typ="typography"))
+        if si + 1 == half and len(sec_chunks) > 1:
+            out.append(sc("twist", 1.6 * k, "pause_black", "static",
+                          [], "dip", "silence", (0.4, 0.4)))
+    # финал: заголовок последней секции шёпотом + бренд
+    last_head = sec_chunks[-1]["heading"] if sec_chunks else short
+    fl = _typo_lines(last_head) or [short.upper().strip()[:24]]
+    out.append(sc("climax", 2.0 * k, "final_q", "static",
+                  tx(*fl, mode="whisper"), "dip", "bass", (0.6, 0.8),
+                  typ="typography"))
+    out.append(sc("climax", 3.4 * k, "final_brand", "push_out", [],
+                  "hard_cut", "impact", (0.7, 1.0), typ="graphic"))
+    # лимит coerce (40): сначала жертвуем средними типографиками
+    for _ in range(64):
+        if len(out) <= 40:
+            break
+        for j in range(len(out) - 3, 2, -1):
+            s = out[j]
+            if (s.get("type") == "typography"
+                    and not {t.get("mode") for t in s.get("texts", [])}
+                    <= {"whisper"}):
+                del out[j]
+                break
+        else:
+            break
+    out = out[:40]
+
+    total = sum(s["dur"] for s in out)
+    res = []
+    for i, s in enumerate(out):
+        s = dict(s)
+        s["id"] = f"S{i + 1:02d}"
+        s["dur"] = max(s["dur"], _min_dur(s))
+        s["seed"] = (abs(hash(script_text)) + i * 131) % (2 ** 32)
+        res.append(s)
+    est_voice = sum(len(s["voice"]) / 12.0 + 0.5
+                    for s in res if s.get("voice"))
+    n_static = sum(1 for s in res if not s.get("voice"))
+    target = min(120.0, max(float(seconds), est_voice + n_static * 1.0 + 4))
+    print(f"[cine] план по статье: {len(res)} шотов, "
+          f"озвучка ~{est_voice:.0f}с, цель {target:.0f}с")
+    return res, target
+
+
 def plan_shots(topic, seconds=55, style_name="cybersecurity_cinematic",
                use_llm=True, provider=None):
     """TOPIC -> SHOT LIST: сначала LLM, при любой ошибке — шаблон по теме."""
@@ -1708,8 +1943,14 @@ def qc_shots(shots, seconds):
 def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
                        out="out/video_cine.mp4", fps=FPS_CINE,
                        voice=vg.VOICE_DEFAULT, no_audio=False, voice_over=None,
-                       tmpdir="out/tmp_cine", script_shots=None, provider=None):
-    """Главная точка входа: тема -> cinematic-ролик MP4."""
+                       tmpdir="out/tmp_cine", script_shots=None, provider=None,
+                       script_text=None):
+    """Главная точка входа: тема -> cinematic-ролик MP4.
+
+    script_text (M17): текст статьи -> план script_to_shots (диктор читает
+    статью, субтитры синхронны, длина = длина озвучки). Без статьи —
+    как раньше: LLM-план по теме, иначе generic-шаблон.
+    """
     import shutil as _sh
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     os.makedirs(tmpdir, exist_ok=True)
@@ -1717,7 +1958,14 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
     P = st["palette"]
     bpm = st.get("bpm", 100)
     topic = (topic or "Как вас взламывают через фишинг").strip()
-    shots = list(script_shots) if script_shots else plan_shots(topic, seconds, key, True, provider)
+    full_voice = False
+    if script_text and str(script_text).strip():
+        shots, seconds = script_to_shots(str(script_text), topic,
+                                         seconds, key)
+        full_voice = True
+    else:
+        shots = (list(script_shots) if script_shots
+                 else plan_shots(topic, seconds, key, True, provider))
     # монтажная гигиена: баланс cinematic/text
     shots = enforce_balance(shots)
     if voice_over is None:
@@ -1730,11 +1978,16 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
     vmp3 = None
     if voice_over and not no_audio:
         # озвучиваем только якорные шоты (каждый 3-й + hook/twist/бренд):
-        # непрерывный дикторский трек ~35-40с поверх 55с монтажа + субтитры
-        vmap = [(i, s) for i, s in enumerate(shots)
-                if ((s.get("voice") or "").strip()
-                    and (i % 3 == 0 or s.get("act") in ("hook", "twist")
-                         or s.get("visual") == "final_brand"))]
+        # непрерывный дикторский трек ~35-40с поверх 55с монтажа + субтитры.
+        # Режим статьи (M17): диктор читает ВСЕ реплики по порядку.
+        if full_voice:
+            vmap = [(i, s) for i, s in enumerate(shots)
+                    if (s.get("voice") or "").strip()]
+        else:
+            vmap = [(i, s) for i, s in enumerate(shots)
+                    if ((s.get("voice") or "").strip()
+                        and (i % 3 == 0 or s.get("act") in ("hook", "twist")
+                             or s.get("visual") == "final_brand"))]
         if vmap:
             tsecs = [{"voice": s["voice"], "caption": s["id"]} for _, s in vmap]
             _w = None

@@ -1242,6 +1242,35 @@ test("webhook: /cine без темы — подсказка по использ�
   );
 });
 
+test("webhook: /cine ответом на статью — трейлер по статье (script+topic)", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const calls = installFetchMock();
+  const env = makeEnv();
+  const article = "Фишинг через QR-коды\nЗлоумышленники подменяют коды на парковках.";
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 45,
+      message: { message_id: 13, chat: { id: 1 }, from: { id: 1 }, text: "/cine",
+        reply_to_message: { message_id: 10, chat: { id: 1 }, from: { id: 1 }, text: article } },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  const disp = calls.github.filter((c) => c.url.includes("/actions/workflows/video-test.yml/dispatches"));
+  assert.equal(disp.length, 1, "dispatch вызван один раз");
+  const payload = JSON.parse(disp[0].opts.body || "{}");
+  assert.equal(payload.inputs.style, "cybersecurity_cinematic", "стиль cinematic ушёл в inputs");
+  assert.ok((payload.inputs.script || "").includes("QR-коды"), "текст статьи ушёл в inputs.script");
+  assert.ok((payload.inputs.topic || "").length > 0, "тема выведена из первой строки статьи");
+  const tgText = (c) => (typeof c.body === "string" ? c.body : JSON.stringify(c.body || {}));
+  assert.ok(
+    calls.tg.some((c) => c.url.includes("/sendMessage") && tgText(c).includes("по твоей статье")),
+    "админу ушло подтверждение режима по статье"
+  );
+});
+
 test("webhook: /videotest без GITHUB_TOKEN — подсказка, dispatch не вызывается", async () => {  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
   const calls = installFetchMock();
   const env = makeEnv();

@@ -290,11 +290,16 @@ def parse_script(text):
     raw = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     paras = []
     for p in raw:
-        p = re.sub(r"\s+", " ", p)
         if p.startswith("#"):
-            paras.append({"head": p.lstrip("#").strip() or "Раздел"})
+            # M17: допускаем "# Заголовок\nтекст" без пустой строки
+            # (так обычно вставляют статьи) — остаток идёт в тело
+            head, _, rest = p.partition("\n")
+            paras.append({"head": head.lstrip("#").strip() or "Раздел"})
+            rest = re.sub(r"\s+", " ", rest).strip()
+            if rest:
+                paras.append({"body": rest})
         elif p:
-            paras.append({"body": p})
+            paras.append({"body": re.sub(r"\s+", " ", p)})
     sections, cur = [], {"heading": None, "body": []}
 
     def body_len():
@@ -658,20 +663,22 @@ def main():
     ap.add_argument("--topic", default="",
                     help="тема cinematic-ролика (только для engine=cine)")
     a = ap.parse_args()
+    script = a.script_text
+    if a.script_file:
+        with open(a.script_file, encoding="utf-8") as fh:
+            script = fh.read()
     if a.style != "default":
-        # --- cinematic-режим: тема -> shot list -> монтаж -> MP4 ---
+        # --- cinematic-режим: тема -> shot list -> монтаж -> MP4.
+        # M17: со сценарием — видео ПО СТАТЬЕ (диктор читает статью).
         import video_cine as cine
         if a.smoke:
             a.seconds, a.fps = 8, 10
             a.out = "out/video_cine_smoke.mp4"
         cine.generate_cinematic(topic=a.topic or None, seconds=a.seconds,
                                 style=a.style, out=a.out, fps=a.fps,
-                                voice=a.voice, no_audio=a.no_audio)
+                                voice=a.voice, no_audio=a.no_audio,
+                                script_text=script or None)
         return
-    script = a.script_text
-    if a.script_file:
-        with open(a.script_file, encoding="utf-8") as fh:
-            script = fh.read()
     if a.smoke:
         a.seconds, a.fps = 6, 10
         a.out = "out/video_smoke.mp4"

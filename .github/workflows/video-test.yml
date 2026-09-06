@@ -51,7 +51,7 @@ jobs:
           fi
           if [ -n "$VIDEO_STYLE" ] && [ "$VIDEO_STYLE" != "default" ]; then
             python bot/video_gen.py --style "$VIDEO_STYLE" --topic "$VIDEO_TOPIC" \
-              --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4
+              --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4 $EXTRA
           else
             python bot/video_gen.py --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4 $EXTRA
           fi
@@ -72,7 +72,7 @@ jobs:
             -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
             -F video="@out/video_test.mp4" \
             -F supports_streaming=true \
-            -F caption="🎬 Видеотест готов (${{ github.event.inputs.seconds }} сек, run ${{ github.run_id }})${{ github.event.inputs.script != '' && ' — свой сценарий' || '' }}"
+             -F caption="🎬 Видео готово (${{ github.event.inputs.seconds }} сек, run ${{ github.run_id }})${{ github.event.inputs.style != 'default' && ' — cinematic' || '' }}${{ github.event.inputs.script != '' && ' — по статье' || '' }}"
 
       - name: Notify failure to Telegram
         if: failure()

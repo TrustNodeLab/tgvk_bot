@@ -102,7 +102,7 @@ const HELP_TEXT =
   "/rescan — полный тик, /export — история, /version — версия\n" +
   "/healthcheck — здоровье студии (пропуски окон, срывы, опросы)\n" +
   "/videotest [сек] — видео: демо или ответом на свой текст (сценарий)\n" +
-  "/cine &lt;тема&gt; — cinematic cybersecurity-трейлер 9:16 (~55 сек) по теме\n" +
+  "/cine &lt;тема&gt; — трейлер 9:16 по теме; ответом на статью — видео ПО СТАТЬЕ\n" +
   "<b>Мультигруппы VK:</b>\n" +
   "/mg — статус групп (DGC/LostLink/LostArt), /mg-tick — публикация по слотам\n" +
   "/mg-edit — конфиг групп, /mg-approve on|off — согласование постов\n" +
@@ -2125,20 +2125,30 @@ async function handleCommand(env, state, chatId, text, msg) {
     }
 
     case "/cine": {
-      // /cine <тема> — cinematic cybersecurity-трейлер 9:16 (~55 сек).
-      // Тема -> shot list (LLM, иначе шаблон) -> монтаж -> MP4 сюда же.
-      const topic = String(args || "").trim().slice(0, 300);
+      // /cine <тема> — cinematic cybersecurity-трейлер 9:16 по теме.
+      // Ответом (реплаем) на статью — трейлер ПО СТАТЬЕ (M17): диктор
+      // читает разделы статьи, субтитры синхронны, длина = длина озвучки.
+      const topicArg = String(args || "").trim().slice(0, 300);
+      const reply = (msg && msg.reply_to_message) || null;
+      const script = reply
+        ? String(reply.text || reply.caption || "").trim().slice(0, 3500)
+        : "";
+      let topic = topicArg;
+      if (!topic && script) {
+        topic = script.split("\n")[0].trim().slice(0, 120) || "Разбор статьи";
+      }
       if (!topic) {
         await sendMessage(env, chatId,
           `🎬 Использование: <code>/cine Как вас взламывают через фишинг</code>\n` +
-          `Соберу кинематографичный вертикальный трейлер (~55 сек) по теме и пришлю сюда же (~5–8 мин).`);
+          `Или ответом на статью: <code>/cine</code> — соберу трейлер ПО ТЕКСТУ статьи и пришлю сюда же (~5–8 мин).`);
         break;
       }
       try {
-        const r = await dispatchVideoTest(env, 55, "", "cybersecurity_cinematic", topic);
+        const r = await dispatchVideoTest(env, 55, script, "cybersecurity_cinematic", topic);
         if (r.ok) {
           await sendMessage(env, chatId,
-            `🎬 <b>Cinematic-трейлер запущен</b> («${escHtml(topic.slice(0, 80))}»)\n` +
+            `🎬 <b>Cinematic-трейлер запущен</b> («${escHtml(topic.slice(0, 80))}»` +
+            (r.custom ? `, по твоей статье` : ``) + `)\n` +
             `Строю монтаж в GitHub Actions — это займёт ~5–8 мин.\n` +
             `Готовое видео пришлю сюда же, в этот чат.`);
         } else if (r.reason === "no github") {
