@@ -1271,6 +1271,29 @@ test("webhook: /cine ответом на статью — трейлер по с
   );
 });
 
+test("webhook: /cine с длинным текстом — статья инлайном (script+topic из 1-й строки)", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const calls = installFetchMock();
+  const env = makeEnv();
+  const longText = "/cine ChatGPT шлёт фишинг. " + "Пользователь потерял деньги. ".repeat(30);
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 46,
+      message: { message_id: 14, chat: { id: 1 }, from: { id: 1 }, text: longText },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  const disp = calls.github.filter((c) => c.url.includes("/actions/workflows/video-test.yml/dispatches"));
+  assert.equal(disp.length, 1, "dispatch вызван один раз");
+  const payload = JSON.parse(disp[0].opts.body || "{}");
+  assert.ok((payload.inputs.script || "").includes("Пользователь потерял деньги"),
+    "длинный текст ушёл в inputs.script, а не только в topic");
+  assert.equal(payload.inputs.topic, "ChatGPT шлёт фишинг", "тема — первая строка");
+});
+
 test("webhook: /videotest без GITHUB_TOKEN — подсказка, dispatch не вызывается", async () => {  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
   const calls = installFetchMock();
   const env = makeEnv();

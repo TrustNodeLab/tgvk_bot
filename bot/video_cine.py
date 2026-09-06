@@ -603,11 +603,13 @@ def script_to_shots(script_text, topic=None, seconds=55,
         return cut[0] if len(cut) == 2 and len(cut[0]) >= limit // 2 else chunk[:limit]
 
     def _typo_lines(heading):
-        # ударная вставка из заголовка: до 3 слов, до 2 строк ≤24
+        # ударная вставка из заголовка: до 3 слов, до 2 строк ≤24.
+        # Авточасти parse_script («Часть N») вставок не получают.
+        if (heading or "").upper().startswith("ЧАСТЬ"):
+            return None
         words = [w.strip("«»\"'.,!?—–-").upper()
                  for w in (heading or "").split()]
-        words = [w for w in words if w
-                 and not (len(words) == 1 and w.startswith("ЧАСТЬ"))][:3]
+        words = [w for w in words if w][:3]
         if not words:
             return None
         lines, cur = [], ""
@@ -624,17 +626,16 @@ def script_to_shots(script_text, topic=None, seconds=55,
             lines.append(cur)
         return lines[:2] or None
 
-    # 1-2 ключевых предложения секции (лиды несут суть); остальное —
-    # монтажный ритм, иначе 3500 символов не влезут и в 5 минут
-    sps = 2 if len(sections) <= 4 else 1
+    # Все предложения секции (бюджет ~100с ниже сам подрежет длинные
+    # статьи); короткие статьи озвучиваются целиком
     sec_chunks = []
     for sec in sections:
-        sents = _sentences(sec["body"])[:max(1, sps)]
+        sents = _sentences(sec["body"])
         chunks = []
         for sent in sents:
             chunks.extend(_hard_split(sent, 140))
         sec_chunks.append({"heading": sec["heading"],
-                           "chunks": chunks[:3] or [sec["body"][:140]]})
+                           "chunks": chunks[:8] or [sec["body"][:140]]})
 
     def _voice_est():
         return sum(len(c) / 12.0 + 0.5
@@ -700,11 +701,14 @@ def script_to_shots(script_text, topic=None, seconds=55,
     cameras = ["push_in", "drift", "push_out", "tilt", "whip_pan", "push_in"]
     trans = ["hard_cut", "whip", "zoom", "match", "hard_cut", "dip"]
 
-    shots, vi = [], 0
+    # M18: стартовая позиция видеоряда от хэша статьи — разные статьи
+    # дают разный порядок художников/камер, а не один и тот же цикл
+    off = abs(hash(script_text))
+    shots, vi = [], off % len(visuals)
     for i, (si, chunk) in enumerate(pairs):
         act = acts[i]
         if act == "peak":
-            vis, accent = peak_pool[i % len(peak_pool)], "accent2"
+            vis, accent = peak_pool[(i + off) % len(peak_pool)], "accent2"
         else:
             vis, accent = visuals[vi % len(visuals)], "accent"
             vi += 1
@@ -712,14 +716,15 @@ def script_to_shots(script_text, topic=None, seconds=55,
         dur = max(1.0, len(chunk) / 12.0 + 0.6)
         shots.append(
             {"sec": si,
-             "shot": sc(act, dur, vis, cameras[i % len(cameras)], [],
-                        trans[i % len(trans)], sfx, (1.2, 1.2),
+             "shot": sc(act, dur, vis, cameras[(i + off) % len(cameras)], [],
+                        trans[(i * 3 + off) % len(trans)], sfx, (1.2, 1.2),
                         accent, "", None, chunk, _smart_sub(chunk))})
 
     # сборка по секциям: кадры + ударная типографика из заголовка;
     # посередине — резкая пауза (QC pause_before_climax)
     out = []
     half = max(1, len(sec_chunks) // 2)
+    out_pause = False
     for si, sec in enumerate(sec_chunks):
         for item in shots:
             if item["sec"] == si:
@@ -733,6 +738,13 @@ def script_to_shots(script_text, topic=None, seconds=55,
         if si + 1 == half and len(sec_chunks) > 1:
             out.append(sc("twist", 1.6 * k, "pause_black", "static",
                           [], "dip", "silence", (0.4, 0.4)))
+            out_pause = True  # noqa: F841 (флаг читается после цикла)
+    if not out_pause and len(out) >= 6:
+        # одна секция без разбивки: пауза посередине всё равно нужна
+        # (финал добавляется позже, тут кадров ещё меньше итога)
+        out.insert(len(out) // 2,
+                   sc("twist", 1.6 * k, "pause_black", "static",
+                      [], "dip", "silence", (0.4, 0.4)))
     # финал: заголовок последней секции шёпотом + бренд
     last_head = sec_chunks[-1]["heading"] if sec_chunks else short
     fl = _typo_lines(last_head) or [short.upper().strip()[:24]]
@@ -1646,7 +1658,11 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4):
                     clips.append(dst)
                     print(f"[cine] pexels {qi}: {q} ({os.path.getsize(dst)//1024} KB)")
             except Exception as e:
-                print(f"[cine] pexels пропущен ({q}): {type(e).__name__}")
+                code = getattr(e, "code", "")
+                hint = (" — ключ невалиден, проверь PEXELS_API_KEY"
+                        if code in (401, 403) else "")
+                print(f"[cine] pexels пропущен ({q}): "
+                      f"{type(e).__name__} {code}{hint}")
                 continue
     # --- Pixabay (fallback если Pexels не дал результатов) ---
     if not clips and pixabay_key:
@@ -1671,7 +1687,11 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4):
                     clips.append(dst)
                     print(f"[cine] pixabay {qi}: {q} ({os.path.getsize(dst)//1024} KB)")
             except Exception as e:
-                print(f"[cine] pixabay пропущен ({q}): {type(e).__name__}")
+                code = getattr(e, "code", "")
+                hint = (" — ключ невалиден, проверь PIXABAY_API_KEY"
+                        if code in (401, 403) else "")
+                print(f"[cine] pixabay пропущен ({q}): "
+                      f"{type(e).__name__} {code}{hint}")
                 continue
     return clips
 

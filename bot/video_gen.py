@@ -325,11 +325,46 @@ def parse_script(text):
     for s in sections:
         if not s["body"]:
             continue
-        n += 1
-        head = s["heading"] or f"Часть {n}"
-        voice = f"{head}. {s['body']}" if s["heading"] else s["body"]
-        out.append({"heading": head, "body": s["body"], "voice": voice,
-                    "caption": head[:40]})
+        # M18: длинное тело без абзацев (инлайн-статья из /cine: воркер
+        # схлопывает переводы строк) — режем на части ≤600 по предложениям
+        bodies = [s["body"]]
+        if len(s["body"]) > SCRIPT_SECTION_MAX:
+            sents = [p.strip() for p in
+                     re.split(r"(?<=[.!?…;:])\s+", s["body"]) if p.strip()]
+            units = []
+            for sent in sents:
+                if len(sent) <= SCRIPT_SECTION_MAX:
+                    units.append(sent)
+                else:
+                    wcur = ""
+                    for w in sent.split():
+                        t = (wcur + " " + w).strip()
+                        if len(t) <= SCRIPT_SECTION_MAX:
+                            wcur = t
+                        else:
+                            units.append(wcur)
+                            wcur = w
+                    if wcur:
+                        units.append(wcur)
+            bodies, cur = [], ""
+            for u in units:
+                t = (cur + " " + u).strip()
+                if len(t) <= SCRIPT_SECTION_MAX:
+                    cur = t
+                else:
+                    if cur:
+                        bodies.append(cur)
+                    cur = u
+            if cur:
+                bodies.append(cur)
+            bodies = bodies or [s["body"][:SCRIPT_SECTION_MAX]]
+        for bi, body in enumerate(bodies):
+            n += 1
+            first = s["heading"] and bi == 0
+            head = s["heading"] if first else f"Часть {n}"
+            voice = f"{head}. {body}" if first else body
+            out.append({"heading": head, "body": body, "voice": voice,
+                        "caption": head[:40]})
     if not out:
         raise ValueError("в сценарии нет текста")
     return out

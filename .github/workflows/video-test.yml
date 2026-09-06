@@ -43,6 +43,8 @@ jobs:
           VIDEO_TOPIC: ${{ github.event.inputs.topic }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           EXTRA=""
           if [ -n "$SCRIPT_TEXT" ]; then
