@@ -1623,6 +1623,17 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4):
     import urllib.request as _rq
     import urllib.parse as _up
     import json as _json
+    # M18: Pexels/Pixabay режут дефолтный Python-urllib UA (WAF 403) —
+    # ходим с браузерным на поиск И скачивание
+    _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+
+    def _dl(link, dst):
+        req = _rq.Request(link, headers={"User-Agent": _UA})
+        with _rq.urlopen(req, timeout=60) as fh, open(dst, "wb") as out:
+            out.write(fh.read())
+        return os.path.getsize(dst)
+
     pexels_key = os.environ.get("PEXELS_API_KEY", "").strip()
     pixabay_key = os.environ.get("PIXABAY_API_KEY", "").strip()
     if not pexels_key and not pixabay_key:
@@ -1638,7 +1649,8 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4):
                 url = ("https://api.pexels.com/videos/search?" + _up.urlencode(
                     {"query": q, "per_page": 3, "orientation": "portrait",
                      "size": "medium"}))
-                req = _rq.Request(url, headers={"Authorization": pexels_key})
+                req = _rq.Request(url, headers={"Authorization": pexels_key,
+                                                "User-Agent": _UA})
                 data = _json.load(_rq.urlopen(req, timeout=20))
                 vids = data.get("videos") or []
                 if not vids:
@@ -1653,7 +1665,7 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4):
                 if not link:
                     continue
                 dst = os.path.join(sdir, f"clip_{qi}.mp4")
-                _rq.urlretrieve(link, dst)
+                _dl(link, dst)
                 if os.path.getsize(dst) > 50000:
                     clips.append(dst)
                     print(f"[cine] pexels {qi}: {q} ({os.path.getsize(dst)//1024} KB)")
@@ -1671,7 +1683,9 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4):
                 url = ("https://pixabay.com/api/videos/?" + _up.urlencode({
                     "key": pixabay_key, "q": q, "per_page": 3,
                     "video_type": "film", "min_width": 360, "min_height": 640}))
-                data = _json.load(_rq.urlopen(_rq.Request(url), timeout=20))
+                data = _json.load(_rq.urlopen(
+                    _rq.Request(url, headers={"User-Agent": _UA}),
+                    timeout=20))
                 hits = data.get("hits") or []
                 if not hits:
                     continue
@@ -1682,7 +1696,7 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4):
                 if not link:
                     continue
                 dst = os.path.join(sdir, f"clip_px{qi}.mp4")
-                _rq.urlretrieve(link, dst)
+                _dl(link, dst)
                 if os.path.getsize(dst) > 50000:
                     clips.append(dst)
                     print(f"[cine] pixabay {qi}: {q} ({os.path.getsize(dst)//1024} KB)")
