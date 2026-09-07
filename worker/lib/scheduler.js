@@ -248,6 +248,33 @@ export async function dispatchVideoTest(env, seconds, script, style, topic) {
   return { ok: true, seconds: secs, custom: scr.length > 0, style: st, topic: tp };
 }
 
+// ---------- длинное видео: VidRush-аналог 16:9 (M21) ----------
+// /long только ставит задачу: workflow_dispatch video-long.yml,
+// готовый MP4+EDL+SRT workflow сам присылает админу в Telegram.
+export async function dispatchVideoLong(env, minutes, format, topic, script) {
+  const { GITHUB_TOKEN, OWNER, REPO } = env;
+  if (!GITHUB_TOKEN || !OWNER || !REPO) return { ok: false, reason: "no github" };
+  const mins = Math.max(1, Math.min(40, Math.round(Number(minutes) || 6)));
+  const fmt = ["doc", "breakdown", "top10"].includes(format) ? format : "doc";
+  const tp = String(topic || "").slice(0, 300);
+  const scr = String(script || "").slice(0, 3500);
+  const res = await fetch(
+    `https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/video-long.yml/dispatches`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${GITHUB_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "Content-Type": "application/json",
+        "User-Agent": "tgvk-bot-webhook",
+      },
+      body: JSON.stringify({ ref: "main", inputs: { minutes: String(mins), format: fmt, topic: tp, script: scr } }),
+    }
+  );
+  if (!res.ok) return { ok: false, reason: `github ${res.status}`, minutes: mins };
+  return { ok: true, minutes: mins, format: fmt, topic: tp, custom: scr.length > 0 };
+}
+
 // ---------- публикация ----------
 
 export async function publishPackage(env, pkg, dry, target = "all") {

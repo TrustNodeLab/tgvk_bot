@@ -99,6 +99,9 @@ export function installFetchMock(dispatchStatus = 204, mixOptions = {}) {
       if (u.includes("/actions/workflows/video-test.yml/dispatches")) {
         return new Response(dispatchStatus === 204 ? null : "boom", { status: dispatchStatus });
       }
+      if (u.includes("/actions/workflows/video-long.yml/dispatches")) {
+        return new Response(dispatchStatus === 204 ? null : "boom", { status: dispatchStatus });
+      }
       return jsonResp({});
     }
     // любые фиды — пустой RSS, чтобы скан не находил новостей
@@ -1292,6 +1295,58 @@ test("webhook: /cine с длинным текстом — статья инла�
   assert.ok((payload.inputs.script || "").includes("Пользователь потерял деньги"),
     "длинный текст ушёл в inputs.script, а не только в topic");
   assert.equal(payload.inputs.topic, "ChatGPT шлёт фишинг", "тема — первая строка");
+});
+
+test("webhook: /long ставит задачу video-long.yml (минуты+формат+тема)", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const calls = installFetchMock();
+  const env = makeEnv();
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 47,
+      message: { message_id: 15, chat: { id: 1 }, from: { id: 1 }, text: "/long 10 топ Топ мошенников" },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  const disp = calls.github.filter((c) => c.url.includes("/actions/workflows/video-long.yml/dispatches"));
+  assert.equal(disp.length, 1, "dispatch video-long.yml вызван один раз");
+  const payload = JSON.parse(disp[0].opts.body || "{}");
+  assert.equal(payload.inputs.minutes, "10", "минуты ушли в inputs");
+  assert.equal(payload.inputs.format, "top10", "формат топ распознан");
+  assert.equal(payload.inputs.topic, "Топ мошенников", "тема ушла в inputs");
+  const tgText = (c) => (typeof c.body === "string" ? c.body : JSON.stringify(c.body || {}));
+  assert.ok(
+    calls.tg.some((c) => c.url.includes("/sendMessage") && tgText(c).includes("Длинное видео запущено")),
+    "админу ушло подтверждение запуска"
+  );
+});
+
+test("webhook: /long без темы — подсказка по использованию", async () => {
+  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
+  const calls = installFetchMock();
+  const env = makeEnv();
+  const req = new Request("https://example.workers.dev/", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-Telegram-Bot-Api-Secret-Token": "secret" },
+    body: JSON.stringify({
+      update_id: 48,
+      message: { message_id: 16, chat: { id: 1 }, from: { id: 1 }, text: "/long" },
+    }),
+  });
+  await worker.fetch(req, env, { waitUntil() {} });
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(
+    calls.github.filter((c) => c.url.includes("video-long.yml/dispatches")).length, 0,
+    "без темы dispatch не вызывается"
+  );
+  const tgText = (c) => (typeof c.body === "string" ? c.body : JSON.stringify(c.body || {}));
+  assert.ok(
+    calls.tg.some((c) => c.url.includes("/sendMessage") && tgText(c).includes("/long 6 doc")),
+    "админу ушла подсказка по использованию"
+  );
 });
 
 test("webhook: /videotest без GITHUB_TOKEN — подсказка, dispatch не вызывается", async () => {  const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");

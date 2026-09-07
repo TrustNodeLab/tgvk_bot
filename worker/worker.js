@@ -13,6 +13,7 @@ import {
   tick as schedulerTick,
   dispatchToGitHub,
   dispatchVideoTest,
+  dispatchVideoLong,
   publishPackage,
   nextFreeSlot,
   rebuildDigestPreview,
@@ -103,6 +104,7 @@ const HELP_TEXT =
   "/healthcheck — здоровье студии (пропуски окон, срывы, опросы)\n" +
   "/videotest [сек] — видео: демо или ответом на свой текст (сценарий)\n" +
   "/cine &lt;тема&gt; — трейлер 9:16 по теме; со статьёй (текст/реплай) — видео ПО СТАТЬЕ\n" +
+  "/long [минут] [формат] &lt;тема&gt; — длинное видео 16:9 для YouTube (doc/breakdown/top10)\n" +
   "<b>Мультигруппы VK:</b>\n" +
   "/mg — статус групп (DGC/LostLink/LostArt), /mg-tick — публикация по слотам\n" +
   "/mg-edit — конфиг групп, /mg-approve on|off — согласование постов\n" +
@@ -2166,6 +2168,64 @@ async function handleCommand(env, state, chatId, text, msg) {
         }
       } catch (e) {
         await sendMessage(env, chatId, `⚠️ Не смог запустить cinematic: ${escHtml(e.message)}`);
+      }
+      break;
+    }
+
+    case "/long": {
+      // /long [минут] [формат] <тема> — длинное YouTube-видео 16:9 (M21).
+      // Ответом на статью — ролик ПО СТАТЬЕ; иначе сценарий пишет LLM.
+      // Форматы: doc (документалка), breakdown (разбор), top10 (топ).
+      const parts = String(args || "").trim().split(/\s+/).filter(Boolean);
+      let minutes = 6, format = "doc", rest = String(args || "").trim();
+      let consumed = 0;
+      const maybeMin = parseInt(parts[0], 10);
+      if (Number.isFinite(maybeMin) && maybeMin >= 1 && maybeMin <= 40) {
+        minutes = maybeMin;
+        consumed = 1;
+      }
+      const fmtMap = { doc: "doc", док: "doc", breakdown: "breakdown", razbor: "breakdown", разбор: "breakdown", top10: "top10", top: "top10", топ: "top10" };
+      const maybeFmt = String(parts[consumed] || "").toLowerCase();
+      if (fmtMap[maybeFmt]) {
+        format = fmtMap[maybeFmt];
+        consumed += 1;
+      }
+      rest = parts.slice(consumed).join(" ");
+      const reply = (msg && msg.reply_to_message) || null;
+      const inlineArticle = !reply && rest.length > 200;
+      const script = reply
+        ? String(reply.text || reply.caption || "").trim().slice(0, 3500)
+        : (inlineArticle ? rest.slice(0, 3500) : "");
+      let topic = inlineArticle ? "" : rest.slice(0, 300);
+      if (!topic && script) {
+        topic = (inlineArticle
+          ? script.split(/[.!?…]\s/)[0]
+          : script.split("\n")[0]).trim().slice(0, 120) || "Разбор статьи";
+      }
+      if (!topic) {
+        await sendMessage(env, chatId,
+          `🎬 Использование: <code>/long 6 doc Как вас взламывают через фишинг</code>\n` +
+          `Минут 1–40, форматы: doc / breakdown / top10.\n` +
+          `Со статьёй: текст после команды или ответом на статью — соберу ролик ПО ТЕКСТУ (~15–30 мин, пришлю MP4 + монтажный лист).`);
+        break;
+      }
+      try {
+        const r = await dispatchVideoLong(env, minutes, format, topic, script);
+        if (r.ok) {
+          await sendMessage(env, chatId,
+            `🎬 <b>Длинное видео запущено</b> («${escHtml(topic.slice(0, 80))}», ${r.minutes} мин, ${r.format})` +
+            (r.custom ? `, по твоей статье` : `, сценарий пишу сам`) + `\n` +
+            `Собираю в GitHub Actions — это займёт ~15–30 мин.\n` +
+            `Пришлю сюда же MP4 + монтажный лист (EDL) и субтитры (SRT).`);
+        } else if (r.reason === "no github") {
+          await sendMessage(env, chatId,
+            `⚠️ Длинное видео недоступно: в воркере нет GITHUB_TOKEN/OWNER/REPO. ` +
+            `Добавьте секреты и задеплойте воркер заново.`);
+        } else {
+          await sendMessage(env, chatId, `⚠️ Не смог запустить длинное видео: ${escHtml(r.reason || "ошибка")}`);
+        }
+      } catch (e) {
+        await sendMessage(env, chatId, `⚠️ Не смог запустить длинное видео: ${escHtml(e.message)}`);
       }
       break;
     }

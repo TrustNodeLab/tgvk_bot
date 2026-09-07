@@ -1,0 +1,91 @@
+name: Video long (YouTube 16:9)
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Длина ролика в минутах (1-40)"
+        required: false
+        default: "6"
+      format:
+        description: "Формат: doc / breakdown / top10"
+        required: false
+        default: "doc"
+      topic:
+        description: "Тема ролика (пусто = по умолчанию)"
+        required: false
+        default: ""
+      script:
+        description: "Свой текст/статья (пусто = сценарий пишет LLM)"
+        required: false
+        default: ""
+
+jobs:
+  video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt imageio-ffmpeg edge-tts numpy
+
+      - name: Generate long video
+        env:
+          SCRIPT_TEXT: ${{ github.event.inputs.script }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          EXTRA=""
+          if [ -n "$SCRIPT_TEXT" ]; then
+            printf '%s' "$SCRIPT_TEXT" > script.txt
+            EXTRA="--script-file script.txt"
+          fi
+          python bot/video_long.py --topic "${{ github.event.inputs.topic }}" \
+            --minutes "${{ github.event.inputs.minutes }}" \
+            --format "${{ github.event.inputs.format }}" \
+            --out out/video_long.mp4 $EXTRA
+
+      - name: Upload video + EDL + SRT
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-long
+          path: |
+            out/video_long.mp4
+            out/video_long.edl.json
+            out/video_long.srt
+          retention-days: 14
+
+      - name: Send video to Telegram
+        if: success()
+        run: |
+          CAPTION="🎬 Длинное видео готово (${{ github.event.inputs.minutes }} мин, ${{ github.event.inputs.format }}, run ${{ github.run_id }})${{ github.event.inputs.script != '' && ' — по статье' || '' }}"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+            -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
+            -F video="@out/video_long.mp4" \
+            -F supports_streaming=true \
+            -F caption="$CAPTION"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+            -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
+            -F document="@out/video_long.edl.json" \
+            -F caption="🧩 Монтажный лист (EDL): правь текст/порядок и пересобирай через --edl-in"
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+            -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
+            -F document="@out/video_long.srt" \
+            -F caption="💬 Субтитры (SRT)"
+
+      - name: Notify failure to Telegram
+        if: failure()
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d "{\"chat_id\":\"${TELEGRAM_ADMIN_CHAT_ID}\",\"text\":\"❌ Длинное видео не собралось (run ${{ github.run_id }}). Смотри лог в Actions → Video long.\"}"
