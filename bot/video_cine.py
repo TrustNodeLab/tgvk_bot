@@ -167,6 +167,26 @@ SAFE_B = H - SAFE_T
 SAFE_W = SAFE_R - SAFE_L        # 886 px под текст
 
 
+def set_aspect(mode="9:16"):
+    """M20 (longform/YouTube): переключает холст 1080x1920 <-> 1920x1080.
+
+    Художники читают W/H/SAFE_* как globals при каждом кадре, поэтому
+    переключение живое. Шрифты в px не меняются (на 1080p высоте текст
+    относительно крупнее — для сабов/карточек это ок).
+    """
+    global W, H, SAFE_L, SAFE_R, SAFE_T, SAFE_B, SAFE_W
+    if mode == "16:9":
+        W, H = 1920, 1080
+    else:
+        W, H = 1080, 1920
+    SAFE_L = int(W * 0.09)
+    SAFE_R = W - SAFE_L
+    SAFE_T = int(H * 0.08)
+    SAFE_B = H - SAFE_T
+    SAFE_W = SAFE_R - SAFE_L
+    return W, H
+
+
 def _text_chars(s):
     """Все символы экранного текста шота (ударные + субтитр)."""
     n = 0
@@ -1137,13 +1157,17 @@ def paint_scene(visual, p, seed, P, fonts, accent_key="accent"):
         d = ImageDraw.Draw(img, "RGBA")
     elif visual == "face_glow":
         # лицо, освещённое смартфоном в темноте: тёмный овал + светящийся прямоугольник
+        # (M20: координаты от H — работает и в 16:9)
         cx = W // 2
-        d.ellipse([cx - 200, 560, cx + 200, 1080], fill=(10, 13, 22), outline=P["line"], width=3)
-        d.rounded_rectangle([cx - 130, 1150, cx + 130, 1450], radius=24, fill=(24, 44, 92),
+        d.ellipse([cx - 200, int(H * 0.29), cx + 200, int(H * 0.5625)],
+                  fill=(10, 13, 22), outline=P["line"], width=3)
+        d.rounded_rectangle([cx - 130, int(H * 0.60), cx + 130, int(H * 0.755)],
+                            radius=24, fill=(24, 44, 92),
                             outline=accent, width=3)
-        img = _glow_spot(img.convert("RGBA"), cx, 1300, int(200 + 120 * p), accent, 80).convert("RGB")
+        img = _glow_spot(img.convert("RGBA"), cx, int(H * 0.68),
+                         int(200 + 120 * p), accent, 80).convert("RGB")
         d = ImageDraw.Draw(img, "RGBA")
-        _center_text(d, 1520, "// ЭКРАН ОСВЕЩАЕТ ЛИЦО", f_xs, P["sub"], cx)
+        _center_text(d, int(H * 0.79), "// ЭКРАН ОСВЕЩАЕТ ЛИЦО", f_xs, P["sub"], cx)
     elif visual == "switch_macro":
         # macro сетевого оборудования: ряды портов + мигающие LED
         _bokeh_layer(d, seed + 9, P, 8)
@@ -1614,10 +1638,11 @@ def build_fonts():
 
 # ---------- реальные сток-кадры (M15): микс живого видео с графикой ----------
 
-def fetch_stock_clips(tmpdir, queries, max_clips=4):
-    """Скачивает portrait-клипы с Pexels или Pixabay. Возвращает [mp4,...] или [].
+def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
+    """Скачивает сток-клипы с Pexels или Pixabay. Возвращает [mp4,...] или [].
 
     M16: добавлен Pixabay как альтернатива (бесплатный ключ pixabay.com/docs/api).
+    M20: orientation portrait|landscape (longform/YouTube качает landscape).
     Без ключей / при любой ошибке — [] (движок рисует painters, ничего не падает).
     """
     import urllib.request as _rq
@@ -1647,7 +1672,7 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4):
         for qi, q in enumerate(list(queries or [])[:max_clips]):
             try:
                 url = ("https://api.pexels.com/videos/search?" + _up.urlencode(
-                    {"query": q, "per_page": 3, "orientation": "portrait",
+                    {"query": q, "per_page": 3, "orientation": orientation,
                      "size": "medium"}))
                 req = _rq.Request(url, headers={"Authorization": pexels_key,
                                                 "User-Agent": _UA})
@@ -1680,9 +1705,12 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4):
     if not clips and pixabay_key:
         for qi, q in enumerate(list(queries or [])[:max_clips]):
             try:
+                orient = ("landscape" if orientation == "landscape"
+                          else "portrait")
                 url = ("https://pixabay.com/api/videos/?" + _up.urlencode({
                     "key": pixabay_key, "q": q, "per_page": 3,
-                    "video_type": "film", "min_width": 360, "min_height": 640}))
+                    "video_type": "film", "orientation": orient,
+                    "min_width": 360, "min_height": 360}))
                 data = _json.load(_rq.urlopen(
                     _rq.Request(url, headers={"User-Agent": _UA}),
                     timeout=20))
