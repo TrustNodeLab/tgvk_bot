@@ -53,7 +53,8 @@ jobs:
           fi
           if [ -n "$VIDEO_STYLE" ] && [ "$VIDEO_STYLE" != "default" ]; then
             python bot/video_gen.py --style "$VIDEO_STYLE" --topic "$VIDEO_TOPIC" \
-              --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4 $EXTRA
+              --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4 \
+              --edl-out out/video_test.edl.json --srt-out out/video_test.srt $EXTRA
           else
             python bot/video_gen.py --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4 $EXTRA
           fi
@@ -62,7 +63,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: video-test
-          path: out/video_test.mp4
+          path: |
+            out/video_test.mp4
+            out/video_test.edl.json
+            out/video_test.srt
           retention-days: 7
 
       # Готовое видео — админу прямо в Telegram (тест «в самом боте»:
@@ -75,6 +79,19 @@ jobs:
             -F video="@out/video_test.mp4" \
             -F supports_streaming=true \
              -F caption="🎬 Видео готово (${{ github.event.inputs.seconds }} сек, run ${{ github.run_id }})${{ github.event.inputs.style != 'default' && ' — cinematic' || '' }}${{ github.event.inputs.script != '' && ' — по статье' || '' }}"
+          # EDL/SRT — только для cinematic (9:16 шортсы)
+          if [ -f "out/video_test.edl.json" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+              -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
+              -F document="@out/video_test.edl.json" \
+              -F caption="📋 Монтажный лист (EDL)"
+          fi
+          if [ -f "out/video_test.srt" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+              -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
+              -F document="@out/video_test.srt" \
+              -F caption="📝 Субтитры (SRT)"
+          fi
 
       - name: Notify failure to Telegram
         if: failure()

@@ -701,6 +701,10 @@ def main():
                          "social_dynamic (см. bot/video_styles.py)")
     ap.add_argument("--topic", default="",
                     help="тема cinematic-ролика (только для engine=cine)")
+    ap.add_argument("--edl-out", default="",
+                    help="путь для EDL JSON (монтажный лист, только cine)")
+    ap.add_argument("--srt-out", default="",
+                    help="путь для SRT субтитров (только cine)")
     a = ap.parse_args()
     script = a.script_text
     if a.script_file:
@@ -716,7 +720,9 @@ def main():
         cine.generate_cinematic(topic=a.topic or None, seconds=a.seconds,
                                 style=a.style, out=a.out, fps=a.fps,
                                 voice=a.voice, no_audio=a.no_audio,
-                                script_text=script or None)
+                                script_text=script or None,
+                                edl_out=a.edl_out or None,
+                                srt_out=a.srt_out or None)
         return
     if a.smoke:
         a.seconds, a.fps = 6, 10

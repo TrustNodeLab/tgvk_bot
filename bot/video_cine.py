@@ -2178,11 +2178,52 @@ def qc_shots(shots, seconds):
     return rep
 
 
+# ---------- EDL / SRT (M22: монтажный лист для 9:16 шортсов) ----------
+
+def _dump_edl_cine(path, topic, style, seconds, fps, shots, bounds):
+    """EDL JSON: все шоты с таймкодами, визуалом, текстом."""
+    edl_shots = []
+    for i, s in enumerate(shots):
+        e = dict(s)
+        e["start"] = round(bounds[i] if i < len(bounds) else 0.0, 3)
+        e["end"] = round(bounds[i + 1] if i + 1 < len(bounds) else 0.0, 3)
+        e.pop("stock", None)
+        e.pop("seed", None)
+        edl_shots.append(e)
+    edl = {"app": "tgvk-cine", "version": 1, "topic": topic,
+           "style": style, "seconds": seconds, "fps": fps,
+           "aspect": "9:16", "shots": edl_shots}
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(edl, fh, ensure_ascii=False, indent=1)
+
+
+def _srt_ts(sec):
+    ms = int(sec * 1000)
+    return (f"{ms // 3600000:02d}:{(ms // 60000) % 60:02d}:"
+            f"{(ms // 1000) % 60:02d},{ms % 1000:03d}")
+
+
+def _dump_srt_cine(path, shots, bounds):
+    """SRT-субтитры: все шоты с текстом."""
+    out = []
+    n = 0
+    for i, s in enumerate(shots):
+        text = (s.get("sub") or s.get("voice") or "").strip()
+        if not text:
+            continue
+        st = bounds[i] if i < len(bounds) else 0.0
+        en = bounds[i + 1] if i + 1 < len(bounds) else st + 1.0
+        n += 1
+        out.append(f"{n}\n{_srt_ts(st)} --> {_srt_ts(en)}\n{text}\n")
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(out))
+
+
 def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
-                       out="out/video_cine.mp4", fps=FPS_CINE,
-                       voice=vg.VOICE_DEFAULT, no_audio=False, voice_over=None,
-                       tmpdir="out/tmp_cine", script_shots=None, provider=None,
-                       script_text=None):
+                        out="out/video_cine.mp4", fps=FPS_CINE,
+                        voice=vg.VOICE_DEFAULT, no_audio=False, voice_over=None,
+                        tmpdir="out/tmp_cine", script_shots=None, provider=None,
+                        script_text=None, edl_out=None, srt_out=None):
     """Главная точка входа: тема -> cinematic-ролик MP4.
 
     script_text (M17): текст статьи -> план script_to_shots (диктор читает
@@ -2355,6 +2396,19 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
         vg.mux_audio(ffmpeg, silent, bed_wav, out, real_dur)
     size = os.path.getsize(out)
     print(f"[cine] ГОТОВО: {out} ({size / 1048576:.1f} MB, {real_dur:.1f} c, стиль {key})")
+    # --- EDL/SRT экспорт (M22: монтажный лист + субтитры для 9:16) ---
+    if edl_out:
+        try:
+            _dump_edl_cine(edl_out, topic, key, seconds, fps, shots, bounds)
+            print(f"[cine] EDL: {edl_out}")
+        except Exception as e:
+            print(f"[cine] EDL не удался ({type(e).__name__})")
+    if srt_out:
+        try:
+            _dump_srt_cine(srt_out, shots, bounds)
+            print(f"[cine] SRT: {srt_out}")
+        except Exception as e:
+            print(f"[cine] SRT не удался ({type(e).__name__})")
     return out
 
 

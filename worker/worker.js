@@ -102,9 +102,10 @@ const HELP_TEXT =
   "/keyword add|remove &lt;слова&gt; — ключевые слова\n" +
   "/rescan — полный тик, /export — история, /version — версия\n" +
   "/healthcheck — здоровье студии (пропуски окон, срывы, опросы)\n" +
-  "/videotest [сек] — видео: демо или ответом на свой текст (сценарий)\n" +
-  "/cine &lt;тема&gt; — трейлер 9:16 по теме; со статьёй (текст/реплай) — видео ПО СТАТЬЕ\n" +
-  "/long [минут] [формат] &lt;тема&gt; — длинное видео 16:9 для YouTube (doc/breakdown/top10)\n" +
+  "<b>Видео:</b>\n" +
+  "/videotest [сек] — демо-видео 9:16 или ответом на текст (сценарий)\n" +
+  "/cine &lt;тема&gt; — cinematic-трейлер 9:16 (~55 сек); ответом на статью — видео ПО ТЕКСТУ\n" +
+  "/long [минут] [формат] &lt;тема&gt; — длинное видео 16:9 для YouTube (1-40 мин, doc/breakdown/top10)\n" +
   "<b>Мультигруппы VK:</b>\n" +
   "/mg — статус групп (DGC/LostLink/LostArt), /mg-tick — публикация по слотам\n" +
   "/mg-edit — конфиг групп, /mg-approve on|off — согласование постов\n" +
@@ -148,8 +149,9 @@ const COMMANDS = [
   { command: "mg-edit", description: "Мультигруппы VK: конфиг групп" },
   { command: "mg-approve", description: "Мультигруппы VK: согласование on|off" },
   { command: "healthcheck", description: "Здоровье студии" },
-  { command: "videotest", description: "Тестовая генерация видео (MP4 в чат)" },
-  { command: "cine", description: "Cinematic cybersecurity-трейлер по теме (MP4 в чат)" },
+  { command: "videotest", description: "Видео 9:16: демо или по сценарию" },
+  { command: "cine", description: "Видео 9:16: cinematic-трейлер по теме / статье" },
+  { command: "long", description: "Видео 16:9: длинный ролик для YouTube (1-40 мин)" },
 ];
 
 // ---------- меню: reply-клавиатура + инлайн-кнопки ----------
@@ -213,6 +215,10 @@ const BTN_CMDS = {
 // «☰ Ещё»: второстепенные команды, которым не место на главной клавиатуре.
 const MORE_KB = {
   inline_keyboard: [
+    [
+      { text: "🎬 Видео 9:16", callback_data: "cmd:cine" },
+      { text: "🎥 Видео 16:9", callback_data: "cmd:long" },
+    ],
     [
       { text: "❤️ Здоровье", callback_data: "cmd:healthcheck" },
       { text: "🔄 Рескан", callback_data: "cmd:rescan" },
