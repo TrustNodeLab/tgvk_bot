@@ -228,6 +228,110 @@ _THEME_TRANS = {
     "privacy":  ["dip", "hard_cut", "whip", "glitch"],
 }
 
+# M24: расширенные пулы художников по темам (12+ на тему вместо 8)
+_THEME_PAINTERS_EXPANDED = {
+    "social":   ["phone_dark", "phone_message", "phone_call", "person",
+                  "face_glow", "eye", "login_screen", "mobile_notif",
+                  "email_phish", "net_graph", "flash", "question"],
+    "infra":    ["server_rack", "server_corridor", "switch_macro", "cables",
+                  "net_graph", "cloud_data", "bokeh", "lock_shield",
+                  "firewall_wall", "code_terminal", "flash", "question"],
+    "data":     ["consequence", "cloud_data", "lock_shield", "firewall_wall",
+                  "chain", "eye", "keyboard", "code_terminal",
+                  "net_graph", "ai_brain", "flash", "question"],
+    "finance":  ["wallet_crypto", "lock_shield", "keyboard", "phone_dark",
+                  "qr_scan", "consequence", "eye", "chain",
+                  "cloud_data", "net_graph", "flash", "question"],
+    "malware":  ["code_terminal", "keyboard", "chain", "attack_grid",
+                  "server_corridor", "consequence", "lock_shield", "firewall_wall",
+                  "email_phish", "ai_brain", "flash", "question"],
+    "privacy":  ["cam_surveillance", "eye", "person", "phone_dark",
+                  "face_glow", "mobile_notif", "lock_shield", "phone_message",
+                  "email_phish", "net_graph", "flash", "question"],
+}
+
+# M24: визуальные ключевые слова → stock-запросы (topic → Pexels/Pixabay query)
+_TOPIC_STOCK_KW = {
+    # RU keywords → EN stock queries
+    "взлом":     ["hacker typing dark", "computer breach close up"],
+    "аккаунт":   ["social media login screen", "phone notification alert"],
+    "соцсет":    ["smartphone social apps", "social network abstract"],
+    "мессенджер":["messaging app phone", "chat notification screen"],
+    "фишинг":    ["phishing email fake", "suspicious link screen"],
+    "пароль":    ["password typing keyboard", "login form close up"],
+    "сервер":    ["server room racks", "data center corridor"],
+    "сеть":      ["network cables close up", "router lights blinking"],
+    "облачн":    ["cloud computing server", "cloud storage abstract"],
+    "данные":    ["data stream abstract", "binary code screen"],
+    "утечк":     ["data breach concept", "leaked documents"],
+    "банк":      ["bank building night", "financial charts screen"],
+    "крипто":    ["bitcoin coin close up", "cryptocurrency trading"],
+    "кошелёк":   ["digital wallet phone", "crypto wallet interface"],
+    "вирус":     ["malware virus concept", "computer virus alert"],
+    "троян":     ["trojan horse concept", "infected computer screen"],
+    "шифр":      ["encryption lock concept", "secure data abstract"],
+    "шпион":     ["surveillance camera close up", "spy camera lens"],
+    "наблюд":    ["security camera monitor", "CCTV footage screen"],
+    "трекинг":   ["location tracking phone", "GPS map screen"],
+    "камера":    ["webcam close up face", "security camera installation"],
+    # EN keywords
+    "hack":      ["hacker typing dark", "cyber attack concept"],
+    "breach":    ["data breach concept", "security breach alert"],
+    "phishing":  ["phishing email screen", "fake website close up"],
+    "server":    ["server room dark", "data center racks"],
+    "malware":   ["malware virus alert", "computer infected screen"],
+    "crypto":    ["bitcoin coin close up", "cryptocurrency mining"],
+    "bank":      ["bank building night", "financial security"],
+    "surveillance": ["surveillance camera", "security monitor room"],
+    "tracking":  ["GPS tracking phone", "location map screen"],
+    "password":  ["password typing keyboard", "secure login screen"],
+    "encrypt":   ["encryption concept lock", "secure data abstract"],
+}
+
+
+def generate_stock_queries(topic, themes, max_q=6):
+    """M24: Генерирует stock-запросы ИЗ темы (а не из фиксированного пресета).
+
+    Извлекает ключевые слова из topic → ищет совпадения в _TOPIC_STOCK_KW.
+    Если тема не распознана — берём通用овые запросы из тематических пулов.
+    Возвращает список EN-запросов для Pexels/Pixabay.
+    """
+    import re as _re
+    topic_lower = (topic or "").lower()
+    # извлекаем слова из темы
+    words = set(_re.findall(r"[a-zA-Zа-яА-ЯёЁ]{3,}", topic_lower))
+    found = []
+    for kw, queries in _TOPIC_STOCK_KW.items():
+        if kw in topic_lower or any(w.startswith(kw[:4]) for w in words if len(kw) >= 4):
+            found.extend(queries)
+    # дедуп, preserving order
+    seen = set()
+    unique = []
+    for q in found:
+        if q not in seen:
+            seen.add(q)
+            unique.append(q)
+    # если нашли мало — добавляем generic по теме
+    theme_generic = {
+        "social":    ["smartphone notification dark", "social media screen"],
+        "infra":     ["server room dark", "network cables close up"],
+        "data":      ["data stream abstract", "binary code screen"],
+        "finance":   ["financial charts screen", "bank security camera"],
+        "malware":   ["computer virus alert", "hacker code screen"],
+        "privacy":   ["surveillance camera close up", "privacy lock concept"],
+    }
+    for t in (themes or []):
+        for q in theme_generic.get(t, []):
+            if q not in seen:
+                seen.add(q)
+                unique.append(q)
+    # fallback generic
+    if not unique:
+        unique = ["cybersecurity concept dark", "technology abstract",
+                   "digital lock security", "data center dark"]
+    return unique[:max_q]
+
+
 # Озвучка по темам (M23): плоские dict с {TOPIC} placeholder.
 # Подстановка — .replace('{TOPIC}', short) при вызове template_shots (мгновенно).
 _NARR_GENERIC = {
@@ -440,10 +544,10 @@ def extract_visual_theme(topic):
 
 
 def theme_painters(themes):
-    """M23: темы → пул визуалов (в порядке приоритета, без дублей)."""
+    """M24: темы → расширенный пул визуалов (12+ на тему, в порядке приоритета, без дублей)."""
     seen, out = set(), []
     for th in themes:
-        for p in _THEME_PAINTERS.get(th, []):
+        for p in _THEME_PAINTERS_EXPANDED.get(th, _THEME_PAINTERS.get(th, [])):
             if p not in seen:
                 seen.add(p)
                 out.append(p)
@@ -636,13 +740,18 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
     def tx(*lines, mode="pop"):
         return [{"lines": [l.upper().strip()[:24] for l in lines], "mode": mode}]
 
-    # M23: тематические визуалы для каждого акта (вместо хардкода)
-    # pv[0] = основной визуал темы, pv[1..] = запасные
-    _pv = pv  # shorthand
+    # M24: тематические визуалы — пул расширен (12+ на тему),
+    # порядок определяется хэшем темы (каждое видео = разные визуалы)
+    _pv = pv  # ordered list from expanded pool
     _cam = lambda i: cm[i % len(cm)]
     _tr_ = lambda i: tr[i % len(tr)]
 
-    peak_pool = [_pv[i % len(_pv)] for i in range(8)]
+    # M24: topic-hash offset — каждое видео начинает с разного визуала
+    _voff = abs(hash(topic)) % max(1, len(_pv))
+    def _pv_(i):
+        return _pv[(_voff + i) % len(_pv)]
+
+    peak_pool = [_pv_((i * 3 + _voff)) for i in range(8)]
     rnd.shuffle(peak_pool)
 
     # M23: озвучка из модульных dict с {TOPIC} placeholder
@@ -663,33 +772,33 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
     # Структура (тайминги/акты) детерминирована, визуал — из pv[].
     shots = [
         # 0-3с: HOOK — максимально сильный удар
-        sc("hook", 2.8 * k, _pv[0], _cam(0),
+        sc("hook", 2.8 * k, _pv_(0), _cam(0),
            tx("ВАС УЖЕ МОГУТ", "ВЗЛОМАТЬ", mode="tracking"), _tr_(0),
            "impact", (0.7, 1.3), "accent2", typ="typography"),
         # 3-10с: ПРОБЛЕМА — бытовые ситуации.
-        sc("problem", 2.0 * k, _pv[1 % len(_pv)], _cam(1), [], _tr_(1),
+        sc("problem", 2.0 * k, _pv_(1), _cam(1), [], _tr_(1),
            "notify", (1.0, 1.2)),
         sc("problem", 0.9 * k, "flash", "static",
            tx("ОДНА ССЫЛКА", mode="pop"), "hard_cut", "click",
            typ="typography"),
-        sc("problem", 1.6 * k, _pv[2 % len(_pv)], _cam(2), [], "match",
+        sc("problem", 1.6 * k, _pv_(2), _cam(2), [], "match",
            "notify", (1.0, 1.1)),
         sc("problem", 0.7 * k, "flash", "static",
            tx("ОДИН ЗВОНОК", mode="pop"), "hard_cut", "click",
            typ="typography"),
-        sc("problem", 1.5 * k, _pv[3 % len(_pv)], _cam(3), [], _tr_(2),
+        sc("problem", 1.5 * k, _pv_(3), _cam(3), [], _tr_(2),
            "whoosh", (1.1, 1.3)),
         sc("problem", 0.7 * k, "flash", "static",
            tx("ОДИН КЛИК", mode="pop"), "hard_cut", "impact",
            typ="typography"),
-        sc("problem", 1.3 * k, _pv[4 % len(_pv)], _cam(4), [], _tr_(3),
+        sc("problem", 1.3 * k, _pv_(4), _cam(4), [], _tr_(3),
            "notify", (0.9, 1.1)),
         # 10-20с: ЭСКАЛАЦИЯ — нарастание масштаба.
         sc("escalation", 1.4 * k, "keyboard", _cam(5), [], "hard_cut",
            "click", (1.2, 1.6)),
         sc("escalation", 0.8 * k, "qr_scan", _cam(6), [], "hard_cut",
            "whoosh", (1.5, 2.0)),
-        sc("escalation", 1.1 * k, _pv[5 % len(_pv)], _cam(0), [], _tr_(4),
+        sc("escalation", 1.1 * k, _pv_(5), _cam(0), [], _tr_(4),
            "notify"),
         sc("escalation", 0.7 * k, "flash", "static",
            tx("ДОСТУП", mode="pop"), "hard_cut", "bass", typ="typography"),
@@ -736,7 +845,7 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
         # 50-60с: КУЛЬМИНАЦИЯ — быстрые кадры, затем резкое замедление.
         sc("climax", 0.7 * k, "attack_grid", "shake", [], "hard_cut",
            "impact", (1.5, 1.5), "accent2", typ="graphic"),
-        sc("climax", 0.5 * k, _pv[6 % len(_pv)], "snap", [], "hard_cut",
+        sc("climax", 0.5 * k, _pv_(6), "snap", [], "hard_cut",
            "bass", (1.4, 1.4)),
         sc("climax", 0.8 * k, "server_corridor", _cam(4), [], "whip",
            "whoosh", (1.0, 2.2)),
@@ -2751,24 +2860,34 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
             s["dur"] = float(_min_dur(s))
     # QC-чеклист — по финальным длительностям, до рендера
     rep = qc_shots(shots, seconds)
-    # --- живые сток-фоны (M15): микс реального видео с графикой.
+    # --- M24: живые сток-фоны — запросы ИЗ темы (а не из фиксированного пресета).
     # Без PEXELS_API_KEY / при ошибке — только painters, ничего не падает.
     stock = None
     try:
-        queries = st.get("stock_queries") or ()
-        clips = fetch_stock_clips(tmpdir, queries) if queries else []
+        themes = extract_visual_theme(topic)
+        queries = generate_stock_queries(topic, themes, max_q=6)
+        # também добавляем queries из стиля как fallback
+        style_q = st.get("stock_queries") or ()
+        all_q = list(queries)
+        for q in style_q:
+            if q not in all_q:
+                all_q.append(q)
+        clips = fetch_stock_clips(tmpdir, all_q) if all_q else []
         if clips:
             frames = extract_stock_frames(
                 ffmpeg, clips, os.path.join(tmpdir, "stock_frames"))
             if frames:
                 stock = {"frames": frames, "cache": {}}
                 ci = 0
+                # M24: topic-hash offset + каждые 2-е cinematic (было каждые 3-е)
+                _soff = abs(hash(topic)) % max(1, len(frames))
                 for idx, s in enumerate(shots):
                     if (shot_kind(s) == "cinematic" and not s.get("texts")
-                            and idx % 3 == 1):
+                            and (idx + _soff) % 2 == 0):
                         s["stock"] = ci % len(frames)
                         ci += 1
-                print(f"[cine] живые фоны назначены {ci} шотам")
+                print(f"[cine] живые фоны назначены {ci} шотам "
+                      f"(запросы: {', '.join(all_q[:3])}...)")
     except Exception as e:
         print(f"[cine] сток недоступен ({type(e).__name__}) — только painters")
         stock = None
