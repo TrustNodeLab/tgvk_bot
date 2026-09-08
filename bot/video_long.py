@@ -317,8 +317,10 @@ def fetch_section_stock(ffmpeg, tmpdir, sections, max_sec=12):
             fr = cine.extract_stock_frames(
                 ffmpeg, clips, os.path.join(sdir, "frames"))
             if fr:
-                frames_all.extend(fr)
-                print(f"[long] секция {si}: сток «{q}» ({len(fr)} кадров)")
+                # M25: extract_stock_frames вернул [ [кадры..], ... ] — плоско
+                flat = [x for grp in fr for x in grp]
+                frames_all.extend(flat)
+                print(f"[long] секция {si}: сток «{q}» ({len(flat)} кадров)")
         except Exception as e:
             print(f"[long] секция {si}: сток недоступен ({type(e).__name__})")
             continue

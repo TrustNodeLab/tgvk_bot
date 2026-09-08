@@ -2198,10 +2198,13 @@ def build_fonts():
 # ---------- реальные сток-кадры (M15): микс живого видео с графикой ----------
 
 def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
-    """Скачивает сток-клипы с Pexels или Pixabay. Возвращает [mp4,...] или [].
+    """Скачивает МНОГО сток-клипов с Pexels или Pixabay. Возвращает [mp4,...] или [].
 
     M16: добавлен Pixabay как альтернатива (бесплатный ключ pixabay.com/docs/api).
     M20: orientation portrait|landscape (longform/YouTube качает landscape).
+    M25: скачиваем много клипов — по несколько ПЕРВЫХ результатов на каждый
+         поисковый запрос (per_page=8) с дедупом по размеру, пока не наберём
+         max_clips. Так видео = много разных реальных роликов, а не 1-2.
     Без ключей / при любой ошибке — [] (движок рисует painters, ничего не падает).
     """
     import urllib.request as _rq
@@ -2227,11 +2230,15 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
     os.makedirs(sdir, exist_ok=True)
     clips = []
     # --- Pexels ---
+    seen_sizes = set()  # дедуп по размеру файла (похожие ролики)
     if pexels_key:
-        for qi, q in enumerate(list(queries or [])[:max_clips]):
+        # М25: до max_clips суммарно, по несколько видео на каждый запрос
+        for qi, q in enumerate(list(queries or [])):
+            if len(clips) >= max_clips:
+                break
             try:
                 url = ("https://api.pexels.com/videos/search?" + _up.urlencode(
-                    {"query": q, "per_page": 3, "orientation": orientation,
+                    {"query": q, "per_page": 8, "orientation": orientation,
                      "size": "medium"}))
                 req = _rq.Request(url, headers={"Authorization": pexels_key,
                                                 "User-Agent": _UA})
@@ -2239,20 +2246,36 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
                 vids = data.get("videos") or []
                 if not vids:
                     continue
-                files = vids[0].get("video_files") or []
-                if not files:
-                    continue
-                files = sorted(files, key=lambda f: (
-                    0 if (f.get("width") or 0) < (f.get("height") or 1) else 1,
-                    f.get("width") or 9999))
-                link = files[0].get("link")
-                if not link:
-                    continue
-                dst = os.path.join(sdir, f"clip_{qi}.mp4")
-                _dl(link, dst)
-                if os.path.getsize(dst) > 50000:
+                for vi, vid in enumerate(vids):
+                    if len(clips) >= max_clips:
+                        break
+                    files = vid.get("video_files") or []
+                    if not files:
+                        continue
+                    # предпочитаем вертикальный (portrait) файл, иначе любой
+                    files = sorted(files, key=lambda f: (
+                        0 if (f.get("height") or 0) >= (f.get("width") or 9999) else 1,
+                        f.get("width") or 9999))
+                    link = files[0].get("link")
+                    if not link:
+                        continue
+                    dst = os.path.join(sdir, f"clip_{qi}_{vi}.mp4")
+                    if os.path.exists(dst):
+                        continue
+                    try:
+                        _dl(link, dst)
+                    except Exception:
+                        continue
+                    sz = os.path.getsize(dst)
+                    if sz <= 50000 or sz in seen_sizes:
+                        try:
+                            os.remove(dst)
+                        except OSError:
+                            pass
+                        continue
+                    seen_sizes.add(sz)
                     clips.append(dst)
-                    print(f"[cine] pexels {qi}: {q} ({os.path.getsize(dst)//1024} KB)")
+                    print(f"[cine] pexels {qi}_{vi}: {q} ({sz//1024} KB)")
             except Exception as e:
                 code = getattr(e, "code", "")
                 hint = (" — ключ невалиден, проверь PEXELS_API_KEY"
@@ -2262,12 +2285,14 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
                 continue
     # --- Pixabay (fallback если Pexels не дал результатов) ---
     if not clips and pixabay_key:
-        for qi, q in enumerate(list(queries or [])[:max_clips]):
+        for qi, q in enumerate(list(queries or [])):
+            if len(clips) >= max_clips:
+                break
             try:
                 orient = ("landscape" if orientation == "landscape"
                           else "portrait")
                 url = ("https://pixabay.com/api/videos/?" + _up.urlencode({
-                    "key": pixabay_key, "q": q, "per_page": 3,
+                    "key": pixabay_key, "q": q, "per_page": 8,
                     "video_type": "film", "orientation": orient,
                     "min_width": 360, "min_height": 360}))
                 data = _json.load(_rq.urlopen(
@@ -2276,17 +2301,32 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
                 hits = data.get("hits") or []
                 if not hits:
                     continue
-                vids = hits[0].get("videos") or {}
-                # предпочитаем medium (960px) или small (480px) — вертикаль
-                vid = vids.get("medium") or vids.get("small") or vids.get("large")
-                link = vid.get("url") if vid else None
-                if not link:
-                    continue
-                dst = os.path.join(sdir, f"clip_px{qi}.mp4")
-                _dl(link, dst)
-                if os.path.getsize(dst) > 50000:
+                for hi, hit in enumerate(hits):
+                    if len(clips) >= max_clips:
+                        break
+                    vids = hit.get("videos") or {}
+                    # предпочитаем medium (960px) или small (480px) — вертикаль
+                    vid = vids.get("medium") or vids.get("small") or vids.get("large")
+                    link = vid.get("url") if vid else None
+                    if not link:
+                        continue
+                    dst = os.path.join(sdir, f"clip_px{qi}_{hi}.mp4")
+                    if os.path.exists(dst):
+                        continue
+                    try:
+                        _dl(link, dst)
+                    except Exception:
+                        continue
+                    sz = os.path.getsize(dst)
+                    if sz <= 50000 or sz in seen_sizes:
+                        try:
+                            os.remove(dst)
+                        except OSError:
+                            pass
+                        continue
+                    seen_sizes.add(sz)
                     clips.append(dst)
-                    print(f"[cine] pixabay {qi}: {q} ({os.path.getsize(dst)//1024} KB)")
+                    print(f"[cine] pixabay {qi}_{hi}: {q} ({sz//1024} KB)")
             except Exception as e:
                 code = getattr(e, "code", "")
                 hint = (" — ключ невалиден, проверь PIXABAY_API_KEY"
@@ -2297,32 +2337,53 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
     return clips
 
 
-def extract_stock_frames(ffmpeg, clips, outdir, each=12):
-    """Режет из клипов кадры 540x960 для фона. Возвращает [png,...]."""
+def extract_stock_frames(ffmpeg, clips, outdir, each=10):
+    """Режет из каждого клипа последовательные кадры для фона.
+
+    M25: возвращает СПИСОК КЛИПОВ, каждый — список кадров по времени
+    ([[кадры клипа0], [кадры клипа1], ...]). Так каждый шот может «листать»
+    кадры своего клипа и фон двигается как настоящее видео.
+    each — сколько кадров на клип (шаг ~1 сек).
+    """
     os.makedirs(outdir, exist_ok=True)
-    frames = []
+    clip_groups = []
     for c in clips:
+        group = []
         for i in range(each):
-            out = os.path.join(outdir, f"st{len(frames):03d}.png")
+            out = os.path.join(outdir, f"st_g{len(clip_groups)}_{i:03d}.png")
             r = subprocess.run(
                 [ffmpeg, "-y", "-ss", str(float(i)), "-i", c,
                  "-frames:v", "1", "-vf", "scale=540:960", out],
                 capture_output=True)
             if r.returncode == 0 and os.path.exists(out):
-                frames.append(out)
+                group.append(out)
             else:
                 break
-    print(f"[cine] сток-кадров: {len(frames)}")
-    return frames
+        if group:
+            clip_groups.append(group)
+    nf = sum(len(g) for g in clip_groups)
+    print(f"[cine] сток-кадров: {nf} из {len(clip_groups)} клипов")
+    return clip_groups
 
 
-def paint_stock_bg(frame_path, seed, P, cache):
-    """Живой кадр как фон: cover-fit + тёмная грейдинг + виньетка + зерно."""
-    if frame_path not in cache:
-        bg = Image.open(frame_path).convert("RGB").resize((W, H), Image.BICUBIC)
+def paint_stock_bg(clip_frames, cur, p, seed, P, cache):
+    """Живой фон: cover-fit кадра клипа, выбранного по прогрессу p (движение).
+
+    M25: clip_frames — список кадров ОДНОГО клипа (последовательные по времени).
+    cur — ключ кэша (имя клипа). p (0..1) выбирает кадр -> внутри шота фон
+    «двигается» как настоящее видео, а не стоит статичной картинкой.
+    """
+    if not clip_frames:
+        raise KeyError("пустой клип")
+    idx = min(len(clip_frames) - 1, int(round(p * (len(clip_frames) - 1))))
+    if cur not in cache:
+        cache[cur] = [None] * len(clip_frames)
+    cslot = cache[cur]
+    if cslot[idx] is None:
+        bg = Image.open(clip_frames[idx]).convert("RGB").resize((W, H), Image.BICUBIC)
         bg = bg.point(lambda v: int(v * 0.5))  # гасим под текст/грейд
-        cache[frame_path] = bg
-    img = cache[frame_path].copy()
+        cslot[idx] = bg
+    img = cslot[idx].copy()
     img = _vignette(img, 0.6)
     img = _grain(img, seed % (2 ** 31), 380, 22)
     return img
@@ -2511,14 +2572,27 @@ def _assemble_voice(ffmpeg, tmpdir, items, total, sr=SR):
 def render_frame(shot, p, fonts, P, stock=None):
     """Один кадр тела шота: сцена + камера + типографика.
 
-    stock: {"frames": [png...], "cache": {}} — если шоту назначен живой фон
-    (shot["stock"] = индекс), рисуем сток + субтитр вместо painter'а.
+    stock: {"frames": [ [кадры клипа0], [кадры клипа1], ...], "cache": {}}
+    — если шоту назначен живой фон (shot["stock"] = индекс КЛИПА), рисуем
+    сток + субтитр вместо painter'а. p выбирает кадр внутри клипа (движение).
     """
     pw = warp_progress(p, shot.get("speed", (1.0, 1.0)))
     si = shot.get("stock")
-    if stock and si is not None and 0 <= si < len(stock["frames"]):
-        img = paint_stock_bg(stock["frames"][si], shot.get("seed", 1), P,
-                             stock["cache"])
+    if stock and si is not None:
+        entry = stock["frames"][si] if si < len(stock["frames"]) else None
+        # M25: вложенный формат = [ [кадры клипа], ... ] (живое движение);
+        # плоский (video_long) = [кадр,...] — одиночный статичный фон.
+        clip = entry if isinstance(entry, list) and entry and isinstance(
+            entry[0], str) else None
+        if clip:
+            img = paint_stock_bg(clip, si, pw, shot.get("seed", 1), P,
+                                 stock["cache"])
+        elif isinstance(entry, str):
+            img = paint_stock_bg([entry], si, 0.0, shot.get("seed", 1), P,
+                                 stock["cache"])
+        else:
+            img = paint_scene(shot["visual"], pw, shot.get("seed", 1), P, fonts,
+                              shot.get("accent", "accent"))
     else:
         img = paint_scene(shot["visual"], pw, shot.get("seed", 1), P, fonts,
                           shot.get("accent", "accent"))
@@ -2872,22 +2946,37 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
         for q in style_q:
             if q not in all_q:
                 all_q.append(q)
-        clips = fetch_stock_clips(tmpdir, all_q) if all_q else []
+        # M25.4: запросы из КОНТЕКСТА самих шотов (реплики/субтитры каждого
+        # акта) — клипы соответствуют содержанию конкретных кадров, а не
+        # только общему топику. Ограничиваем, чтобы не раздувать HTTP.
+        for s in shots:
+            txt = (s.get("voice") or s.get("sub") or "").lower()
+            for kw, qs in _TOPIC_STOCK_KW.items():
+                if kw in txt:
+                    for q in qs:
+                        if q not in all_q:
+                            all_q.append(q)
+        all_q = all_q[:16]
+        clips = fetch_stock_clips(tmpdir, all_q, max_clips=20) if all_q else []
         if clips:
-            frames = extract_stock_frames(
+            clip_groups = extract_stock_frames(
                 ffmpeg, clips, os.path.join(tmpdir, "stock_frames"))
-            if frames:
-                stock = {"frames": frames, "cache": {}}
+            if clip_groups:
+                stock = {"frames": clip_groups, "cache": {}}
+                # M25: ВСЕ шоты получают живой фон — каждый свой клип по кругу
+                # (шаблонные художники остаются ТОЛЬКО фолбэком без ключа).
+                _coff = abs(hash(topic)) % len(clip_groups)
                 ci = 0
-                # M24: topic-hash offset + каждые 2-е cinematic (было каждые 3-е)
-                _soff = abs(hash(topic)) % max(1, len(frames))
                 for idx, s in enumerate(shots):
-                    if (shot_kind(s) == "cinematic" and not s.get("texts")
-                            and (idx + _soff) % 2 == 0):
-                        s["stock"] = ci % len(frames)
-                        ci += 1
-                print(f"[cine] живые фоны назначены {ci} шотам "
-                      f"(запросы: {', '.join(all_q[:3])}...)")
+                    s["stock"] = (ci + _coff) % len(clip_groups)
+                    ci += 1
+                print(f"[cine] живые фоны назначены ВСЕМ {len(shots)} шотам "
+                      f"({len(clip_groups)} клипов, запросы: "
+                      f"{', '.join(all_q[:3])}...)")
+            else:
+                stock = None
+        else:
+            stock = None
     except Exception as e:
         print(f"[cine] сток недоступен ({type(e).__name__}) — только painters")
         stock = None
