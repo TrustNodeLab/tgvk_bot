@@ -2223,14 +2223,18 @@ def build_fonts():
 # ---------- реальные сток-кадры (M15): микс живого видео с графикой ----------
 
 def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
-    """Скачивает МНОГО сток-клипов с Pexels или Pixabay. Возвращает [mp4,...] или [].
+    """Скачивает МНОГО сток-клипов с Pexels или Pixabay.
+
+    M26: возвращает (clips, clip_q) — clip_q[i] = поисковый запрос, по
+    которому скачан clips[i] (для контекстного подбора клипа шоту).
+    Возвращает ([], []) при отсутствии ключей/ошибке (движок рисует
+    painters, ничего не падает).
 
     M16: добавлен Pixabay как альтернатива (бесплатный ключ pixabay.com/docs/api).
     M20: orientation portrait|landscape (longform/YouTube качает landscape).
     M25: скачиваем много клипов — по несколько ПЕРВЫХ результатов на каждый
          поисковый запрос (per_page=8) с дедупом по размеру, пока не наберём
          max_clips. Так видео = много разных реальных роликов, а не 1-2.
-    Без ключей / при любой ошибке — [] (движок рисует painters, ничего не падает).
     """
     import urllib.request as _rq
     import urllib.parse as _up
@@ -2250,10 +2254,11 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
     pixabay_key = os.environ.get("PIXABAY_API_KEY", "").strip()
     if not pexels_key and not pixabay_key:
         print("[cine] нет ключей стока (PEXELS/PIXABAY) — только рисованные кадры")
-        return []
+        return [], []
     sdir = os.path.join(tmpdir, "stock")
     os.makedirs(sdir, exist_ok=True)
     clips = []
+    clip_q = []
     # --- Pexels ---
     seen_sizes = set()  # дедуп по размеру файла (похожие ролики)
     if pexels_key:
@@ -2300,6 +2305,7 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
                         continue
                     seen_sizes.add(sz)
                     clips.append(dst)
+                    clip_q.append(q)
                     print(f"[cine] pexels {qi}_{vi}: {q} ({sz//1024} KB)")
             except Exception as e:
                 code = getattr(e, "code", "")
@@ -2351,6 +2357,7 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
                         continue
                     seen_sizes.add(sz)
                     clips.append(dst)
+                    clip_q.append(q)
                     print(f"[cine] pixabay {qi}_{hi}: {q} ({sz//1024} KB)")
             except Exception as e:
                 code = getattr(e, "code", "")
@@ -2359,7 +2366,7 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
                 print(f"[cine] pixabay пропущен ({q}): "
                       f"{type(e).__name__} {code}{hint}")
                 continue
-    return clips
+    return clips, clip_q
 
 
 def extract_stock_frames(ffmpeg, clips, outdir, each=10):
@@ -2389,6 +2396,81 @@ def extract_stock_frames(ffmpeg, clips, outdir, each=10):
     nf = sum(len(g) for g in clip_groups)
     print(f"[cine] сток-кадров: {nf} из {len(clip_groups)} клипов")
     return clip_groups
+
+
+def _shot_stock_kws(shot):
+    """Слова-ключи шота из его реплики/субтитра/вижуала — для подбора клипа.
+
+    Возвращает множество потенциальных keywords (_TOPIC_STOCK_KW), чьи
+    русские/английские слова встречаются в тексте шота или его visual-типе.
+    """
+    import re as _re
+    txt = (shot.get("voice") or shot.get("sub") or "").lower()
+    vis = str(shot.get("visual") or "").lower()
+    out = set()
+    for kw in _TOPIC_STOCK_KW:
+        if kw in txt or kw in vis:
+            out.add(kw)
+    # короткие слова не дают шума (1-2 буквы бывают в словах)
+    words = set(_re.findall(r"[a-zа-яё]{3,}", txt))
+    for kw in _TOPIC_STOCK_KW:
+        if len(kw) >= 4 and any(w.startswith(kw[:4]) for w in words):
+            out.add(kw)
+    return out
+
+
+def _assign_stock_clips(shots, clip_groups, clip_q, topic):
+    """M26: контекстный подбор клипа шоту через _TOPIC_STOCK_KW как мост.
+
+    Shot keywords (RU/EN) → _TOPIC_STOCK_KW[key] → EN queries → clip_q match.
+    Раньше было `kw in ql` (RU in EN) — никогда не совпадало. Теперь RU ключ
+    поднимается до набора EN-запросов из _TOPIC_STOCK_KW и сравнивается с
+    clip_q по точному/подстрочному совпадению.
+    """
+    assign = {}
+    used = set()
+    # Pre-build: every EN query → its set of _TOPIC_STOCK_KW source keys
+    _q_to_kws: dict[str, set] = {}
+    for _kw, _qs in _TOPIC_STOCK_KW.items():
+        for _q in _qs:
+            _q_to_kws.setdefault(_q, set()).add(_kw)
+    for idx, s in enumerate(shots):
+        kws = _shot_stock_kws(s)
+        if not kws:
+            continue
+        # All EN queries that ANY of the shot's keywords maps to
+        target_queries: set[str] = set()
+        for kw in kws:
+            target_queries.update(_TOPIC_STOCK_KW.get(kw, []))
+        if not target_queries:
+            continue
+        best = None
+        for ci, cq in enumerate(clip_q):
+            if ci in used and sum(1 for c in used if c == ci) >= 2:
+                continue
+            # 1) exact match: clip query is one of the mapped target queries
+            # 2) partial: clip query contains a target substring or vice versa
+            if cq in target_queries:
+                best = ci
+                break
+            if any(tq in cq or cq in tq for tq in target_queries):
+                best = ci
+                break
+        if best is not None:
+            assign[idx] = best
+            used.add(best)
+    # round-robin от hash темы (для разнообразия)
+    coff = abs(hash(topic)) % len(clip_groups)
+    ci = coff
+    for idx in range(len(shots)):
+        if idx in assign:
+            continue
+        while ci in used and sum(1 for c in used if c == ci) >= 2:
+            ci = (ci + 1) % len(clip_groups)
+        assign[idx] = ci
+        used.add(ci)
+        ci = (ci + 1) % len(clip_groups)
+    return assign
 
 
 def paint_stock_bg(clip_frames, cur, p, seed, P, cache):
@@ -2984,19 +3066,19 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
                         if q not in all_q:
                             all_q.append(q)
         all_q = all_q[:16]
-        clips = fetch_stock_clips(tmpdir, all_q, max_clips=20) if all_q else []
-        if clips:
+        clips, clip_q = (fetch_stock_clips(tmpdir, all_q, max_clips=20)
+                         if all_q else ([], []))
+        if clips and clip_q:
             clip_groups = extract_stock_frames(
                 ffmpeg, clips, os.path.join(tmpdir, "stock_frames"))
             if clip_groups:
                 stock = {"frames": clip_groups, "cache": {}}
-                # M25: ВСЕ шоты получают живой фон — каждый свой клип по кругу
-                # (шаблонные художники остаются ТОЛЬКО фолбэком без ключа).
-                _coff = abs(hash(topic)) % len(clip_groups)
-                ci = 0
+                # M26: ВСЕ шоты получают живой фон, но клип подбирается
+                # ПО КОНТЕКСТУ шота (его реплика/вижуал), а не по кругу —
+                # картинка соответствует тому, что говорит диктор.
+                assign = _assign_stock_clips(shots, clip_groups, clip_q, topic)
                 for idx, s in enumerate(shots):
-                    s["stock"] = (ci + _coff) % len(clip_groups)
-                    ci += 1
+                    s["stock"] = assign.get(idx, idx % len(clip_groups))
                 print(f"[cine] живые фоны назначены ВСЕМ {len(shots)} шотам "
                       f"({len(clip_groups)} клипов, запросы: "
                       f"{', '.join(all_q[:3])}...)")
