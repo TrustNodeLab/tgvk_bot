@@ -310,8 +310,8 @@ def fetch_section_stock(ffmpeg, tmpdir, sections, max_sec=12):
             continue
         sdir = os.path.join(tmpdir, f"stock_s{si}")
         try:
-            clips = cine.fetch_stock_clips(sdir, [q], max_clips=1,
-                                           orientation="landscape")
+            clips, _ = cine.fetch_stock_clips(sdir, [q], max_clips=1,
+                                              orientation="landscape")
             if not clips:
                 continue
             fr = cine.extract_stock_frames(
