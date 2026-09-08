@@ -116,6 +116,17 @@ def warp_progress(p, speed):
     return 1.0 - (1.0 - p) ** r
 
 
+def _ease_io(t):
+    """Smoothstep: разгон-торможение внутри шота (M26-B, плавность).
+
+    Линейный прогресс даёт резкий старт/стоп движения камеры и текста на
+    каждой склейке — это и есть ощущение «рваности». Ease-in-out делает
+    движение кинематографичным: ускорение из нуля, плавная остановка.
+    """
+    t = max(0.0, min(1.0, t))
+    return t * t * (3 - 2 * t)
+
+
 # ---------- сценарный план: LLM -> fallback-шаблон ----------
 
 SHOT_SCHEMA_HINT = (
@@ -1948,9 +1959,21 @@ def draw_tracked(d, line, f, y, gap, alpha):
 # ---------- камера и переходы ----------
 
 def apply_camera(img, camera, p, seed, frame_i):
-    """Движение камеры как пост-трансформация кадра."""
+    """Движение камеры как пост-трансформация кадра.
+
+    M26-B: «дыхание» — у static-шотов лёгкий синусоидальный дрейф,
+    чтобы кадр НИКОГДА не стоял намертво: соседние кадры связаны,
+    видео ощущается цельным, а не покадровым. Амплитуда мала, это
+    незаметно как «движение», но убивает эффект слайд-шоу.
+    """
     if camera == "static":
-        return img
+        # дыхание: ±3 px по синусу от прогресса шота + лёгкий микро-зум.
+        # Расширяем кадр на 8px и двигаем окно — краёв чёрных нет.
+        dx = int(3.0 * math.sin(p * math.tau * 1.5))
+        dy = int(2.5 * math.cos(p * math.tau * 1.5 + 1.1))
+        big = img.resize((W + 8, H + 8), Image.BICUBIC)
+        ox, oy = 4 - dx, 4 - dy
+        return big.crop((ox, oy, ox + W, oy + H))
     if camera == "shake":
         rnd = random.Random(seed + frame_i)
         dx, dy = rnd.randrange(-9, 10), rnd.randrange(-9, 10)
@@ -1963,7 +1986,7 @@ def apply_camera(img, camera, p, seed, frame_i):
         return big.crop((80 + dx, 0, 80 + dx + W, H))
     if camera == "snap":
         # резкий наезд: snap-zoom к концу шота
-        s = 1.0 + 0.30 * (p ** 2)
+        s = 1.0 + 0.42 * (p ** 2)
         bw, bh = int(W * s), int(H * s)
         big = img.resize((bw, bh), Image.BICUBIC)
         return big.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
@@ -1985,8 +2008,9 @@ def apply_camera(img, camera, p, seed, frame_i):
             y = rnd.randrange(H)
             d.line([(0, y), (W, y)], fill=(150, 180, 230, 46))
         return out
-    # push_in / push_out
-    s = (1.0 + 0.14 * p) if camera == "push_in" else (1.14 - 0.14 * p)
+    # push_in / push_out — ход увеличен до 0.24: на 60fps движение должно
+    # быть РЕАЛЬНО видимым (иначе кадры сливаются в слайд-шоу)
+    s = (1.0 + 0.24 * p) if camera == "push_in" else (1.24 - 0.24 * p)
     bw, bh = int(W * s), int(H * s)
     big = img.resize((bw, bh), Image.BICUBIC)
     return big.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
@@ -2661,7 +2685,9 @@ def render_cinematic(shots, seconds, fps, out_silent, bpm, P, tmpdir="out/tmp_ci
         if sg["kind"] == "body":
             s = sg["shot"]
             for j in range(sg["n"]):
-                p = j / max(1, sg["n"] - 1)
+                # M26-B: ease-in-out прогресса — разгон/торможение вместо
+                # линейного скольжения (линейные камеры = ощущение покадровости)
+                p = _ease_io(j / max(1, sg["n"] - 1))
                 proc.stdin.write(render_frame(s, p, fonts, P, stock).tobytes())
                 done += 1
         elif sg["kind"] == "trans":
@@ -2669,7 +2695,7 @@ def render_cinematic(shots, seconds, fps, out_silent, bpm, P, tmpdir="out/tmp_ci
             img_a = render_frame(a, 1.0, fonts, P, stock)
             img_b = render_frame(b, 0.0, fonts, P, stock)
             for j in range(sg["n"]):
-                q = (j + 1) / sg["n"]
+                q = _ease_io((j + 1) / sg["n"])
                 proc.stdin.write(
                     transition_frame(img_a, img_b, sg["trans"], q, b.get("seed", 1)).tobytes())
                 done += 1
