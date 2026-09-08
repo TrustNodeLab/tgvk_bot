@@ -718,7 +718,8 @@ def _coerce_shots(raw, seconds):
     return shots
 
 
-def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
+def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic",
+                   variant=None):
     """Fallback-план: драматургия hook->problem->escalation->peak->twist->
     accel->climax, тексты и визуальный ряд собираются ПОД ТЕМУ topic.
 
@@ -729,6 +730,12 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
     short = topic[:48]
     rnd = random.Random(abs(hash(topic)) % (2 ** 32))
     k = max(0.4, seconds / 42.0)
+
+    # S26.4.1: 8 структурных вариантов раскадровки; topic-детерминированный выбор.
+    # variant=0 — эталон, 1 — двойная проблема, 2 — ранний пик, 3 — вопрос-открытие,
+    # 4 — cold-open-климакс, 5 — нарратор-док, 6 — rapid-fire, 7 — твист в начале.
+    if variant is None:
+        variant = abs(hash(topic)) % 8
 
     # M23: тематический анализ → выбор пулов
     themes = extract_visual_theme(topic)
@@ -765,6 +772,390 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
 
     peak_pool = [_pv_((i * 3 + _voff)) for i in range(8)]
     rnd.shuffle(peak_pool)
+
+    # S26.4.1: альтернативные структурные раскадровки (variant != 0).
+    # Только существующие визуалы/камеры/переходы; финал всегда final_brand.
+    def _v1_shots():
+        # 1 — «Двойная проблема»: две волны бытовых угроз + ускорение.
+        return [
+            sc("hook", 2.8 * k, _pv_(0), _cam(0),
+               tx("ВАС УЖЕ МОГУТ", "ВЗЛОМАТЬ", mode="tracking"), _tr_(0),
+               "impact", (0.7, 1.3), "accent2", typ="typography"),
+            sc("problem", 1.7 * k, _pv_(1), _cam(1), [], _tr_(1),
+               "notify", (1.0, 1.2)),
+            sc("problem", 0.9 * k, "flash", "static",
+               tx("ОДНА ССЫЛКА", mode="pop"), "hard_cut", "click",
+               typ="typography"),
+            sc("problem", 1.5 * k, _pv_(2), _cam(2), [], "match",
+               "notify", (1.0, 1.1)),
+            sc("problem", 0.9 * k, "flash", "static",
+               tx("ОДИН ЗВОНОК", mode="pop"), "hard_cut", "click",
+               typ="typography"),
+            sc("problem", 1.5 * k, _pv_(3), _cam(3), [], _tr_(2),
+               "whoosh", (1.1, 1.3)),
+            sc("problem", 0.9 * k, "flash", "static",
+               tx("ЕЩЁ ОДНА ССЫЛКА", mode="pop"), "hard_cut", "impact",
+               typ="typography"),
+            sc("problem", 1.4 * k, _pv_(4), _cam(4), [], _tr_(3),
+               "notify", (0.9, 1.1)),
+            sc("problem", 0.9 * k, "flash", "static",
+               tx("ЕЩЁ ОДИН ЗВОНОК", mode="pop"), "hard_cut", "bass",
+               typ="typography"),
+            sc("escalation", 1.2 * k, "keyboard", _cam(5), [],
+               "hard_cut", "click", (1.2, 1.6)),
+            sc("escalation", 0.8 * k, "qr_scan", _cam(6), [],
+               "hard_cut", "whoosh", (1.5, 2.0)),
+            sc("escalation", 1.1 * k, _pv_(5), _cam(0), [], _tr_(4),
+               "notify"),
+            sc("escalation", 0.7 * k, "flash", "static",
+               tx("ДОСТУП", mode="pop"), "hard_cut", "bass", typ="typography"),
+            sc("escalation", 1.6 * k, "server_corridor", _cam(1), [],
+               "match", "riser", (0.9, 1.5)),
+            sc("peak", 0.8 * k, peak_pool[0], "shake", [], "hard_cut",
+               "impact", (1.4, 1.4), "accent2", typ="graphic"),
+            sc("peak", 0.5 * k, peak_pool[1], "shake", [], "hard_cut",
+               "click", (1.6, 1.6)),
+            sc("peak", 0.7 * k, peak_pool[2], "push_in", [], "whip",
+               "bass", (1.5, 1.5)),
+            sc("peak", 0.5 * k, peak_pool[3], "snap", [], "hard_cut",
+               "whoosh", (1.8, 1.8)),
+            sc("peak", 0.8 * k, peak_pool[4], "shake",
+               tx("СЕССИЯ УКРАДЕНА", mode="tracking"), "glitch", "impact",
+               (1.3, 1.3), "accent2", fx="glitch"),
+            sc("twist", 1.6 * k, "pause_black", "static",
+               tx("НО САМОЕ", "СТРАШНОЕ...", mode="reveal"), "dip", "silence",
+               (0.4, 0.4), typ="typography"),
+            sc("twist", 1.2 * k, "pause_black", "static", [], "dip",
+               "silence", (0.3, 0.3)),
+            sc("twist", 2.0 * k, "eye", _cam(3),
+               tx("ОТКРОЕТЕ ДВЕРЬ", "ВЫ САМИ", mode="tracking"), "zoom",
+               "impact", (0.5, 1.8)),
+            sc("accel", 1.6 * k, "keyboard", _cam(0),
+               tx("1 ОШИБКА", mode="pop"), "hard_cut", "bass", (1.0, 1.4)),
+            sc("accel", 1.3 * k, "consequence", _cam(1),
+               tx("1 АККАУНТ", mode="pop"), "match", "impact", (1.0, 1.4)),
+            sc("accel", 1.2 * k, "consequence", _cam(2),
+               tx("1 УСТРОЙСТВО", mode="pop"), "whip", "impact", (1.0, 1.6)),
+            sc("accel", 1.8 * k, "consequence", _cam(3),
+               tx("ВСЯ СИСТЕМА", mode="tracking"), "zoom", "riser",
+               (0.8, 1.6), "accent2"),
+            sc("climax", 0.7 * k, "attack_grid", "shake", [], "hard_cut",
+               "impact", (1.5, 1.5), "accent2", typ="graphic"),
+            sc("climax", 0.5 * k, _pv_(6), "snap", [], "hard_cut",
+               "bass", (1.4, 1.4)),
+            sc("climax", 2.0 * k, "final_q", "static",
+               tx("КТО КОГО", mode="whisper"), "dip", "bass", (0.6, 0.8),
+               typ="typography"),
+            sc("climax", 2.4 * k, "final_q", "static",
+               tx("ЗАЩИЩАЕТ?", mode="whisper"), "dip", "silence",
+               (0.5, 0.6), typ="typography"),
+            sc("climax", 3.4 * k, "final_brand", "push_out", [], "hard_cut",
+               "impact", (0.7, 1.0), typ="graphic"),
+        ]
+
+    def _v2_shots():
+        # 2 — «Ранний пик»: максимум динамики сразу после hook.
+        return [
+            sc("hook", 2.8 * k, _pv_(0), _cam(0),
+               tx("ВАС УЖЕ МОГУТ", "ВЗЛОМАТЬ", mode="tracking"), _tr_(0),
+               "impact", (0.7, 1.3), "accent2", typ="typography"),
+            sc("peak", 0.8 * k, peak_pool[0], "shake", [], "hard_cut",
+               "impact", (1.4, 1.4), "accent2", typ="graphic"),
+            sc("peak", 0.5 * k, peak_pool[1], "shake", [], "hard_cut",
+               "click", (1.6, 1.6)),
+            sc("peak", 0.7 * k, peak_pool[2], "push_in", [], "whip",
+               "bass", (1.5, 1.5)),
+            sc("peak", 0.5 * k, peak_pool[3], "snap", [], "hard_cut",
+               "whoosh", (1.8, 1.8)),
+            sc("peak", 0.8 * k, peak_pool[4], "shake",
+               tx("СЕССИЯ УКРАДЕНА", mode="tracking"), "glitch", "impact",
+               (1.3, 1.3), "accent2", fx="glitch"),
+            sc("problem", 1.7 * k, _pv_(1), _cam(1), [], _tr_(1),
+               "notify", (1.0, 1.2)),
+            sc("problem", 1.5 * k, _pv_(2), _cam(2), [], "match",
+               "notify", (1.0, 1.1)),
+            sc("problem", 1.5 * k, _pv_(3), _cam(3), [], _tr_(2),
+               "whoosh", (1.1, 1.3)),
+            sc("escalation", 1.2 * k, "keyboard", _cam(5), [],
+               "hard_cut", "click", (1.2, 1.6)),
+            sc("escalation", 0.8 * k, "qr_scan", _cam(6), [],
+               "hard_cut", "whoosh", (1.5, 2.0)),
+            sc("escalation", 1.6 * k, "server_corridor", _cam(1), [],
+               "match", "riser", (0.9, 1.5)),
+            sc("twist", 1.6 * k, "pause_black", "static",
+               tx("НО САМОЕ", "СТРАШНОЕ...", mode="reveal"), "dip", "silence",
+               (0.4, 0.4), typ="typography"),
+            sc("twist", 2.0 * k, "eye", _cam(3),
+               tx("ОТКРОЕТЕ ДВЕРЬ", "ВЫ САМИ", mode="tracking"), "zoom",
+               "impact", (0.5, 1.8)),
+            sc("accel", 1.6 * k, "keyboard", _cam(0),
+               tx("1 ОШИБКА", mode="pop"), "hard_cut", "bass", (1.0, 1.4)),
+            sc("accel", 1.3 * k, "consequence", _cam(1),
+               tx("1 АККАУНТ", mode="pop"), "match", "impact", (1.0, 1.4)),
+            sc("accel", 1.2 * k, "consequence", _cam(2),
+               tx("1 УСТРОЙСТВО", mode="pop"), "whip", "impact", (1.0, 1.6)),
+            sc("climax", 0.7 * k, "attack_grid", "shake", [], "hard_cut",
+               "impact", (1.5, 1.5), "accent2", typ="graphic"),
+            sc("climax", 0.5 * k, _pv_(6), "snap", [], "hard_cut",
+               "bass", (1.4, 1.4)),
+            sc("climax", 2.0 * k, "final_q", "static",
+               tx("КТО КОГО", mode="whisper"), "dip", "bass", (0.6, 0.8),
+               typ="typography"),
+            sc("climax", 2.4 * k, "final_q", "static",
+               tx("ЗАЩИЩАЕТ?", mode="whisper"), "dip", "silence",
+               (0.5, 0.6), typ="typography"),
+            sc("climax", 3.4 * k, "final_brand", "push_out", [], "hard_cut",
+               "impact", (0.7, 1.0), typ="graphic"),
+        ]
+
+    def _v3_shots():
+        # 3 — «Вопрос-открытие»: риторический вопрос с первых секунд.
+        return [
+            sc("hook", 2.4 * k, "final_q", "static",
+               tx("КТО КОГО", "ЗАЩИЩАЕТ?", mode="whisper"), "dip", "silence",
+               (0.5, 0.6), typ="typography"),
+            sc("hook", 2.8 * k, _pv_(0), _cam(0),
+               tx("ВАС УЖЕ МОГУТ", "ВЗЛОМАТЬ", mode="tracking"), _tr_(0),
+               "impact", (0.7, 1.3), "accent2", typ="typography"),
+            sc("problem", 1.7 * k, _pv_(1), _cam(1), [], _tr_(1),
+               "notify", (1.0, 1.2)),
+            sc("problem", 1.5 * k, _pv_(2), _cam(2), [], "match",
+               "notify", (1.0, 1.1)),
+            sc("problem", 1.5 * k, _pv_(3), _cam(3), [], _tr_(2),
+               "whoosh", (1.1, 1.3)),
+            sc("escalation", 1.2 * k, "keyboard", _cam(5), [],
+               "hard_cut", "click", (1.2, 1.6)),
+            sc("escalation", 0.8 * k, "qr_scan", _cam(6), [],
+               "hard_cut", "whoosh", (1.5, 2.0)),
+            sc("escalation", 1.6 * k, "server_corridor", _cam(1), [],
+               "match", "riser", (0.9, 1.5)),
+            sc("peak", 0.8 * k, peak_pool[0], "shake", [], "hard_cut",
+               "impact", (1.4, 1.4), "accent2", typ="graphic"),
+            sc("peak", 0.5 * k, peak_pool[1], "shake", [], "hard_cut",
+               "click", (1.6, 1.6)),
+            sc("peak", 0.7 * k, peak_pool[2], "push_in", [], "whip",
+               "bass", (1.5, 1.5)),
+            sc("peak", 0.5 * k, peak_pool[3], "snap", [], "hard_cut",
+               "whoosh", (1.8, 1.8)),
+            sc("twist", 1.6 * k, "pause_black", "static",
+               tx("НО САМОЕ", "СТРАШНОЕ...", mode="reveal"), "dip", "silence",
+               (0.4, 0.4), typ="typography"),
+            sc("twist", 2.0 * k, "eye", _cam(3),
+               tx("ОТКРОЕТЕ ДВЕРЬ", "ВЫ САМИ", mode="tracking"), "zoom",
+               "impact", (0.5, 1.8)),
+            sc("accel", 1.6 * k, "keyboard", _cam(0),
+               tx("1 ОШИБКА", mode="pop"), "hard_cut", "bass", (1.0, 1.4)),
+            sc("accel", 1.3 * k, "consequence", _cam(1),
+               tx("1 АККАУНТ", mode="pop"), "match", "impact", (1.0, 1.4)),
+            sc("accel", 1.2 * k, "consequence", _cam(2),
+               tx("1 УСТРОЙСТВО", mode="pop"), "whip", "impact", (1.0, 1.6)),
+            sc("climax", 0.7 * k, "attack_grid", "shake", [], "hard_cut",
+               "impact", (1.5, 1.5), "accent2", typ="graphic"),
+            sc("climax", 0.5 * k, _pv_(6), "snap", [], "hard_cut",
+               "bass", (1.4, 1.4)),
+             sc("climax", 3.4 * k, "final_brand", "push_out", [], "hard_cut",
+                "impact", (0.7, 1.0), typ="graphic"),
+        ]
+
+    def _v4_shots():
+        # 4 — «Cold-open-климакс»: открытие кульминацией, затем раскрытие.
+        return [
+            sc("climax", 2.2 * k, "attack_grid", "shake",
+               tx("ВСЁ УЖЕ", "СЛУЧИЛОСЬ", mode="tracking"), "glitch",
+               "impact", (1.3, 1.3), "accent2", typ="graphic"),
+            sc("climax", 0.5 * k, _pv_(6), "snap", [], "hard_cut",
+               "bass", (1.4, 1.4)),
+            sc("climax", 2.0 * k, "final_q", "static",
+               tx("КТО КОГО", mode="whisper"), "dip", "bass", (0.6, 0.8),
+               typ="typography"),
+            sc("climax", 2.4 * k, "final_q", "static",
+               tx("ЗАЩИЩАЕТ?", mode="whisper"), "dip", "silence",
+               (0.5, 0.6), typ="typography"),
+            sc("hook", 2.8 * k, _pv_(0), _cam(0),
+               tx("ВАС УЖЕ МОГУТ", "ВЗЛОМАТЬ", mode="tracking"), _tr_(0),
+               "impact", (0.7, 1.3), "accent2", typ="typography"),
+            sc("problem", 1.7 * k, _pv_(1), _cam(1), [], _tr_(1),
+               "notify", (1.0, 1.2)),
+            sc("problem", 1.5 * k, _pv_(2), _cam(2), [], "match",
+               "notify", (1.0, 1.1)),
+            sc("problem", 1.5 * k, _pv_(3), _cam(3), [], _tr_(2),
+               "whoosh", (1.1, 1.3)),
+            sc("escalation", 1.2 * k, "keyboard", _cam(5), [],
+               "hard_cut", "click", (1.2, 1.6)),
+            sc("escalation", 0.8 * k, "qr_scan", _cam(6), [],
+               "hard_cut", "whoosh", (1.5, 2.0)),
+            sc("escalation", 1.6 * k, "server_corridor", _cam(1), [],
+               "match", "riser", (0.9, 1.5)),
+            sc("peak", 0.8 * k, peak_pool[0], "shake", [], "hard_cut",
+               "impact", (1.4, 1.4), "accent2", typ="graphic"),
+            sc("peak", 0.5 * k, peak_pool[1], "shake", [], "hard_cut",
+               "click", (1.6, 1.6)),
+            sc("peak", 0.7 * k, peak_pool[2], "push_in", [], "whip",
+               "bass", (1.5, 1.5)),
+            sc("twist", 1.6 * k, "pause_black", "static",
+               tx("НО САМОЕ", "СТРАШНОЕ...", mode="reveal"), "dip", "silence",
+               (0.4, 0.4), typ="typography"),
+            sc("twist", 2.0 * k, "eye", _cam(3),
+               tx("ОТКРОЕТЕ ДВЕРЬ", "ВЫ САМИ", mode="tracking"), "zoom",
+               "impact", (0.5, 1.8)),
+            sc("accel", 1.6 * k, "keyboard", _cam(0),
+               tx("1 ОШИБКА", mode="pop"), "hard_cut", "bass", (1.0, 1.4)),
+            sc("accel", 1.3 * k, "consequence", _cam(1),
+               tx("1 АККАУНТ", mode="pop"), "match", "impact", (1.0, 1.4)),
+            sc("accel", 1.2 * k, "consequence", _cam(2),
+               tx("1 УСТРОЙСТВО", mode="pop"), "whip", "impact", (1.0, 1.6)),
+            sc("climax", 0.7 * k, "attack_grid", "shake", [], "hard_cut",
+               "impact", (1.5, 1.5), "accent2", typ="graphic"),
+            sc("climax", 3.4 * k, "final_brand", "push_out", [], "hard_cut",
+               "impact", (0.7, 1.0), typ="graphic"),
+        ]
+
+    def _v5_shots():
+        # 5 — «Нарратор-док»: спокойнее, ×1.15 длительности, больше типографики.
+        return [
+            sc("hook", 3.2 * k, _pv_(0), "static",
+               tx("ВАС УЖЕ МОГУТ", "ВЗЛОМАТЬ", mode="tracking"), _tr_(0),
+               "impact", (0.7, 1.3), "accent2", typ="typography"),
+            sc("problem", 1.95 * k, _pv_(1), "static", [], _tr_(1),
+               "notify", (1.0, 1.2)),
+            sc("problem", 1.7 * k, _pv_(2), "static", [], "match",
+               "notify", (1.0, 1.1)),
+            sc("problem", 1.7 * k, _pv_(3), "static", [], _tr_(2),
+               "whoosh", (1.1, 1.3)),
+            sc("problem", 1.4 * k, _pv_(4), "static",
+               tx("ЭТО НЕ СЛУЧАЙНО", mode="pop"), "match", "notify",
+               (0.9, 1.1), typ="typography"),
+            sc("escalation", 1.4 * k, "keyboard", "static", [],
+               "hard_cut", "click", (1.2, 1.6)),
+            sc("escalation", 0.9 * k, "qr_scan", "static", [],
+               "hard_cut", "whoosh", (1.5, 2.0)),
+            sc("escalation", 1.8 * k, "server_corridor", "static", [],
+               "match", "riser", (0.9, 1.5)),
+            sc("peak", 0.9 * k, peak_pool[0], "push_in", [], "hard_cut",
+               "impact", (1.4, 1.4), "accent2", typ="graphic"),
+            sc("peak", 0.8 * k, peak_pool[1], "push_in", [], "hard_cut",
+               "click", (1.6, 1.6)),
+            sc("peak", 0.8 * k, peak_pool[2], "push_in", [], "whip",
+               "bass", (1.5, 1.5)),
+            sc("peak", 0.6 * k, peak_pool[3], "snap", [], "hard_cut",
+               "whoosh", (1.8, 1.8)),
+            sc("twist", 1.8 * k, "pause_black", "static",
+               tx("НО САМОЕ", "СТРАШНОЕ...", mode="reveal"), "dip", "silence",
+               (0.4, 0.4), typ="typography"),
+            sc("twist", 2.3 * k, "eye", _cam(3),
+               tx("ОТКРОЕТЕ ДВЕРЬ", "ВЫ САМИ", mode="tracking"), "zoom",
+               "impact", (0.5, 1.8)),
+            sc("accel", 1.8 * k, "keyboard", _cam(0),
+               tx("1 ОШИБКА", mode="pop"), "hard_cut", "bass", (1.0, 1.4)),
+            sc("accel", 1.5 * k, "consequence", _cam(1),
+               tx("1 АККАУНТ", mode="pop"), "match", "impact", (1.0, 1.4)),
+            sc("accel", 1.4 * k, "consequence", _cam(2),
+               tx("1 УСТРОЙСТВО", mode="pop"), "whip", "impact", (1.0, 1.6)),
+            sc("accel", 2.1 * k, "consequence", _cam(3),
+               tx("ВСЯ СИСТЕМА", mode="tracking"), "zoom", "riser",
+               (0.8, 1.6), "accent2"),
+            sc("climax", 0.8 * k, "attack_grid", "static", [], "hard_cut",
+               "impact", (1.5, 1.5), "accent2", typ="graphic"),
+            sc("climax", 2.3 * k, "final_q", "static",
+               tx("КТО КОГО", mode="whisper"), "dip", "bass", (0.6, 0.8),
+               typ="typography"),
+            sc("climax", 2.8 * k, "final_q", "static",
+               tx("ЗАЩИЩАЕТ?", mode="whisper"), "dip", "silence",
+               (0.5, 0.6), typ="typography"),
+            sc("climax", 3.9 * k, "final_brand", "push_out", [], "hard_cut",
+               "impact", (0.7, 1.0), typ="graphic"),
+        ]
+
+    def _v6_shots():
+        # 6 — «Rapid-fire»: всё коротко ×0.7, все камеры shake/snap.
+        return [
+            sc("hook", 2.0 * k, _pv_(0), "shake",
+               tx("ВАС УЖЕ", "ВЗЛОМАЮТ", mode="tracking"), "glitch",
+               "impact", (0.7, 1.3), "accent2", typ="typography"),
+            sc("problem", 1.2 * k, "flash", "snap", [], "hard_cut",
+               "click", (1.2, 1.4)),
+            sc("problem", 1.2 * k, "flash", "snap", [], "hard_cut",
+               "notify", (1.0, 1.2)),
+            sc("problem", 1.2 * k, "flash", "snap", [], "hard_cut",
+               "click", (1.1, 1.3)),
+            sc("escalation", 0.9 * k, "keyboard", "shake", [], "hard_cut",
+               "click", (1.4, 1.6)),
+            sc("escalation", 0.6 * k, "qr_scan", "snap", [], "whip",
+               "whoosh", (1.5, 2.0)),
+            sc("peak", 0.6 * k, peak_pool[0], "shake", [], "hard_cut",
+               "impact", (1.5, 1.5), "accent2", typ="graphic"),
+            sc("peak", 0.4 * k, peak_pool[1], "snap", [], "hard_cut",
+               "click", (1.6, 1.6)),
+            sc("peak", 0.5 * k, peak_pool[2], "shake", [], "whip",
+               "bass", (1.5, 1.5)),
+            sc("peak", 0.4 * k, peak_pool[3], "snap", [], "hard_cut",
+               "whoosh", (1.8, 1.8)),
+            sc("twist", 1.1 * k, "pause_black", "static",
+               tx("И ВОТ", "ОНА", mode="reveal"), "dip", "silence",
+               (0.4, 0.4), typ="typography"),
+            sc("twist", 1.4 * k, "eye", "shake",
+               tx("ДВЕРЬ ОТКРЫТА", mode="tracking"), "zoom", "impact",
+               (0.5, 1.8)),
+            sc("accel", 1.1 * k, "keyboard", "snap",
+               tx("1 ОШИБКА", mode="pop"), "hard_cut", "bass", (1.0, 1.4)),
+            sc("accel", 0.9 * k, "consequence", "shake",
+               tx("АККАУНТ", mode="pop"), "whip", "impact", (1.0, 1.4)),
+            sc("accel", 0.8 * k, "consequence", "snap",
+               tx("УСТРОЙСТВО", mode="pop"), "hard_cut", "impact",
+               (1.0, 1.6)),
+            sc("accel", 1.3 * k, "consequence", "shake",
+               tx("СИСТЕМА", mode="tracking"), "zoom", "riser", (0.8, 1.6),
+               "accent2"),
+            sc("climax", 0.5 * k, "attack_grid", "shake", [], "hard_cut",
+               "impact", (1.5, 1.5), "accent2", typ="graphic"),
+            sc("climax", 0.4 * k, _pv_(6), "snap", [], "hard_cut",
+               "bass", (1.4, 1.4)),
+            sc("climax", 1.4 * k, "final_q", "static",
+               tx("КТО КОГО", "ЗАЩИЩАЕТ?", mode="whisper"), "dip", "silence",
+               (0.5, 0.6), typ="typography"),
+            sc("climax", 2.4 * k, "final_brand", "push_out", [], "hard_cut",
+               "impact", (0.7, 1.0), typ="graphic"),
+        ]
+
+    def _v7_shots():
+        # 7 — «Твист в начале»: твист сразу после hook, затем раскрытие.
+        return [
+            sc("hook", 2.8 * k, _pv_(0), _cam(0),
+               tx("ВАС УЖЕ МОГУТ", "ВЗЛОМАТЬ", mode="tracking"), _tr_(0),
+               "impact", (0.7, 1.3), "accent2", typ="typography"),
+            sc("twist", 1.6 * k, "pause_black", "static",
+               tx("САМОЕ", "СТРАШНОЕ", mode="reveal"), "dip", "silence",
+               (0.4, 0.4), typ="typography"),
+            sc("twist", 2.0 * k, "eye", _cam(3),
+               tx("ОТКРОЕТЕ ДВЕРЬ", "ВЫ САМИ", mode="tracking"), "zoom",
+               "impact", (0.5, 1.8)),
+            sc("problem", 1.7 * k, _pv_(1), _cam(1), [], _tr_(1),
+               "notify", (1.0, 1.2)),
+            sc("problem", 1.5 * k, _pv_(2), _cam(2), [], "match",
+               "notify", (1.0, 1.1)),
+            sc("problem", 1.5 * k, _pv_(3), _cam(3), [], _tr_(2),
+               "whoosh", (1.1, 1.3)),
+            sc("escalation", 1.2 * k, "keyboard", _cam(5), [],
+               "hard_cut", "click", (1.2, 1.6)),
+            sc("escalation", 0.8 * k, "qr_scan", _cam(6), [],
+               "hard_cut", "whoosh", (1.5, 2.0)),
+            sc("escalation", 1.6 * k, "server_corridor", _cam(1), [],
+               "match", "riser", (0.9, 1.5)),
+            sc("peak", 0.8 * k, peak_pool[0], "shake", [], "hard_cut",
+               "impact", (1.4, 1.4), "accent2", typ="graphic"),
+            sc("peak", 0.5 * k, peak_pool[1], "shake", [], "hard_cut",
+               "click", (1.6, 1.6)),
+            sc("peak", 0.7 * k, peak_pool[2], "push_in", [], "whip",
+               "bass", (1.5, 1.5)),
+            sc("accel", 1.6 * k, "keyboard", _cam(0),
+               tx("1 ОШИБКА", mode="pop"), "hard_cut", "bass", (1.0, 1.4)),
+            sc("accel", 1.3 * k, "consequence", _cam(1),
+               tx("1 АККАУНТ", mode="pop"), "match", "impact", (1.0, 1.4)),
+            sc("climax", 0.7 * k, "attack_grid", "shake", [], "hard_cut",
+               "impact", (1.5, 1.5), "accent2", typ="graphic"),
+            sc("climax", 3.4 * k, "final_brand", "push_out", [], "hard_cut",
+               "impact", (0.7, 1.0), typ="graphic"),
+        ]
 
     # M23: озвучка из модульных dict с {TOPIC} placeholder
     # Берём тематический dict (если есть) или generic
@@ -873,6 +1264,20 @@ def template_shots(topic, seconds=55, style_name="cybersecurity_cinematic"):
         sc("climax", 3.4 * k, "final_brand", "push_out", [], "hard_cut",
            "impact", (0.7, 1.0), typ="graphic"),
     ]
+    if variant == 1:
+        shots = _v1_shots()
+    elif variant == 2:
+        shots = _v2_shots()
+    elif variant == 3:
+        shots = _v3_shots()
+    elif variant == 4:
+        shots = _v4_shots()
+    elif variant == 5:
+        shots = _v5_shots()
+    elif variant == 6:
+        shots = _v6_shots()
+    elif variant == 7:
+        shots = _v7_shots()
     total = sum(s["dur"] for s in shots)
     out = []
     for i, s in enumerate(shots):
@@ -1159,7 +1564,7 @@ def script_to_shots(script_text, topic=None, seconds=55,
 
 
 def plan_shots(topic, seconds=55, style_name="cybersecurity_cinematic",
-               use_llm=True, provider=None):
+               use_llm=True, provider=None, variant=None):
     """TOPIC -> SHOT LIST: сначала LLM, при любой ошибке — шаблон по теме."""
     if use_llm:
         try:
@@ -1190,7 +1595,7 @@ def plan_shots(topic, seconds=55, style_name="cybersecurity_cinematic",
             return shots
         except Exception as e:
             print(f"[cine] LLM-план недоступен ({type(e).__name__}: {e}) — шаблон по теме")
-    return template_shots(topic, seconds, style_name)
+    return template_shots(topic, seconds, style_name, variant)
 
 
 # ---------- художники сцен (всё рисуется кодом, без внешних ассетов) ----------
@@ -2965,7 +3370,8 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
                         out="out/video_cine.mp4", fps=FPS_CINE,
                         voice=vg.VOICE_DEFAULT, no_audio=False, voice_over=None,
                         tmpdir="out/tmp_cine", script_shots=None, provider=None,
-                        script_text=None, edl_out=None, srt_out=None):
+                        script_text=None, edl_out=None, srt_out=None,
+                        variant=None):
     """Главная точка входа: тема -> cinematic-ролик MP4.
 
     script_text (M17): текст статьи -> план script_to_shots (диктор читает
@@ -2986,7 +3392,8 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
         full_voice = True
     else:
         shots = (list(script_shots) if script_shots
-                 else plan_shots(topic, seconds, key, True, provider))
+                 else plan_shots(topic, seconds, key, True, provider,
+                                 variant))
     # монтажная гигиена: баланс cinematic/text
     shots = enforce_balance(shots)
     if voice_over is None:
@@ -3179,6 +3586,8 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
     return out
 
 
-def generate_video(topic, duration=55, style="cybersecurity_cinematic", **kw):
+def generate_video(topic, duration=55, style="cybersecurity_cinematic",
+                   variant=None, **kw):
     """Алиас в духе generateVideo({topic, duration, style})."""
-    return generate_cinematic(topic=topic, seconds=duration, style=style, **kw)
+    return generate_cinematic(topic=topic, seconds=duration, style=style,
+                              variant=variant, **kw)
