@@ -43,7 +43,7 @@ from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 # ---------- константы ----------
 
 W, H = 1080, 1920          # вертикальное видео (формат клипов/шортсов)
-FPS_DEFAULT = 24           # 24 fps: скролл плавный (15 fps давал рывки)
+FPS_DEFAULT = 60           # 60 fps: плавный монтаж (эталон TikTok HEVC 60fps; --fps 120 опция)
 BG = (11, 18, 32)
 PANEL = (19, 28, 48)
 ACCENT = (255, 210, 74)
@@ -56,6 +56,15 @@ EXO2 = os.path.join(FONTS_DIR, "Exo2-Variable.ttf")
 JURA = os.path.join(FONTS_DIR, "Jura-Variable.ttf")
 
 VOICE_DEFAULT = "ru-RU-DmitryNeural"
+# M26-C: суперреалистичный голос через ElevenLabs (опция).
+# Активируется env ELEVENLABS_API_KEY (иначе edge-tts бесплатный).
+# Русский поддерживается моделью multilingual_v2 на любом голосе.
+ELEVENLABS_URL = "https://api.elevenlabs.io/v1/text-to-speech"
+ELEVENLABS_MODEL = "eleven_multilingual_v2"
+# Голос по умолчанию: Daniel — Steady Broadcaster (диктор-документалист).
+# Список: api.elevenlabs.io/v1/voices (без ключа отдаёт premade).
+ELEVENLABS_VOICE = os.environ.get("ELEVENLABS_VOICE_ID",
+                                  "onwK4e9ZLuTAKqWW03F9")
 
 
 def _font(path, size, weight):
@@ -434,6 +443,37 @@ async def _tts_many(items, voice, tmpdir):
     return await asyncio.gather(*[one(i, s) for i, s in enumerate(items)])
 
 
+def _tts_elevenlabs(items, voice, tmpdir):
+    """ElevenLabs-озвучка (реалистичный голос, multilingual_v2, русский).
+
+    Возвращает список mp3-файлов как _tts_many. Параметры чанков
+    (rate/pitch/volume) у ElevenLabs нет — реализм берётся самой моделью;
+    voice = voice_id (если не передан/дефолтный — ELEVENLABS_VOICE).
+    """
+    import requests
+    key = os.environ.get("ELEVENLABS_API_KEY", "")
+    if not key:
+        raise RuntimeError("нет ELEVENLABS_API_KEY")
+    vid = voice if (voice and voice != VOICE_DEFAULT) else ELEVENLABS_VOICE
+    outs = []
+    for i, s in enumerate(items):
+        path = os.path.join(tmpdir, f"sec_{i}.mp3")
+        r = requests.post(
+            f"{ELEVENLABS_URL}/{vid}",
+            headers={"xi-api-key": key, "Content-Type": "application/json"},
+            json={"text": s["voice"],
+                  "model_id": ELEVENLABS_MODEL,
+                  "voice_settings": {"stability": 0.45,
+                                     "similarity_boost": 0.8}},
+            timeout=90)
+        r.raise_for_status()
+        with open(path, "wb") as fh:
+            fh.write(r.content)
+        outs.append(path)
+        print(f"[video] elevenlabs {i + 1}/{len(items)} ok ({len(r.content)} B)")
+    return outs
+
+
 def mp3_duration(ffmpeg, path):
     """Длительность mp3 в секундах через `ffmpeg -i` (без ffprobe)."""
     r = subprocess.run([ffmpeg, "-i", path], capture_output=True, text=True)
@@ -456,13 +496,17 @@ def make_voiceover_sections(ffmpeg, sections, voice, tmpdir):
     поэтому рассинхрона и «лагов» нет.
     """
     try:
-        import edge_tts  # noqa: F401
+        if os.environ.get("ELEVENLABS_API_KEY"):
+            print(f"[video] озвучка {len(sections)} секций "
+                  f"(elevenlabs {voice or ELEVENLABS_VOICE})...")
+            files = _tts_elevenlabs(sections, voice, tmpdir)
+        else:
+            import edge_tts  # noqa: F401
+            print(f"[video] озвучка {len(sections)} секций ({voice})...")
+            files = asyncio.run(_tts_many(sections, voice, tmpdir))
     except ImportError:
         print("[video] edge-tts не установлен — видео будет без звука")
         return None, _estimate_weights(sections)
-    print(f"[video] озвучка {len(sections)} секций ({voice})...")
-    try:
-        files = asyncio.run(_tts_many(sections, voice, tmpdir))
     except Exception as e:
         print(f"[video] TTS не удался ({type(e).__name__}: {e}) — видео будет без звука")
         traceback.print_exc()
@@ -579,8 +623,8 @@ def render_video(site, anchors, seconds, fps, out_silent, caption_on=True,
         ffmpeg, "-y",
         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
         "-framerate", str(fps), "-i", "-",
-        "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-        "-preset", "medium", "-crf", "20",
+        "-an", "-c:v", "libx265", "-pix_fmt", "yuv420p",
+        "-preset", "medium", "-crf", "28",
         out_silent,
     ]
     print(f"[video] рендер {n} кадров ({W}x{H}, {fps} fps, {seconds} c)...")

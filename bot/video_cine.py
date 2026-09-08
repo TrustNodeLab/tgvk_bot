@@ -46,7 +46,7 @@ except Exception:
     np = None
 
 W, H = 1080, 1920
-FPS_CINE = 24
+FPS_CINE = 60              # 60 fps: плавный монтаж (эталон TikTok HEVC 60fps; 120 — опция через --fps)
 SR = 24000  # частота дискретизации синтезированного звука
 
 EXO2 = vg.EXO2
@@ -2652,8 +2652,8 @@ def render_cinematic(shots, seconds, fps, out_silent, bpm, P, tmpdir="out/tmp_ci
           f"шотов: {len(shots)}...")
     cmd = [ffmpeg, "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
            "-s", f"{W}x{H}", "-framerate", str(fps), "-i", "-",
-           "-an", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-           "-preset", "medium", "-crf", "20", out_silent]
+           "-an", "-c:v", "libx265", "-pix_fmt", "yuv420p",
+           "-preset", "medium", "-crf", "28", out_silent]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     done = 0

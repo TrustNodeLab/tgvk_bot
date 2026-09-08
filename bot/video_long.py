@@ -35,7 +35,7 @@ try:
 except Exception:
     llm = None
 
-FPS_LONG = 24
+FPS_LONG = 60              # 60 fps: плавный монтаж (эталон TikTok HEVC 60fps; --fps 120 опция)
 CHARS_PER_SEC = 13.0  # русская речь Дмитрия, замер M19
 CHUNK_MAX = 140
 SUB_MAX = 70
