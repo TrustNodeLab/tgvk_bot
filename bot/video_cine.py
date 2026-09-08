@@ -23,6 +23,7 @@
 Новый режим включается через --style/--topic (см. video_gen.main).
 """
 
+import json
 import math
 import os
 import random
