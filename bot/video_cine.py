@@ -2787,7 +2787,8 @@ def extract_stock_frames(ffmpeg, clips, outdir, each=10):
     M25: возвращает СПИСОК КЛИПОВ, каждый — список кадров по времени
     ([[кадры клипа0], [кадры клипа1], ...]). Так каждый шот может «листать»
     кадры своего клипа и фон двигается как настоящее видео.
-    each — сколько кадров на клип (шаг ~1 сек).
+    each — сколько кадров на клип (шаг ~1 сек); S27: 16 кадров дают
+    интерполяции достаточно точек — фон плавный, а не слайд-шоу.
     """
     os.makedirs(outdir, exist_ok=True)
     clip_groups = []
@@ -2894,15 +2895,26 @@ def paint_stock_bg(clip_frames, cur, p, seed, P, cache):
     """
     if not clip_frames:
         raise KeyError("пустой клип")
-    idx = min(len(clip_frames) - 1, int(round(p * (len(clip_frames) - 1))))
+    # S27: плавный фон вместо стробоскопа — интерполяция между соседними
+    # кадрами клипа по прогрессу p (раньше был резкий round-выбор кадра,
+    # на 60fps фон дёргался как слайд-шоу).
+    n = len(clip_frames)
+    fpos = p * (n - 1)
+    i0 = min(n - 1, int(fpos))
+    i1 = min(n - 1, i0 + 1)
+    t = fpos - i0
     if cur not in cache:
-        cache[cur] = [None] * len(clip_frames)
+        cache[cur] = [None] * n
     cslot = cache[cur]
-    if cslot[idx] is None:
-        bg = Image.open(clip_frames[idx]).convert("RGB").resize((W, H), Image.BICUBIC)
-        bg = bg.point(lambda v: int(v * 0.5))  # гасим под текст/грейд
-        cslot[idx] = bg
-    img = cslot[idx].copy()
+    for i in (i0, i1):
+        if cslot[i] is None:
+            bg = Image.open(clip_frames[i]).convert("RGB").resize((W, H), Image.BICUBIC)
+            bg = bg.point(lambda v: int(v * 0.5))  # гасим под текст/грейд
+            cslot[i] = bg
+    if i0 == i1 or t < 0.05:
+        img = cslot[i0].copy()
+    else:
+        img = Image.blend(cslot[i0], cslot[i1], t)
     img = _vignette(img, 0.6)
     img = _grain(img, seed % (2 ** 31), 380, 22)
     return img
@@ -3485,7 +3497,7 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
                          if all_q else ([], []))
         if clips and clip_q:
             clip_groups = extract_stock_frames(
-                ffmpeg, clips, os.path.join(tmpdir, "stock_frames"))
+                ffmpeg, clips, os.path.join(tmpdir, "stock_frames"), each=16)
             if clip_groups:
                 stock = {"frames": clip_groups, "cache": {}}
                 # M26: ВСЕ шоты получают живой фон, но клип подбирается
