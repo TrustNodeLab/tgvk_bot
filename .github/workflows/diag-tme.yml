@@ -11,24 +11,33 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install requests -q
-      - name: Probe t.me and cdn from runner
+      - name: Compare UA + real parser from repo
         env:
           PYTHONIOENCODING: utf-8
         run: |
           python - <<'EOF'
-          import requests
-          H = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
-               "Accept-Language": "en-US,en;q=0.9"}
-          r = requests.get("https://t.me/s/aiartcommunity", headers=H, timeout=10)
-          print("t.me status:", r.status_code, "len:", len(r.text))
-          # extract cdn link
-          import re
-          m = re.findall(r'https://cdn[0-9]+\.telesco\.pe/file/[A-Za-z0-9_-]+', r.text)
-          print("cdn links found:", len(m))
-          if m:
-              ir = requests.get(m[0], headers=H, timeout=10)
-              print("cdn status:", ir.status_code, "bytes:", len(ir.content))
-          # another channel
-          r2 = requests.get("https://t.me/s/neuralart", headers=H, timeout=10)
-          print("neuralart:", r2.status_code, "len:", len(r2.text))
+          import requests, re, sys
+          sys.path.insert(0, 'bot')
+          from multigroups import parse_tg_art_blocks, REQUEST_HEADERS
+          ua_bot = REQUEST_HEADERS
+          ua_chr = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"}
+          print("REQUEST_HEADERS:", REQUEST_HEADERS)
+          for name, h in [("BOT-UA", ua_bot), ("CHROME-UA", ua_chr)]:
+              try:
+                  r = requests.get("https://t.me/s/aiartcommunity", headers=h, timeout=10)
+                  cdn = len(re.findall(r'https://cdn[0-9]+\.telesco\.pe/file/[A-Za-z0-9_-]+', r.text))
+                  wraps = r.text.count('tgme_widget_message_wrap')
+                  photos = r.text.count('tgme_widget_message_photo')
+                  blocks = parse_tg_art_blocks(r.text, 'aiartcommunity')
+                  print(f"{name}: status={r.status_code} len={len(r.text)} cdn={cdn} wraps={wraps} photos={photos} parsed_blocks={len(blocks)}")
+              except Exception as e:
+                  print(f"{name}: EXC {type(e).__name__}: {e}")
+          # also the other channels with bot UA
+          for ch in ["neuralart", "promptart", "aipainting", "psychedelic_ai", "midjourney"]:
+              try:
+                  r = requests.get(f"https://t.me/s/{ch}", headers=ua_bot, timeout=10)
+                  blocks = parse_tg_art_blocks(r.text, ch)
+                  print(f"{ch}: status={r.status_code} blocks={len(blocks)}")
+              except Exception as e:
+                  print(f"{ch}: EXC {type(e).__name__}: {e}")
           EOF
