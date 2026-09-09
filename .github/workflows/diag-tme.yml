@@ -11,7 +11,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Print effective mg_config from KV
+      - name: Inspect used-guids + fetch behavior in mg context
         env:
           BOT_WORKER_URL: ${{ secrets.BOT_WORKER_URL }}
           BOT_WORKER_TOKEN: ${{ secrets.BOT_WORKER_TOKEN }}
@@ -21,10 +21,14 @@ jobs:
           import sys, os
           sys.path.insert(0, 'bot'); os.chdir('bot')
           import multigroups as mg
-          cfg = mg.load_mg_config()
-          print("EFFECTIVE_CHANNELS:", cfg.get("channels"))
-          print("EFFECTIVE_WINDOWS:", cfg.get("windows"))
-          # raw KV read
-          raw = mg._kv_get(mg.MG_CONFIG_KEY)
-          print("RAW_MG_CONFIG:", raw)
+          used = mg.load_used_guids('lostart')
+          print("USED_LOSTART type:", type(used).__name__, "size:", len(used))
+          print("USED_LOSTART sample:", list(used)[:6])
+          art = mg.fetch_art_from_channel('aiartcommunity')
+          print("FETCH_RESULT:", (art or {}).get("post"), (art or {}).get("time"), "bytes:", len((art or {}).get("bytes") or b""))
+          if art:
+              id_key = f"aiartcommunity:{art['post']}"
+              print("ID_KEY:", id_key, "in_used:", id_key in used)
+              gif = mg.to_gif_bytes(art["bytes"])
+              print("GIF_OK:", bool(gif), len(gif or b""))
           EOF
