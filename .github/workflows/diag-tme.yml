@@ -11,7 +11,7 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Inspect used-guids + fetch behavior in mg context
+      - name: Run mg_tick with real secrets (lostart slot)
         env:
           BOT_WORKER_URL: ${{ secrets.BOT_WORKER_URL }}
           BOT_WORKER_TOKEN: ${{ secrets.BOT_WORKER_TOKEN }}
@@ -21,14 +21,12 @@ jobs:
           import sys, os
           sys.path.insert(0, 'bot'); os.chdir('bot')
           import multigroups as mg
-          used = mg.load_used_guids('lostart')
-          print("USED_LOSTART type:", type(used).__name__, "size:", len(used))
-          print("USED_LOSTART sample:", list(used)[:6])
-          art = mg.fetch_art_from_channel('aiartcommunity')
-          print("FETCH_RESULT:", (art or {}).get("post"), (art or {}).get("time"), "bytes:", len((art or {}).get("bytes") or b""))
-          if art:
-              id_key = f"aiartcommunity:{art['post']}"
-              print("ID_KEY:", id_key, "in_used:", id_key in used)
-              gif = mg.to_gif_bytes(art["bytes"])
-              print("GIF_OK:", bool(gif), len(gif or b""))
+          cfg = mg.load_mg_config()
+          print("CFG_CHANNELS:", cfg["channels"])
+          for g in mg.MULTI_GROUPS:
+              try:
+                  res = mg.publish_multi_group(g)
+                  print(f"MG_RESULT {g['slug']}: {res}")
+              except Exception as e:
+                  print(f"MG_RESULT {g['slug']}: EXC {e}")
           EOF
