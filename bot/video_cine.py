@@ -23,6 +23,7 @@
 Новый режим включается через --style/--topic (см. video_gen.main).
 """
 
+import glob
 import json
 import math
 import os
@@ -2781,33 +2782,34 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
     return clips, clip_q
 
 
-def extract_stock_frames(ffmpeg, clips, outdir, each=10):
+def extract_stock_frames(ffmpeg, clips, outdir, fps=10, max_frames=260):
     """Режет из каждого клипа последовательные кадры для фона.
 
-    M25: возвращает СПИСОК КЛИПОВ, каждый — список кадров по времени
-    ([[кадры клипа0], [кадры клипа1], ...]). Так каждый шот может «листать»
-    кадры своего клипа и фон двигается как настоящее видео.
-    each — сколько кадров на клип (шаг ~1 сек); S27: 16 кадров дают
-    интерполяции достаточно точек — фон плавный, а не слайд-шоу.
+    M25/S27: возвращает СПИСОК КЛИПОВ, каждый — список кадров по времени
+    ([[кадры клипа0], [кадры клипа1], ...]) для живого фона.
+    S27.5: ОДИН ffmpeg-проход на клип с сеткой fps кадров/сек (по умолчанию
+    10) — плотная выборка РЕАЛЬНЫХ кадров видео, а не одиночные frame'ы
+    каждую секунду (16 штук на клип давали стробоскоп + blend далёких
+    кадров = двоение). Paint_stock_bg проигрывает окно ровно длительности
+    шота, поэтому фон движется в НАТУРАЛЬНОМ темпе.
     """
     os.makedirs(outdir, exist_ok=True)
     clip_groups = []
     for c in clips:
-        group = []
-        for i in range(each):
-            out = os.path.join(outdir, f"st_g{len(clip_groups)}_{i:03d}.png")
-            r = subprocess.run(
-                [ffmpeg, "-y", "-ss", str(float(i)), "-i", c,
-                 "-frames:v", "1", "-vf", "scale=540:960", out],
-                capture_output=True)
-            if r.returncode == 0 and os.path.exists(out):
-                group.append(out)
-            else:
-                break
-        if group:
+        gid = len(clip_groups)
+        pat = os.path.join(outdir, f"st_g{gid}_%04d.png")
+        r = subprocess.run(
+            [ffmpeg, "-y", "-i", c,
+             "-vf", f"scale=540:960,fps={fps}",
+             "-frames:v", str(max_frames), pat],
+            capture_output=True)
+        group = sorted(glob.glob(os.path.join(outdir, f"st_g{gid}_*.png")))
+        if r.returncode == 0 and len(group) >= 2:
             clip_groups.append(group)
     nf = sum(len(g) for g in clip_groups)
-    print(f"[cine] сток-кадров: {nf} из {len(clip_groups)} клипов")
+    print(f"[cine] сток-кадров: {nf} из {len(clip_groups)} клипов "
+          f"(fps={fps}, ~{max(len(g) for g in clip_groups) if clip_groups else 0} "
+          f"макс на клип)")
     return clip_groups
 
 
@@ -2886,20 +2888,27 @@ def _assign_stock_clips(shots, clip_groups, clip_q, topic):
     return assign
 
 
-def paint_stock_bg(clip_frames, cur, p, seed, P, cache):
-    """Живой фон: cover-fit кадра клипа, выбранного по прогрессу p (движение).
+def paint_stock_bg(clip_frames, cur, p, seed, P, cache, shot_sec=1.0, fps=10):
+    """Живой фон: cover-fit кадр клипа по прогрессу p.
 
-    M25: clip_frames — список кадров ОДНОГО клипа (последовательные по времени).
-    cur — ключ кэша (имя клипа). p (0..1) выбирает кадр -> внутри шота фон
-    «двигается» как настоящее видео, а не стоит статичной картинкой.
+    M25: clip_frames — список кадров ОДНОГО клипа (последовательные по
+    времени, ~fps кадров/сек из extract_stock_frames).
+    S27.5: шот проигрывает РОВНО свою длительность видеоклипа в
+    натуральном темпе — окно кадров = shot_sec * fps, сдвинутое по хешу
+    (скользящее окно, разные шоты показывают разные участки клипа).
+    Между кадрами линейная интерполяция (fps=10 даёт плотную сетку:
+    движение плавное, без стробоскопа и без двоения далёких кадров).
+    cur — ключ кэша (имя клипа). p (0..1) выбирает кадр внутри окна.
     """
     if not clip_frames:
         raise KeyError("пустой клип")
-    # S27: плавный фон вместо стробоскопа — интерполяция между соседними
-    # кадрами клипа по прогрессу p (раньше был резкий round-выбор кадра,
-    # на 60fps фон дёргался как слайд-шоу).
     n = len(clip_frames)
-    fpos = p * (n - 1)
+    # окно в кадрах = ровно длительность шота в натуральном темпе
+    span = max(2, min(n, int(round(shot_sec * fps))))
+    # скользящее окно: начало сдвинуто по хешу (повторяемо, но разные
+    # шоты/клипы показывают разные участки видео; конец клипа не выходим)
+    shift = (seed * 2654435761) % max(1, n - span + 1)
+    fpos = shift + p * (span - 1)
     i0 = min(n - 1, int(fpos))
     i1 = min(n - 1, i0 + 1)
     t = fpos - i0
@@ -3117,7 +3126,7 @@ def render_frame(shot, p, fonts, P, stock=None):
             entry[0], str) else None
         if clip:
             img = paint_stock_bg(clip, si, pw, shot.get("seed", 1), P,
-                                 stock["cache"])
+                                 stock["cache"], shot.get("dur", 1.0))
         elif isinstance(entry, str):
             img = paint_stock_bg([entry], si, 0.0, shot.get("seed", 1), P,
                                  stock["cache"])
@@ -3497,7 +3506,7 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
                          if all_q else ([], []))
         if clips and clip_q:
             clip_groups = extract_stock_frames(
-                ffmpeg, clips, os.path.join(tmpdir, "stock_frames"), each=16)
+                ffmpeg, clips, os.path.join(tmpdir, "stock_frames"))
             if clip_groups:
                 stock = {"frames": clip_groups, "cache": {}}
                 # M26: ВСЕ шоты получают живой фон, но клип подбирается
