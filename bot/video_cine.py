@@ -2771,7 +2771,7 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
                 break
             try:
                 url = ("https://api.pexels.com/videos/search?" + _up.urlencode(
-                    {"query": q, "per_page": 8, "orientation": orientation,
+                    {"query": q, "per_page": 4, "orientation": orientation,
                      "size": "medium"}))
                 req = _rq.Request(url, headers={"Authorization": pexels_key,
                                                 "User-Agent": _UA})
@@ -2943,46 +2943,50 @@ def fetch_stock_images(tmpdir, queries, max_images=12, orientation="portrait"):
     return image_paths, image_queries
 
 
-def _ken_burns(img_path, p, seed, W, H):
+def _ken_burns(img_path, p, seed, W, H, cache=None):
     """S28: Ken Burns — движение камеры по статичной картинке.
 
     Масштабирует изображение до 1.3x viewport, затем скользящее окно
     (панорама + зум) по прогрессу p (0..1). Хеш seed определяет
     направление/тип движения (зум-ин, зум-аут, панорама).
+    Кэширует базовое изображение в cache[img_path] для производительности.
     Возвращает RGB PIL Image размером (W, H).
     """
-    img = Image.open(img_path).convert("RGB")
-    # масштабируем до 1.3x — запас для панорамы/зума
-    scale = 1.3
-    sw, sh = int(W * scale), int(H * scale)
-    img = img.resize((sw, sh), Image.BICUBIC)
-    rnd = random.Random(seed)
+    # кэш: не открываем/ресайзим файл каждый кадр
+    cache = cache or {}
+    if img_path not in cache:
+        img = Image.open(img_path).convert("RGB")
+        scale = 1.3
+        sw, sh = int(W * scale), int(H * scale)
+        cache[img_path] = img.resize((sw, sh), Image.BICUBIC)
+    base = cache[img_path]
+    sw, sh = base.size
     # тип движения: 0=зум-ин, 1=зум-аут, 2=панорама H, 3=панорама V
     motion = seed % 4
     if motion == 0:  # зум-ин: от 1.3x к 1.0x
         z = 1.0 + 0.3 * (1.0 - p)
         zw, zh = int(W * z), int(H * z)
-        img = img.resize((zw, zh), Image.BICUBIC)
+        tmp = base.resize((zw, zh), Image.BICUBIC)
         cx, cy = zw // 2, zh // 2
-        img = img.crop((cx - W // 2, cy - H // 2, cx - W // 2 + W, cy - H // 2 + H))
+        img = tmp.crop((cx - W // 2, cy - H // 2, cx - W // 2 + W, cy - H // 2 + H))
     elif motion == 1:  # зум-аут: от 1.0x к 1.3x
         z = 1.0 + 0.3 * p
         zw, zh = int(W * z), int(H * z)
-        img = img.resize((zw, zh), Image.BICUBIC)
+        tmp = base.resize((zw, zh), Image.BICUBIC)
         cx, cy = zw // 2, zh // 2
-        img = img.crop((cx - W // 2, cy - H // 2, cx - W // 2 + W, cy - H // 2 + H))
+        img = tmp.crop((cx - W // 2, cy - H // 2, cx - W // 2 + W, cy - H // 2 + H))
     elif motion == 2:  # панорама горизонтальная
         max_dx = sw - W
         dx = int(p * max_dx)
-        img = img.crop((dx, 0, dx + W, H))
+        img = base.crop((dx, 0, dx + W, H))
     else:  # панорама вертикальная
         max_dy = sh - H
         dy = int(p * max_dy)
-        img = img.crop((0, dy, W, dy + H))
+        img = base.crop((0, dy, W, dy + H))
     return img
 
 
-def extract_stock_frames(ffmpeg, clips, outdir, fps=20, max_frames=520):
+def extract_stock_frames(ffmpeg, clips, outdir, fps=15, max_frames=300):
     """Режет из каждого клипа последовательные кадры для фона.
 
     M25/S27: возвращает СПИСОК КЛИПОВ, каждый — список кадров по времени
@@ -3095,7 +3099,7 @@ def _assign_stock_clips(shots, clip_groups, clip_q, topic):
     return assign
 
 
-def paint_stock_bg(clip_frames, cur, p, seed, P, cache, shot_sec=1.0, fps=20):
+def paint_stock_bg(clip_frames, cur, p, seed, P, cache, shot_sec=1.0, fps=15):
     """Живой фон: cover-fit кадр клипа по прогрессу p.
 
     M25: clip_frames — список кадров ОДНОГО клипа (последовательные по
@@ -3331,7 +3335,8 @@ def render_frame(shot, p, fonts, P, stock=None):
     if stock and si is not None and shot.get("_is_image"):
         images = stock.get("images") or []
         if si < len(images):
-            img = _ken_burns(images[si], pw, shot.get("seed", 1), W, H)
+            img = _ken_burns(images[si], pw, shot.get("seed", 1), W, H,
+                             stock.get("cache"))
         else:
             img = paint_scene(shot["visual"], pw, shot.get("seed", 1), P, fonts,
                               shot.get("accent", "accent"))
@@ -3728,11 +3733,11 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
                     for q in qs:
                         if q not in all_q:
                             all_q.append(q)
-        all_q = all_q[:20]
-        clips, clip_q = (fetch_stock_clips(tmpdir, all_q, max_clips=24)
+        all_q = all_q[:12]
+        clips, clip_q = (fetch_stock_clips(tmpdir, all_q, max_clips=16)
                          if all_q else ([], []))
         # S28: скачиваем КАРТИНКИ для Ken Burns (fallback для шотов без клипов)
-        img_paths, img_queries = (fetch_stock_images(tmpdir, all_q, max_images=16)
+        img_paths, img_queries = (fetch_stock_images(tmpdir, all_q, max_images=8)
                                   if all_q else ([], []))
         if clips and clip_q:
             clip_groups = extract_stock_frames(
