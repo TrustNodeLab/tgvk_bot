@@ -2872,6 +2872,116 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
     return clips, clip_q
 
 
+def fetch_stock_images(tmpdir, queries, max_images=12, orientation="portrait"):
+    """S28: Скачивает сток-ИЗОБРАЖЕНИЯ (не видео) с Pexels для Ken Burns.
+
+    Возвращает (image_paths, image_queries) — image_paths[i] = путь к PNG,
+    image_queries[i] = поисковый запрос. Используется как fallback когда
+    видео-клипы не совпадают с темой шота.
+    """
+    import urllib.request as _rq
+    import urllib.parse as _up
+    import json as _json
+    _UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/126.0 Safari/537.36")
+    def _dl(link, dst):
+        req = _rq.Request(link, headers={"User-Agent": _UA})
+        with _rq.urlopen(req, timeout=30) as fh, open(dst, "wb") as out:
+            out.write(fh.read())
+        return os.path.getsize(dst)
+    pexels_key = os.environ.get("PEXELS_API_KEY", "").strip()
+    if not pexels_key:
+        return [], []
+    idir = os.path.join(tmpdir, "stock_images")
+    os.makedirs(idir, exist_ok=True)
+    image_paths = []
+    image_queries = []
+    seen_sizes = set()
+    for qi, q in enumerate(list(queries or [])):
+        if len(image_paths) >= max_images:
+            break
+        try:
+            url = ("https://api.pexels.com/v1/search?" + _up.urlencode(
+                {"query": q, "per_page": 5, "orientation": orientation,
+                 "size": "medium"}))
+            req = _rq.Request(url, headers={"Authorization": pexels_key,
+                                            "User-Agent": _UA})
+            data = _json.load(_rq.urlopen(req, timeout=20))
+            photos = data.get("photos") or []
+            if not photos:
+                continue
+            for pi, photo in enumerate(photos):
+                if len(image_paths) >= max_images:
+                    break
+                # предпочитаем large (1080px) или original
+                src = (photo.get("src", {}).get("large")
+                       or photo.get("src", {}).get("original")
+                       or photo.get("src", {}).get("portrait"))
+                if not src:
+                    continue
+                dst = os.path.join(idir, f"img_{qi}_{pi}.jpg")
+                if os.path.exists(dst):
+                    continue
+                try:
+                    _dl(src, dst)
+                except Exception:
+                    continue
+                sz = os.path.getsize(dst)
+                if sz <= 10000 or sz in seen_sizes:
+                    try:
+                        os.remove(dst)
+                    except OSError:
+                        pass
+                    continue
+                seen_sizes.add(sz)
+                image_paths.append(dst)
+                image_queries.append(q)
+                print(f"[cine] pexels img {qi}_{pi}: {q} ({sz//1024} KB)")
+        except Exception as e:
+            print(f"[cine] pexels img пропущен ({q}): {type(e).__name__}")
+            continue
+    return image_paths, image_queries
+
+
+def _ken_burns(img_path, p, seed, W, H):
+    """S28: Ken Burns — движение камеры по статичной картинке.
+
+    Масштабирует изображение до 1.3x viewport, затем скользящее окно
+    (панорама + зум) по прогрессу p (0..1). Хеш seed определяет
+    направление/тип движения (зум-ин, зум-аут, панорама).
+    Возвращает RGB PIL Image размером (W, H).
+    """
+    img = Image.open(img_path).convert("RGB")
+    # масштабируем до 1.3x — запас для панорамы/зума
+    scale = 1.3
+    sw, sh = int(W * scale), int(H * scale)
+    img = img.resize((sw, sh), Image.BICUBIC)
+    rnd = random.Random(seed)
+    # тип движения: 0=зум-ин, 1=зум-аут, 2=панорама H, 3=панорама V
+    motion = seed % 4
+    if motion == 0:  # зум-ин: от 1.3x к 1.0x
+        z = 1.0 + 0.3 * (1.0 - p)
+        zw, zh = int(W * z), int(H * z)
+        img = img.resize((zw, zh), Image.BICUBIC)
+        cx, cy = zw // 2, zh // 2
+        img = img.crop((cx - W // 2, cy - H // 2, cx - W // 2 + W, cy - H // 2 + H))
+    elif motion == 1:  # зум-аут: от 1.0x к 1.3x
+        z = 1.0 + 0.3 * p
+        zw, zh = int(W * z), int(H * z)
+        img = img.resize((zw, zh), Image.BICUBIC)
+        cx, cy = zw // 2, zh // 2
+        img = img.crop((cx - W // 2, cy - H // 2, cx - W // 2 + W, cy - H // 2 + H))
+    elif motion == 2:  # панорама горизонтальная
+        max_dx = sw - W
+        dx = int(p * max_dx)
+        img = img.crop((dx, 0, dx + W, H))
+    else:  # панорама вертикальная
+        max_dy = sh - H
+        dy = int(p * max_dy)
+        img = img.crop((0, dy, W, dy + H))
+    return img
+
+
 def extract_stock_frames(ffmpeg, clips, outdir, fps=20, max_frames=520):
     """Режет из каждого клипа последовательные кадры для фона.
 
@@ -3015,13 +3125,13 @@ def paint_stock_bg(clip_frames, cur, p, seed, P, cache, shot_sec=1.0, fps=20):
     for i in (i0, i1):
         if cslot[i] is None:
             bg = Image.open(clip_frames[i]).convert("RGB").resize((W, H), Image.BICUBIC)
-            bg = bg.point(lambda v: int(v * 0.5))  # гасим под текст/грейд
+            bg = bg.point(lambda v: int(v * 0.7))  # S28: осветление (было 0.5 — слишком темно)
             cslot[i] = bg
     if i0 == i1 or t < 0.05:
         img = cslot[i0].copy()
     else:
         img = Image.blend(cslot[i0], cslot[i1], t)
-    img = _vignette(img, 0.6)
+    img = _vignette(img, 0.35)  # S28: мягче виньетка (было 0.6)
     img = _grain(img, seed % (2 ** 31), 380, 22)
     return img
 
@@ -3209,13 +3319,23 @@ def _assemble_voice(ffmpeg, tmpdir, items, total, sr=SR):
 def render_frame(shot, p, fonts, P, stock=None):
     """Один кадр тела шота: сцена + камера + типографика.
 
-    stock: {"frames": [ [кадры клипа0], [кадры клипа1], ...], "cache": {}}
+    stock: {"frames": [ [кадры клипа0], [кадры клипа1], ...], "cache": {},
+            "images": [path1, ...], "img_queries": [...]}
     — если шоту назначен живой фон (shot["stock"] = индекс КЛИПА), рисуем
     сток + субтитр вместо painter'а. p выбирает кадр внутри клипа (движение).
+    S28: если шот — картинка (shot["_is_image"]), рисуем Ken Burns эффект.
     """
     pw = warp_progress(p, shot.get("speed", (1.0, 1.0)))
     si = shot.get("stock")
-    if stock and si is not None:
+    # S28: Ken Burns для статичных картинок
+    if stock and si is not None and shot.get("_is_image"):
+        images = stock.get("images") or []
+        if si < len(images):
+            img = _ken_burns(images[si], pw, shot.get("seed", 1), W, H)
+        else:
+            img = paint_scene(shot["visual"], pw, shot.get("seed", 1), P, fonts,
+                              shot.get("accent", "accent"))
+    elif stock and si is not None:
         entry = stock["frames"][si] if si < len(stock["frames"]) else None
         # M25: вложенный формат = [ [кадры клипа], ... ] (живое движение);
         # плоский (video_long) = [кадр,...] — одиночный статичный фон.
@@ -3289,7 +3409,7 @@ def render_cinematic(shots, seconds, fps, out_silent, bpm, P, tmpdir="out/tmp_ci
           f"шотов: {len(shots)}...")
     cmd = [ffmpeg, "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
            "-s", f"{W}x{H}", "-framerate", str(fps), "-i", "-",
-           "-vf", "eq=contrast=1.06:saturation=1.10,vignette=PI/5",
+           "-vf", "eq=contrast=1.02:saturation=1.05",
            "-an", "-c:v", "libx265", "-pix_fmt", "yuv420p",
            "-preset", "medium", "-crf", "28", out_silent]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
@@ -3578,12 +3698,13 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
     # QC-чеклист — по финальным длительностям, до рендера
     rep = qc_shots(shots, seconds)
     # --- M24: живые сток-фоны — запросы ИЗ темы (а не из фиксированного пресета).
+    # S28: Ken Burns эффект — статичные картинки с движением камеры.
     # Без PEXELS_API_KEY / при ошибке — только painters, ничего не падает.
     stock = None
     try:
         themes = extract_visual_theme(topic)
         queries = generate_stock_queries(topic, themes, max_q=6)
-        # também добавляем queries из стиля как fallback
+        # también добавляем queries из стиля как fallback
         style_q = st.get("stock_queries") or ()
         all_q = list(queries)
         for q in style_q:
@@ -3610,11 +3731,15 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
         all_q = all_q[:20]
         clips, clip_q = (fetch_stock_clips(tmpdir, all_q, max_clips=24)
                          if all_q else ([], []))
+        # S28: скачиваем КАРТИНКИ для Ken Burns (fallback для шотов без клипов)
+        img_paths, img_queries = (fetch_stock_images(tmpdir, all_q, max_images=16)
+                                  if all_q else ([], []))
         if clips and clip_q:
             clip_groups = extract_stock_frames(
                 ffmpeg, clips, os.path.join(tmpdir, "stock_frames"))
             if clip_groups:
-                stock = {"frames": clip_groups, "cache": {}}
+                stock = {"frames": clip_groups, "cache": {},
+                         "images": img_paths, "img_queries": img_queries}
                 # M26: ВСЕ шоты получают живой фон, но клип подбирается
                 # ПО КОНТЕКСТУ шота (его реплика/вижуал), а не по кругу —
                 # картинка соответствует тому, что говорит диктор.
@@ -3622,10 +3747,20 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
                 for idx, s in enumerate(shots):
                     s["stock"] = assign.get(idx, idx % len(clip_groups))
                 print(f"[cine] живые фоны назначены ВСЕМ {len(shots)} шотам "
-                      f"({len(clip_groups)} клипов, запросы: "
-                      f"{', '.join(all_q[:3])}...)")
+                      f"({len(clip_groups)} клипов, {len(img_paths)} картинок, "
+                      f"запросы: {', '.join(all_q[:3])}...)")
             else:
                 stock = None
+        elif img_paths:
+            # S28: нет видео-клипов, но есть картинки — Ken Burns
+            stock = {"frames": [], "cache": {},
+                     "images": img_paths, "img_queries": img_queries}
+            # назначаем картинки шотам по кругу
+            for idx, s in enumerate(shots):
+                s["stock"] = idx % len(img_paths)
+                s["_is_image"] = True
+            print(f"[cine] Ken Burns: {len(img_paths)} картинок назначены "
+                  f"{len(shots)} шотам")
         else:
             stock = None
     except Exception as e:
