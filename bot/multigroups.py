@@ -186,6 +186,13 @@ def load_mg_config() -> dict:
                         cfg["feeds"][lang] = ok
         if isinstance(saved.get("channels"), list):
             ok = [c for c in saved["channels"] if isinstance(c, str) and re.match(r"^[\w\d_]+$", c)]
+            # Код авторитетен: устаревший KV (например, с aiart, который
+            # выключен в коде) фильтруется по allowlist ART_CHANNELS, а
+            # недостающие (midjourney) дополняются — каналы не теряются.
+            ok = [c for c in ok if c in ART_CHANNELS]
+            for c in ART_CHANNELS:
+                if c not in ok:
+                    ok.append(c)
             if ok:
                 cfg["channels"] = ok
     except Exception as e:  # битый конфиг — работаем на дефолтах
@@ -564,7 +571,13 @@ def parse_tg_art_blocks(html_: str, channel: str) -> list:
     return out
 
 
-def fetch_art_from_channel(channel: str) -> dict:
+def fetch_art_from_channel(channel: str, used: set = None) -> dict:
+    """Берёт первый НЕ использованный пост канала (used = guid-ключи).
+
+    Раньше всегда возвращал самый свежий пост — если он уже публиковался,
+    build_art_payload скипал канал, и при занятых первых постах всех каналов
+    падал с «нет доступных артов». Теперь итерирует блоки, пропуская used.
+    """
     url = f"https://t.me/s/{channel}"
     try:
         r = requests.get(url, headers=REQUEST_HEADERS, timeout=10)
@@ -574,7 +587,11 @@ def fetch_art_from_channel(channel: str) -> dict:
         blocks = parse_tg_art_blocks(r.text, channel)
         if not blocks:
             return None
+        skipped_used = 0
         for block in blocks[:8]:
+            if used and f"{channel}:{block['post']}" in used:
+                skipped_used += 1
+                continue
             try:
                 ir = requests.get(
                     block["image"],
@@ -589,6 +606,8 @@ def fetch_art_from_channel(channel: str) -> dict:
                 return {**block, "bytes": data}
             except Exception:
                 continue
+        if skipped_used:
+            print(f"[multigroups] t.me/s/{channel}: все первые {skipped_used} постов уже использованы")
     except Exception as e:
         print(f"[multigroups] t.me/s/{channel}: {e}")
     return None
@@ -665,12 +684,10 @@ def build_art_payload(group: dict, cfg: dict) -> dict:
     """Готовит арт: подпись + вложение. Не постит."""
     used = load_used_guids(group["slug"])
     for channel in cfg["channels"]:
-        art = fetch_art_from_channel(channel)
+        art = fetch_art_from_channel(channel, used)
         if not art:
             continue
         id_key = f"{channel}:{art['post']}"
-        if id_key in used:
-            continue
         gif = to_gif_bytes(art["bytes"])
         if not gif:
             continue
