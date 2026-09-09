@@ -11,11 +11,8 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Run mg_tick exactly like prod
+      - name: Print effective mg_config from KV
         env:
-          VK_TOKEN_LOSTART: ${{ secrets.VK_TOKEN_LOSTART }}
-          VK_TOKEN_DGC: ${{ secrets.VK_TOKEN_DGC }}
-          VK_TOKEN_LOSTLINK: ${{ secrets.VK_TOKEN_LOSTLINK }}
           BOT_WORKER_URL: ${{ secrets.BOT_WORKER_URL }}
           BOT_WORKER_TOKEN: ${{ secrets.BOT_WORKER_TOKEN }}
           PYTHONIOENCODING: utf-8
@@ -24,8 +21,10 @@ jobs:
           import sys, os
           sys.path.insert(0, 'bot'); os.chdir('bot')
           import multigroups as mg
-          print("TOKEN_LOSTART set:", bool(os.environ.get('VK_TOKEN_LOSTART')))
-          res = mg.mg_tick()
-          print("MG_TICK_RESULT:", res)
-          print("SUMMARY:", mg.mg_summary(res).replace(chr(10), " | "))
+          cfg = mg.load_mg_config()
+          print("EFFECTIVE_CHANNELS:", cfg.get("channels"))
+          print("EFFECTIVE_WINDOWS:", cfg.get("windows"))
+          # raw KV read
+          raw = mg._kv_get(mg.MG_CONFIG_KEY)
+          print("RAW_MG_CONFIG:", raw)
           EOF
