@@ -740,6 +740,10 @@ def main():
                     help="свой сценарий текстом (длина видео = длина озвучки)")
     ap.add_argument("--script-file", default="",
                     help="файл со сценарием (текст статьи)")
+    ap.add_argument("--from-post", default="",
+                    help="файл с исходным текстом поста: LLM (GigaChat по "
+                         "умолчанию) перепишет его в сценарий видео; при сбое "
+                         "используется исходный текст как есть")
     ap.add_argument("--style", default="default",
                     help="стиль: default (скролл сайта, как раньше) или "
                          "cybersecurity_cinematic / cinematic / documentary / "
@@ -755,6 +759,19 @@ def main():
     if a.script_file:
         with open(a.script_file, encoding="utf-8") as fh:
             script = fh.read()
+    if a.from_post:
+        # S27: пост -> LLM рерайт в сценарий (GigaChat по умолчанию).
+        with open(a.from_post, encoding="utf-8") as fh:
+            post_text = fh.read()
+        import llm
+        rewritten = llm.rewrite_post_to_script(post_text, "short")
+        if rewritten:
+            print("[video] сценарий сгенерирован LLM из поста "
+                  f"({len(rewritten)} симв.)")
+            script = rewritten
+        else:
+            print("[video] LLM-рерайт недоступен — исходный пост как сценарий")
+            script = post_text
     if a.style != "default":
         # --- cinematic-режим: тема -> shot list -> монтаж -> MP4.
         # M17: со сценарием — видео ПО СТАТЬЕ (диктор читает статью).

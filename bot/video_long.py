@@ -596,6 +596,10 @@ def main(argv=None):
     ap.add_argument("--edl-out", default="")
     ap.add_argument("--edl-in", default="")
     ap.add_argument("--script-file", default="")
+    ap.add_argument("--from-post", default="",
+                    help="файл с исходным текстом поста: LLM (GigaChat по "
+                         "умолчанию) перепишет его в длинный сценарий; при "
+                         "сбое используется исходный текст как есть")
     ap.add_argument("--provider", default=None)
     ap.add_argument("--seed", type=int, default=7)
     a = ap.parse_args(argv)
@@ -604,6 +608,20 @@ def main(argv=None):
     if a.script_file:
         with open(a.script_file, encoding="utf-8") as fh:
             script_text = fh.read()
+    if a.from_post:
+        # S27: пост -> LLM рерайт в длинный сценарий (GigaChat по умолчанию).
+        with open(a.from_post, encoding="utf-8") as fh:
+            post_text = fh.read()
+        import llm
+        rewritten = llm.rewrite_post_to_script(post_text, "long",
+                                               a.provider)
+        if rewritten:
+            print("[long] длинный сценарий сгенерирован LLM из поста "
+                  f"({len(rewritten)} симв.)")
+            script_text = rewritten
+        else:
+            print("[long] LLM-рерайт недоступен — исходный пост как сценарий")
+            script_text = post_text
     generate_long(topic=a.topic, minutes=a.minutes, format=fmt, out=a.out,
                   fps=a.fps, tmpdir=a.tmpdir, voice=a.voice,
                   no_audio=a.no_audio, edl_out=a.edl_out or None,
