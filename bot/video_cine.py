@@ -301,6 +301,96 @@ _TOPIC_STOCK_KW = {
     "encrypt":   ["encryption concept lock", "secure data abstract"],
 }
 
+# S28: per-shot voice text → stock queries ( CONTENT-LEVEL matching ).
+# Каждый шот получает запросы ПО ТОМУ, ЧТО ГОВОРИТ диктор, а не по общей теме.
+_VOICE_STOCK_KW = {
+    # вход / авторизация
+    "сообщени":   ["smartphone notification dark", "message notification screen"],
+    "звонок":     ["phone call screen dark", "incoming call mobile"],
+    "номер":      ["phone dial pad close up", "unknown caller screen"],
+    "незнаком":   ["unknown caller screen", "strange phone number"],
+    "страница":   ["login web page screen", "website login form"],
+    "вход":       ["login form close up", "sign in screen dark"],
+    "нажати":     ["finger tapping screen", "touch screen click"],
+    "клик":       ["mouse click close up", "cursor clicking button"],
+    "письмо":     ["email inbox screen dark", "phishing email inbox"],
+    "почт":       ["email notification screen", "inbox notification"],
+    "ссылк":      ["link click screen", "suspicious url browser"],
+    "адрес":      ["url bar browser close up", "web address typed"],
+    "обновлен":   ["software update screen", "system update notification"],
+    "файл":       ["file download screen", "document icon computer"],
+    "документ":   ["document open screen", "file explorer window"],
+    " QR ":       ["qr code scan phone", "qr code close up dark"],
+    " QR-":       ["qr code scan phone", "qr code close up dark"],
+    "wifi":       ["wifi connection screen", "wireless network phone"],
+    "wi-fi":      ["wifi connection screen", "wireless network phone"],
+    # атака / вторжение
+    "атак":       ["cyber attack concept dark", "hacker hands keyboard"],
+    "взлам":      ["hacker typing dark room", "computer breach"],
+    "доступ":     ["unauthorized access screen", "hacker terminal login"],
+    "токен":      ["api token screen", "session token concept"],
+    "код":        ["code terminal screen dark", "programming code scrolling"],
+    "парол":      ["password typing keyboard", "password field screen"],
+    "сессия":     ["session expired screen", "user session concept"],
+    "подмен":     ["fake website screen", "spoofed page browser"],
+    " поддел":    ["forged document screen", "fake certificate close up"],
+    " обман":     ["scam concept dark", "social engineering attack"],
+    # инфраструктура
+    "сервер":     ["server room dark racks", "data center corridor"],
+    "дата-центр": ["data center interior", "server racks blinking"],
+    "роутер":     ["router lights blinking", "network device close up"],
+    "кабел":      ["network cables close up", "ethernet cable plug"],
+    " DNS ":      ["dns server screen", "domain name system"],
+    "сертифик":   ["ssl certificate screen", "security certificate browser"],
+    "замок":      ["digital lock concept", "padlock security"],
+    "провод":     ["cable management server", "network wiring"],
+    # данные / утечки
+    "данные":     ["data stream abstract", "binary code scrolling"],
+    "утечк":      ["data breach concept", "leaked data screen"],
+    "база":       ["database screen dark", "sql query terminal"],
+    "терабайт":   ["data storage concept", "server hard drive"],
+    "файл":       ["file encryption screen", "locked file icon"],
+    # финансовые
+    "денег":      ["money transfer screen", "digital payment concept"],
+    "деньги":     ["cash and digital payment", "financial transaction"],
+    "перевод":    ["bank transfer screen", "money sending app"],
+    "банк":       ["banking app screen dark", "financial dashboard"],
+    "крипто":     ["cryptocurrency trading screen", "bitcoin price chart"],
+    "кошелёк":    ["crypto wallet interface", "digital wallet phone"],
+    "оплат":      ["payment screen phone", "online payment form"],
+    "растрат":    ["spending tracker screen", "financial loss concept"],
+    # вредоносное ПО
+    "вирус":      ["computer virus alert screen", "malware detection"],
+    "троян":      ["trojan detected screen", "infected computer"],
+    "шифр":       ["ransomware encryption screen", "files locked concept"],
+    "зашифров":   ["encryption progress screen", "locked files ransomware"],
+    "вредонос":   ["malware alert popup", "virus warning screen"],
+    "заражен":    ["infected computer screen", "virus spreading network"],
+    "сканер":     ["antivirus scanning screen", "system scan progress"],
+    # слежка / приватность
+    "шпион":      ["surveillance camera close up", "spy camera lens"],
+    "наблюд":     ["security camera monitor wall", "cctv footage screen"],
+    "трекинг":    ["location tracking phone map", "gps tracker screen"],
+    "камера":     ["webcam close up face", "security camera install"],
+    "прослуш":    ["wiretap concept", "microphone surveillance"],
+    "запись":     ["screen recording concept", "keylogger capture"],
+    "кейлоггер":  ["keylogger screen", "keystroke recording concept"],
+    "лицо":       ["facial recognition screen", "face scan biometric"],
+    "биометр":    ["fingerprint scan screen", "biometric authentication"],
+    # общие слова (для шотов без специфичных ключевых)
+    "ошибк":      ["error alert screen", "system error popup"],
+    "угроз":      ["threat alert cybersecurity", "warning danger screen"],
+    "риск":       ["risk assessment screen", "security risk concept"],
+    "атака":      ["ddos attack concept", "network flood"],
+    "защит":      ["firewall concept", "security shield"],
+    "безопасн":   ["cybersecurity concept", "digital security lock"],
+    "хакер":      ["hacker silhouette dark", "hacker hands keyboard"],
+    "злоумышлен": ["criminal hacker dark", "cybercriminal concept"],
+    "ловушк":     ["trap concept dark", "honey pot cyber"],
+    "кража":      ["data theft concept", "stealing data screen"],
+    "ուտեստ":     ["test concept", "system test"],
+}
+
 
 def generate_stock_queries(topic, themes, max_q=6):
     """M24: Генерирует stock-запросы ИЗ темы (а не из фиксированного пресета).
@@ -2782,7 +2872,7 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
     return clips, clip_q
 
 
-def extract_stock_frames(ffmpeg, clips, outdir, fps=10, max_frames=260):
+def extract_stock_frames(ffmpeg, clips, outdir, fps=20, max_frames=520):
     """Режет из каждого клипа последовательные кадры для фона.
 
     M25/S27: возвращает СПИСОК КЛИПОВ, каждый — список кадров по времени
@@ -2814,39 +2904,45 @@ def extract_stock_frames(ffmpeg, clips, outdir, fps=10, max_frames=260):
 
 
 def _shot_stock_kws(shot):
-    """Слова-ключи шота из его реплики/субтитра/вижуала — для подбора клипа.
+    """Слова-ключи шота из его реплики/вижуала — для подбора клипа.
 
-    Возвращает множество потенциальных keywords (_TOPIC_STOCK_KW), чьи
-    русские/английские слова встречаются в тексте шота или его visual-типе.
+    S28: используем _VOICE_STOCK_KW (content-level) + _TOPIC_STOCK_KW
+    для максимально широкого покрытия голосового текста шота.
     """
     import re as _re
-    txt = (shot.get("voice") or shot.get("sub") or "").lower()
+    txt = " " + (shot.get("voice") or shot.get("sub") or "").lower() + " "
     vis = str(shot.get("visual") or "").lower()
     out = set()
+    # Content-level: _VOICE_STOCK_KW (per-shot voice text)
+    for kw in _VOICE_STOCK_KW:
+        if kw in txt or kw in vis:
+            out.add(kw)
+    # Topic-level: _TOPIC_STOCK_KW
     for kw in _TOPIC_STOCK_KW:
         if kw in txt or kw in vis:
             out.add(kw)
-    # короткие слова не дают шума (1-2 буквы бывают в словах)
+    # Prefix matching for longer keywords (4+ chars)
     words = set(_re.findall(r"[a-zа-яё]{3,}", txt))
-    for kw in _TOPIC_STOCK_KW:
+    for kw in list(_VOICE_STOCK_KW.keys()) + list(_TOPIC_STOCK_KW.keys()):
         if len(kw) >= 4 and any(w.startswith(kw[:4]) for w in words):
             out.add(kw)
     return out
 
 
 def _assign_stock_clips(shots, clip_groups, clip_q, topic):
-    """M26: контекстный подбор клипа шоту через _TOPIC_STOCK_KW как мост.
+    """S28: контекстный подбор клипа шоту через _VOICE_STOCK_KW + _TOPIC_STOCK_KW.
 
-    Shot keywords (RU/EN) → _TOPIC_STOCK_KW[key] → EN queries → clip_q match.
-    Раньше было `kw in ql` (RU in EN) — никогда не совпадало. Теперь RU ключ
-    поднимается до набора EN-запросов из _TOPIC_STOCK_KW и сравнивается с
-    clip_q по точному/подстрочному совпадению.
+    Shot keywords (RU/EN) → keyword dicts → EN queries → clip_q match.
+    Используем оба словаря для максимально широкого покрытия.
     """
     assign = {}
     used = set()
-    # Pre-build: every EN query → its set of _TOPIC_STOCK_KW source keys
+    # Pre-build: every EN query → its set of source keys (from BOTH dicts)
     _q_to_kws: dict[str, set] = {}
     for _kw, _qs in _TOPIC_STOCK_KW.items():
+        for _q in _qs:
+            _q_to_kws.setdefault(_q, set()).add(_kw)
+    for _kw, _qs in _VOICE_STOCK_KW.items():
         for _q in _qs:
             _q_to_kws.setdefault(_q, set()).add(_kw)
     for idx, s in enumerate(shots):
@@ -2857,6 +2953,7 @@ def _assign_stock_clips(shots, clip_groups, clip_q, topic):
         target_queries: set[str] = set()
         for kw in kws:
             target_queries.update(_TOPIC_STOCK_KW.get(kw, []))
+            target_queries.update(_VOICE_STOCK_KW.get(kw, []))
         if not target_queries:
             continue
         best = None
@@ -2888,7 +2985,7 @@ def _assign_stock_clips(shots, clip_groups, clip_q, topic):
     return assign
 
 
-def paint_stock_bg(clip_frames, cur, p, seed, P, cache, shot_sec=1.0, fps=10):
+def paint_stock_bg(clip_frames, cur, p, seed, P, cache, shot_sec=1.0, fps=20):
     """Живой фон: cover-fit кадр клипа по прогрессу p.
 
     M25: clip_frames — список кадров ОДНОГО клипа (последовательные по
@@ -3140,8 +3237,9 @@ def render_frame(shot, p, fonts, P, stock=None):
                        shot.get("seed", 1), int(p * 1000))
     if shot.get("texts"):
         draw_texts(img, shot["texts"], p, fonts, P)
-    if shot.get("subs"):
-        draw_texts(img, shot["subs"], p, fonts, P)
+    # S28: субтитры убраны — пользователь хочет чистое видео без текста на экране
+    # if shot.get("subs"):
+    #     draw_texts(img, shot["subs"], p, fonts, P)
     return img
 
 
@@ -3491,18 +3589,26 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
         for q in style_q:
             if q not in all_q:
                 all_q.append(q)
-        # M25.4: запросы из КОНТЕКСТА самих шотов (реплики/субтитры каждого
+        # S28: запросы из КОНТЕКСТА самих шотов (реплики каждого
         # акта) — клипы соответствуют содержанию конкретных кадров, а не
-        # только общему топику. Ограничиваем, чтобы не раздувать HTTP.
+        # только общему топику. Используем _VOICE_STOCK_KW (content-level)
+        # плюс _TOPIC_STOCK_KW (topic-level) как fallback.
         for s in shots:
-            txt = (s.get("voice") or s.get("sub") or "").lower()
+            txt = " " + (s.get("voice") or s.get("sub") or "").lower() + " "
+            # Content-level: _VOICE_STOCK_KW (per-shot voice text matching)
+            for kw, qs in _VOICE_STOCK_KW.items():
+                if kw in txt:
+                    for q in qs:
+                        if q not in all_q:
+                            all_q.append(q)
+            # Topic-level: _TOPIC_STOCK_KW (fallback)
             for kw, qs in _TOPIC_STOCK_KW.items():
                 if kw in txt:
                     for q in qs:
                         if q not in all_q:
                             all_q.append(q)
-        all_q = all_q[:16]
-        clips, clip_q = (fetch_stock_clips(tmpdir, all_q, max_clips=20)
+        all_q = all_q[:20]
+        clips, clip_q = (fetch_stock_clips(tmpdir, all_q, max_clips=24)
                          if all_q else ([], []))
         if clips and clip_q:
             clip_groups = extract_stock_frames(
