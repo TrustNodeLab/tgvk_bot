@@ -19,6 +19,10 @@ on:
         description: "Свой текст/статья (пусто = сценарий пишет LLM)"
         required: false
         default: ""
+      from_post:
+        description: "Текст поста: GigaChat перепишет его в сценарий (пусто = без рерайта)"
+        required: false
+        default: ""
 
 jobs:
   video:
@@ -40,6 +44,7 @@ jobs:
       - name: Generate long video
         env:
           SCRIPT_TEXT: ${{ github.event.inputs.script }}
+          POST_TEXT: ${{ github.event.inputs.from_post }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
@@ -51,6 +56,10 @@ jobs:
           if [ -n "$SCRIPT_TEXT" ]; then
             printf '%s' "$SCRIPT_TEXT" > script.txt
             EXTRA="--script-file script.txt"
+          fi
+          if [ -n "$POST_TEXT" ]; then
+            printf '%s' "$POST_TEXT" > post.txt
+            EXTRA="--from-post post.txt"
           fi
           python bot/video_long.py --topic "${{ github.event.inputs.topic }}" \
             --minutes "${{ github.event.inputs.minutes }}" \
@@ -70,7 +79,7 @@ jobs:
       - name: Send video to Telegram
         if: success()
         run: |
-          CAPTION="🎬 Длинное видео готово (${{ github.event.inputs.minutes }} мин, ${{ github.event.inputs.format }}, run ${{ github.run_id }})${{ github.event.inputs.script != '' && ' — по статье' || '' }}"
+          CAPTION="🎬 Длинное видео готово (${{ github.event.inputs.minutes }} мин, ${{ github.event.inputs.format }}, run ${{ github.run_id }})${{ github.event.inputs.script != '' && ' — по статье' || '' }}${{ github.event.inputs.from_post != '' && ' — по посту' || '' }}"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
             -F video="@out/video_long.mp4" \

@@ -19,6 +19,10 @@ on:
         description: "Тема cinematic-ролика (только для engine=cine; пусто = тема по умолчанию)"
         required: false
         default: ""
+      from_post:
+        description: "Текст поста: GigaChat перепишет его в сценарий видео (пусто = без рерайта)"
+        required: false
+        default: ""
 
 jobs:
   video:
@@ -41,6 +45,7 @@ jobs:
           SCRIPT_TEXT: ${{ github.event.inputs.script }}
           VIDEO_STYLE: ${{ github.event.inputs.style }}
           VIDEO_TOPIC: ${{ github.event.inputs.topic }}
+          POST_TEXT: ${{ github.event.inputs.from_post }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
@@ -52,6 +57,10 @@ jobs:
           if [ -n "$SCRIPT_TEXT" ]; then
             printf '%s' "$SCRIPT_TEXT" > script.txt
             EXTRA="--script-file script.txt"
+          fi
+          if [ -n "$POST_TEXT" ]; then
+            printf '%s' "$POST_TEXT" > post.txt
+            EXTRA="--from-post post.txt"
           fi
           if [ -n "$VIDEO_STYLE" ] && [ "$VIDEO_STYLE" != "default" ]; then
             python bot/video_gen.py --style "$VIDEO_STYLE" --topic "$VIDEO_TOPIC" \
@@ -80,7 +89,7 @@ jobs:
             -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
             -F video="@out/video_test.mp4" \
             -F supports_streaming=true \
-             -F caption="🎬 Видео готово (${{ github.event.inputs.seconds }} сек, run ${{ github.run_id }})${{ github.event.inputs.style != 'default' && ' — cinematic' || '' }}${{ github.event.inputs.script != '' && ' — по статье' || '' }}"
+             -F caption="🎬 Видео готово (${{ github.event.inputs.seconds }} сек, run ${{ github.run_id }})${{ github.event.inputs.style != 'default' && ' — cinematic' || '' }}${{ github.event.inputs.script != '' && ' — по статье' || '' }}${{ github.event.inputs.from_post != '' && ' — по посту' || '' }}"
           # EDL/SRT — только для cinematic (9:16 шортсы)
           if [ -f "out/video_test.edl.json" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
