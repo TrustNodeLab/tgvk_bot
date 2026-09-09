@@ -2317,7 +2317,8 @@ def draw_texts(img, texts, p, fonts, P):
                 sc = 0.6 + 0.4 * (1 - (1 - q) ** 3)
                 tmp = Image.new("RGBA", (int(tw) + 80, lh + 60), (0, 0, 0, 0))
                 td = ImageDraw.Draw(tmp)
-                td.text((40, 30), line, font=f, fill=(245, 248, 255, alpha))
+                td.text((40, 30), line, font=f, fill=(245, 248, 255, alpha),
+                        stroke_width=3, stroke_fill=(3, 5, 10, alpha))
                 nw, nh = max(1, int(tmp.width * sc)), max(1, int(tmp.height * sc))
                 tmp = tmp.resize((nw, nh), Image.BICUBIC)
                 img.paste(tmp, ((W - nw) // 2, int(y + (lh - nh) // 2)), tmp)
@@ -2325,7 +2326,8 @@ def draw_texts(img, texts, p, fonts, P):
                 _, widths = _tracked_width(d, line, f, gap)
                 xx = x
                 for ch, cw in zip(line, widths):
-                    d.text((xx, y), ch, font=f, fill=(245, 248, 255, alpha))
+                    d.text((xx, y), ch, font=f, fill=(245, 248, 255, alpha),
+                           stroke_width=3, stroke_fill=(3, 5, 10, alpha))
                     xx += cw + gap
             elif mode == "whisper" or mode == "sub":
                 # маленький текст, медленное проявление, лёгкий трекинг
@@ -2333,23 +2335,27 @@ def draw_texts(img, texts, p, fonts, P):
                 _, widths = _tracked_width(d, line, f, gap)
                 xx = x
                 for ch, cw in zip(line, widths):
-                    d.text((xx, y), ch, font=f, fill=(235, 240, 252, a2))
+                    d.text((xx, y), ch, font=f, fill=(235, 240, 252, a2),
+                           stroke_width=2, stroke_fill=(3, 5, 10, a2))
                     xx += cw + gap
             elif mode == "reveal":
                 if q < 1.0:
                     tmp = Image.new("RGBA", (int(tw) + 40, lh + 40), (0, 0, 0, 0))
                     td = ImageDraw.Draw(tmp)
-                    td.text((20, 20), line, font=f, fill=(245, 248, 255, alpha))
+                    td.text((20, 20), line, font=f, fill=(245, 248, 255, alpha),
+                            stroke_width=3, stroke_fill=(3, 5, 10, alpha))
                     vis = int(tmp.width * q)
                     if vis > 0:
                         img.paste(tmp.crop((0, 0, vis, tmp.height)),
                                   (int(x) - 20, int(y) - 20),
                                   tmp.crop((0, 0, vis, tmp.height)))
                 else:
-                    d.text((x, y), line, font=f, fill=(245, 248, 255, alpha))
+                    d.text((x, y), line, font=f, fill=(245, 248, 255, alpha),
+                           stroke_width=3, stroke_fill=(3, 5, 10, alpha))
             else:  # rise
                 yy = int(y + 90 * (1 - q))
-                d.text((x, yy), line, font=f, fill=(245, 248, 255, alpha))
+                d.text((x, yy), line, font=f, fill=(245, 248, 255, alpha),
+                       stroke_width=3, stroke_fill=(3, 5, 10, alpha))
     return bboxes
 
 
@@ -2357,7 +2363,8 @@ def draw_tracked(d, line, f, y, gap, alpha):
     _, widths = _tracked_width(d, line, f, gap)
     x = (W - (sum(widths) + gap * max(0, len(line) - 1))) // 2
     for ch, cw in zip(line, widths):
-        d.text((x, y), ch, font=f, fill=(245, 248, 255, alpha))
+        d.text((x, y), ch, font=f, fill=(245, 248, 255, alpha),
+               stroke_width=2, stroke_fill=(3, 5, 10, alpha))
         x += cw + gap
 
 
@@ -3163,6 +3170,7 @@ def render_cinematic(shots, seconds, fps, out_silent, bpm, P, tmpdir="out/tmp_ci
           f"шотов: {len(shots)}...")
     cmd = [ffmpeg, "-y", "-f", "rawvideo", "-pix_fmt", "rgb24",
            "-s", f"{W}x{H}", "-framerate", str(fps), "-i", "-",
+           "-vf", "eq=contrast=1.06:saturation=1.10,vignette=PI/5",
            "-an", "-c:v", "libx265", "-pix_fmt", "yuv420p",
            "-preset", "medium", "-crf", "28", out_silent]
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
