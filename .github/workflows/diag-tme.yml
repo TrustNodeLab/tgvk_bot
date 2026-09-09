@@ -11,26 +11,21 @@ jobs:
         with:
           python-version: '3.11'
       - run: pip install -r requirements.txt
-      - name: Full LostArt pipeline probe
+      - name: Run mg_tick exactly like prod
         env:
+          VK_TOKEN_LOSTART: ${{ secrets.VK_TOKEN_LOSTART }}
+          VK_TOKEN_DGC: ${{ secrets.VK_TOKEN_DGC }}
+          VK_TOKEN_LOSTLINK: ${{ secrets.VK_TOKEN_LOSTLINK }}
+          BOT_WORKER_URL: ${{ secrets.BOT_WORKER_URL }}
+          BOT_WORKER_TOKEN: ${{ secrets.BOT_WORKER_TOKEN }}
           PYTHONIOENCODING: utf-8
         run: |
           python - <<'EOF'
-          import requests, re, sys, os
+          import sys, os
           sys.path.insert(0, 'bot'); os.chdir('bot')
-          from multigroups import parse_tg_art_blocks, REQUEST_HEADERS, fetch_art_from_channel, to_gif_bytes, _upload_gif_attachment
-          for ch in ["aiartcommunity", "neuralart", "promptart", "aipainting", "psychedelic_ai", "midjourney"]:
-              try:
-                  r = requests.get(f"https://t.me/s/{ch}", headers=REQUEST_HEADERS, timeout=10)
-                  blocks = parse_tg_art_blocks(r.text, ch)
-                  print(f"{ch}: status={r.status_code} blocks={len(blocks)}")
-                  if blocks:
-                      b = blocks[0]
-                      ir = requests.get(b["image"], headers={**REQUEST_HEADERS, "Accept": "image/jpeg, image/png, image/gif"}, timeout=10)
-                      print(f"  image: HTTP {ir.status_code} bytes={len(ir.content)} sig={ir.content[:8].hex()}")
-                      gif = to_gif_bytes(ir.content)
-                      print(f"  to_gif_bytes -> {'OK ' + str(len(gif)) + 'B' if gif else 'NONE'}")
-              except Exception as e:
-                  print(f"{ch}: EXC {type(e).__name__}: {e}")
-          print("TOKEN set:", bool(os.environ.get('VK_TOKEN_LOSTART')))
+          import multigroups as mg
+          print("TOKEN_LOSTART set:", bool(os.environ.get('VK_TOKEN_LOSTART')))
+          res = mg.mg_tick()
+          print("MG_TICK_RESULT:", res)
+          print("SUMMARY:", mg.mg_summary(res).replace(chr(10), " | "))
           EOF
