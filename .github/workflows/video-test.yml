@@ -38,7 +38,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install dependencies
-        run: pip install -r requirements.txt imageio-ffmpeg edge-tts numpy
+        run: pip install -r requirements.txt imageio-ffmpeg edge-tts numpy silero
 
       - name: Generate video
         env:

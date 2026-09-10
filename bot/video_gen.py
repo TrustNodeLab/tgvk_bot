@@ -491,6 +491,67 @@ def _tts_elevenlabs(items, voice, tmpdir):
     return outs
 
 
+# S31: Silero TTS — бесплатный нейросетевой голос, без API-ключей.
+# Speakers: eugene (муж. диктор), aidar, baya, kseniya, xenia.
+# pip install silero (или torch.hub.load) — модель ~200MB, работает на CPU.
+SILERO_VOICE = os.environ.get("SILERO_VOICE", "eugene")
+SILERO_MODEL = None  # lazy-loaded singleton
+
+
+def _tts_silero(items, voice, tmpdir):
+    """Silero TTS — офлайн-озвучка (русский, v5_5_ru, auto-stress).
+
+    Возвращает список mp3-файлов. voice = speaker name (aidar/baya/kseniya/xenia/eugene).
+    """
+    global SILERO_MODEL
+    try:
+        if SILERO_MODEL is None:
+            # Try pip package first, then torch.hub
+            try:
+                from silero import silero_tts
+                SILERO_MODEL, _ = silero_tts(language='ru', speaker='v5_5_ru')
+            except ImportError:
+                import torch
+                SILERO_MODEL = torch.hub.load(
+                    repo_or_dir='snakers4/silero-models',
+                    model='silero_tts',
+                    language='ru',
+                    speaker='v5_5_ru')
+        spk = voice if (voice and voice != VOICE_DEFAULT) else SILERO_VOICE
+        ffmpeg = find_ffmpeg()
+        outs = []
+        for i, s in enumerate(items):
+            path = os.path.join(tmpdir, f"sec_{i}.mp3")
+            wav_path = os.path.join(tmpdir, f"sec_{i}.wav")
+            audio = SILERO_MODEL.apply_tts(text=s["voice"], speaker=spk)
+            # Save as WAV (24kHz mono float32) → convert to MP3
+            import numpy as np
+            import wave
+            samples = (audio.numpy() * 32767).astype(np.int16)
+            with wave.open(wav_path, 'w') as wf:
+                wf.setnchannels(1)
+                wf.setsampwidth(2)
+                wf.setframerate(24000)
+                wf.writeframes(samples.tobytes())
+            # WAV → MP3 via ffmpeg
+            subprocess.run([ffmpeg, "-y", "-i", wav_path,
+                            "-ar", "24000", "-ac", "1",
+                            "-codec:a", "libmp3lame", "-q:a", "2", path],
+                           capture_output=True)
+            if os.path.exists(path) and os.path.getsize(path) > 100:
+                outs.append(path)
+                print(f"[video] silero {i + 1}/{len(items)} ok ({spk})")
+            else:
+                print(f"[video] silero sec_{i}: пустой файл, пропуск")
+                outs.append(None)
+            # cleanup wav
+            if os.path.exists(wav_path):
+                os.remove(wav_path)
+        return outs
+    except Exception as e:
+        raise RuntimeError(f"Silero TTS error: {e}")
+
+
 def mp3_duration(ffmpeg, path):
     """Длительность mp3 в секундах через `ffmpeg -i` (без ffprobe)."""
     r = subprocess.run([ffmpeg, "-i", path], capture_output=True, text=True)
@@ -513,7 +574,26 @@ def make_voiceover_sections(ffmpeg, sections, voice, tmpdir):
     поэтому рассинхрона и «лагов» нет.
     """
     try:
-        if os.environ.get("ELEVENLABS_API_KEY"):
+        tts_provider = os.environ.get("TTS_PROVIDER", "").lower()
+        if tts_provider == "silero" or (
+                not os.environ.get("ELEVENLABS_API_KEY")
+                and tts_provider != "edge-tts"):
+            # S31: Silero TTS — бесплатный нейросетевой голос (по умолчанию)
+            # Если TTS_PROVIDER=silero или silero доступен и нет ElevenLabs
+            try:
+                print(f"[video] озвучка {len(sections)} секций "
+                      f"(silero, speaker={voice or SILERO_VOICE})...")
+                files = _tts_silero(sections, voice, tmpdir)
+            except Exception as e:
+                # Silero не установлен → fallback на edge-tts
+                print(f"[video] silero недоступен ({e}), fallback → edge-tts")
+                tts_provider = "edge-tts"
+                files = None
+            if files is None:
+                import edge_tts  # noqa: F401
+                print(f"[video] озвучка {len(sections)} секций ({voice})...")
+                files = asyncio.run(_tts_many(sections, voice, tmpdir))
+        elif os.environ.get("ELEVENLABS_API_KEY"):
             print(f"[video] озвучка {len(sections)} секций "
                   f"(elevenlabs {voice or ELEVENLABS_VOICE})...")
             files = _tts_elevenlabs(sections, voice, tmpdir)
