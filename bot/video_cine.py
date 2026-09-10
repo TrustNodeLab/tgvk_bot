@@ -2986,7 +2986,7 @@ def _ken_burns(img_path, p, seed, W, H, cache=None):
     return img
 
 
-def extract_stock_frames(ffmpeg, clips, outdir, fps=15, max_frames=300):
+def extract_stock_frames(ffmpeg, clips, outdir, fps=15, max_frames=180):
     """Режет из каждого клипа последовательные кадры для фона.
 
     M25/S27: возвращает СПИСОК КЛИПОВ, каждый — список кадров по времени
@@ -3124,10 +3124,12 @@ def paint_stock_bg(clip_frames, cur, p, seed, P, cache, shot_sec=1.0, fps=15):
     i1 = min(n - 1, i0 + 1)
     t = fpos - i0
     if cur not in cache:
-        cache[cur] = [None] * n
+        cache[cur] = {}
     cslot = cache[cur]
+    # S28: кэш только для окна [shift..shift+span+2], старые кадры выгружаем
+    # (иначе 16 клипов × 300 кадров × 6MB = OOM на 7GB runner)
     for i in (i0, i1):
-        if cslot[i] is None:
+        if i not in cslot:
             bg = Image.open(clip_frames[i]).convert("RGB").resize((W, H), Image.BICUBIC)
             bg = bg.point(lambda v: int(v * 0.85))  # S28: ещё осветление (было 0.7)
             cslot[i] = bg
@@ -3137,6 +3139,11 @@ def paint_stock_bg(clip_frames, cur, p, seed, P, cache, shot_sec=1.0, fps=15):
         img = Image.blend(cslot[i0], cslot[i1], t)
     img = _vignette(img, 0.15)  # S28: минимум виньетки (было 0.35)
     img = _grain(img, seed % (2 ** 31), 380, 22)
+    # S28: выгрузка кадров за пределами окна (keep ±4 от i0/i1)
+    lo, hi = max(0, min(i0, i1) - 4), min(n, max(i0, i1) + 5)
+    for k in list(cslot):
+        if k < lo or k >= hi:
+            del cslot[k]
     return img
 
 
@@ -3733,11 +3740,11 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
                     for q in qs:
                         if q not in all_q:
                             all_q.append(q)
-        all_q = all_q[:12]
-        clips, clip_q = (fetch_stock_clips(tmpdir, all_q, max_clips=16)
+        all_q = all_q[:8]
+        clips, clip_q = (fetch_stock_clips(tmpdir, all_q, max_clips=8)
                          if all_q else ([], []))
         # S28: скачиваем КАРТИНКИ для Ken Burns (fallback для шотов без клипов)
-        img_paths, img_queries = (fetch_stock_images(tmpdir, all_q, max_images=8)
+        img_paths, img_queries = (fetch_stock_images(tmpdir, all_q, max_images=4)
                                   if all_q else ([], []))
         if clips and clip_q:
             clip_groups = extract_stock_frames(
