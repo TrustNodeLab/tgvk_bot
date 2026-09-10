@@ -488,6 +488,13 @@ def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
     for s in shots:
         if (s.get("texts") or s.get("subs")) and s["dur"] < cine._min_dur(s):
             s["dur"] = float(cine._min_dur(s))
+    # S30: subs sync — compute voice_ratio for fade-out after voice ends
+    for s in shots:
+        vs = s.get("_voice_sec", 0)
+        if vs > 0:
+            s["_voice_ratio"] = min(1.0, vs / max(0.1, float(s["dur"])))
+        else:
+            s["_voice_ratio"] = 1.0
     seconds = total_est
 
     # --- стоки 16:9 по секциям (микс с графикой; без ключей — painters)

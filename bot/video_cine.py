@@ -3304,6 +3304,7 @@ def _layout_voice_spans(shots, vmap, sec_durs):
         parts = _split_words(s.get("sub", ""), n)
         refs = [s]
         s["dur"] = max(sub, 0.8)
+        s["_voice_sec"] = sub  # actual voice duration for subs sync
         if s.get("subs"):
             s["subs"] = [{"lines": [parts[0][:70]], "mode": "sub"}] \
                 if parts[0] else []
@@ -3325,6 +3326,7 @@ def _layout_voice_spans(shots, vmap, sec_durs):
             c2["subs"] = [{"lines": [parts[k][:70]], "mode": "sub"}] \
                 if parts[k] else []
             c2["sub"] = parts[k][:70]
+            c2["_voice_sec"] = sub  # actual voice duration for subs sync
             refs.append(c2)
             prev_vis, prev_cam = vis, cam
         shots[idx:idx + 1] = refs
@@ -3447,7 +3449,21 @@ def render_frame(shot, p, fonts, P, stock=None):
         if vtxt:
             subs = [{"lines": [vtxt[:70]], "mode": "sub"}]
     if subs:
-        draw_texts(img, subs, p, fonts, P)
+        vr = shot.get("_voice_ratio", 1.0)
+        if vr < 1.0 and p > vr:
+            # S30: fade out subs after voice ends (12% fade window)
+            fade = max(0.0, 1.0 - (p - vr) / 0.12)
+            if fade > 0.01:
+                overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+                draw_texts(overlay, subs, min(p, vr), fonts, P)
+                # reduce alpha by fade factor
+                r, g, b, a = overlay.split()
+                a = a.point(lambda x: int(x * fade))
+                overlay = Image.merge("RGBA", (r, g, b, a))
+                img.paste(Image.alpha_composite(img.convert("RGBA"),
+                                                overlay).convert("RGB"))
+        else:
+            draw_texts(img, subs, p, fonts, P)
     return img
 
 
@@ -3783,6 +3799,14 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
     for s in shots:
         if (s.get("texts") or s.get("subs")) and s["dur"] < _min_dur(s):
             s["dur"] = float(_min_dur(s))
+    # S30: subs sync — compute voice_ratio (voice_dur / shot_dur) for each shot
+    # so subs fade out when voice ends, not at shot end
+    for s in shots:
+        vs = s.get("_voice_sec", 0)
+        if vs > 0:
+            s["_voice_ratio"] = min(1.0, vs / max(0.1, float(s["dur"])))
+        else:
+            s["_voice_ratio"] = 1.0  # no voice → subs visible for full shot
     # QC-чеклист — по финальным длительностям, до рендера
     rep = qc_shots(shots, seconds)
     # --- M24: живые сток-фоны — запросы ИЗ темы (а не из фиксированного пресета).
