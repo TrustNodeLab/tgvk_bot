@@ -2383,8 +2383,8 @@ def draw_texts(img, texts, p, fonts, P):
         if mode == "whisper":
             y_base = H // 2 - 120 - block_h // 2
         elif mode == "sub":
-            # TikTok-субтитр строго по центру кадра
-            y_base = int(H * 0.58) - block_h // 2
+            # S28: субтитры в НИЖНЕЙ ТРЕТИ экрана (TikTok-style)
+            y_base = int(H * 0.82) - block_h // 2
         else:
             zone_h = 340
             y_base = H // 2 - (n * zone_h) // 2 + k * zone_h
@@ -3129,13 +3129,13 @@ def paint_stock_bg(clip_frames, cur, p, seed, P, cache, shot_sec=1.0, fps=15):
     for i in (i0, i1):
         if cslot[i] is None:
             bg = Image.open(clip_frames[i]).convert("RGB").resize((W, H), Image.BICUBIC)
-            bg = bg.point(lambda v: int(v * 0.7))  # S28: осветление (было 0.5 — слишком темно)
+            bg = bg.point(lambda v: int(v * 0.85))  # S28: ещё осветление (было 0.7)
             cslot[i] = bg
     if i0 == i1 or t < 0.05:
         img = cslot[i0].copy()
     else:
         img = Image.blend(cslot[i0], cslot[i1], t)
-    img = _vignette(img, 0.35)  # S28: мягче виньетка (было 0.6)
+    img = _vignette(img, 0.15)  # S28: минимум виньетки (было 0.35)
     img = _grain(img, seed % (2 ** 31), 380, 22)
     return img
 
@@ -3362,9 +3362,9 @@ def render_frame(shot, p, fonts, P, stock=None):
                        shot.get("seed", 1), int(p * 1000))
     if shot.get("texts"):
         draw_texts(img, shot["texts"], p, fonts, P)
-    # S28: субтитры убраны — пользователь хочет чистое видео без текста на экране
-    # if shot.get("subs"):
-    #     draw_texts(img, shot["subs"], p, fonts, P)
+    # S28: субтитры в нижней трети экрана
+    if shot.get("subs"):
+        draw_texts(img, shot["subs"], p, fonts, P)
     return img
 
 

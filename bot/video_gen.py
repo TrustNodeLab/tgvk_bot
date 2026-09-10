@@ -440,7 +440,24 @@ async def _tts_many(items, voice, tmpdir):
             volume=s.get("volume", "+0%")).save(out)
         return out
 
-    return await asyncio.gather(*[one(i, s) for i, s in enumerate(items)])
+    # S28: последовательный вызов + retry при NoAudioReceived
+    # asyncio.gather шлёт всё одновременно → edge-tts блокирует при >5-8
+    import asyncio as _aio
+    results = []
+    for i, s in enumerate(items):
+        for attempt in range(3):
+            try:
+                r = await one(i, s)
+                results.append(r)
+                break
+            except Exception as e:
+                if attempt < 2:
+                    print(f"[video] TTS retry {attempt+1} sec_{i}: {e}")
+                    await _aio.sleep(1.5 * (attempt + 1))
+                else:
+                    print(f"[video] TTS FAILED sec_{i}: {e}")
+                    results.append(None)
+    return results
 
 
 def _tts_elevenlabs(items, voice, tmpdir):
@@ -512,9 +529,19 @@ def make_voiceover_sections(ffmpeg, sections, voice, tmpdir):
         traceback.print_exc()
         return None, _estimate_weights(sections)
     durs = []
+    valid_files = []
     for f, s in zip(files, sections):
+        if f is None or not os.path.exists(f):
+            # S28: TTS не удался для этого чанка — пропускаем
+            print(f"[video] sec_{sections.index(s)}: нет аудио, пропуск")
+            durs.append(max(1.5, len(s["voice"]) / 12.0))
+            continue
         dd = mp3_duration(ffmpeg, f)
         durs.append(dd if dd > 0.3 else max(1.5, len(s["voice"]) / 12.0))
+        valid_files.append(f)
+    if not valid_files:
+        print("[video] ни один чанк не озвучен — видео без звука")
+        return None, durs
     sil = os.path.join(tmpdir, "sil.mp3")
     subprocess.run(
         [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
@@ -527,9 +554,9 @@ def make_voiceover_sections(ffmpeg, sections, voice, tmpdir):
         # меняем на прямой слэш (в кавычках escape мешают)
         def _jp(p):
             return os.path.abspath(p).replace("\\", "/")
-        for i, f in enumerate(files):
+        for i, f in enumerate(valid_files):
             fh.write("file '%s'\n" % _jp(f))
-            if i < len(files) - 1:
+            if i < len(valid_files) - 1:
                 fh.write("file '%s'\n" % _jp(sil))
     out = os.path.join(tmpdir, "voice.mp3")
     r = subprocess.run(
