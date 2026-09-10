@@ -575,29 +575,18 @@ def make_voiceover_sections(ffmpeg, sections, voice, tmpdir):
     """
     try:
         tts_provider = os.environ.get("TTS_PROVIDER", "").lower()
-        if tts_provider == "silero" or (
-                not os.environ.get("ELEVENLABS_API_KEY")
-                and tts_provider != "edge-tts"):
-            # S31: Silero TTS — бесплатный нейросетевой голос (по умолчанию)
-            # Если TTS_PROVIDER=silero или silero доступен и нет ElevenLabs
-            try:
-                print(f"[video] озвучка {len(sections)} секций "
-                      f"(silero, speaker={voice or SILERO_VOICE})...")
-                files = _tts_silero(sections, voice, tmpdir)
-            except Exception as e:
-                # Silero не установлен → fallback на edge-tts
-                print(f"[video] silero недоступен ({e}), fallback → edge-tts")
-                tts_provider = "edge-tts"
-                files = None
-            if files is None:
-                import edge_tts  # noqa: F401
-                print(f"[video] озвучка {len(sections)} секций ({voice})...")
-                files = asyncio.run(_tts_many(sections, voice, tmpdir))
+        if tts_provider == "silero":
+            # S31: Silero — только если явно TTS_PROVIDER=silero
+            print(f"[video] озвучка {len(sections)} секций "
+                  f"(silero, speaker={voice or SILERO_VOICE})...")
+            files = _tts_silero(sections, voice, tmpdir)
         elif os.environ.get("ELEVENLABS_API_KEY"):
+            # ElevenLabs — премиум (если есть ключ)
             print(f"[video] озвучка {len(sections)} секций "
                   f"(elevenlabs {voice or ELEVENLABS_VOICE})...")
             files = _tts_elevenlabs(sections, voice, tmpdir)
         else:
+            # edge-tts — дефолт (DmitryNeural, бесплатный, быстрый)
             import edge_tts  # noqa: F401
             print(f"[video] озвучка {len(sections)} секций ({voice})...")
             files = asyncio.run(_tts_many(sections, voice, tmpdir))
