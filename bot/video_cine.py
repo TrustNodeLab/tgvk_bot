@@ -389,6 +389,76 @@ _VOICE_STOCK_KW = {
     "ловушк":     ["trap concept dark", "honey pot cyber"],
     "кража":      ["data theft concept", "stealing data screen"],
     "ուտեստ":     ["test concept", "system test"],
+    # S29: expanded content-level matching for common narration phrases
+    "KeySpec":     ["password typing keyboard", "password field screen"],
+    "загрузк":     ["file download screen", "downloading progress bar"],
+    "установк":    ["software installation screen", "setup wizard"],
+    "обновлени":   ["software update screen", "system update notification"],
+    "приложен":    ["mobile app screen dark", "smartphone apps grid"],
+    "мессенджер":  ["messaging app phone", "chat screen dark"],
+    "телеграм":    ["telegram app phone", "messaging notification dark"],
+    "wechat":      ["wechat app screen", "messaging app dark"],
+    "whatsapp":    ["whatsapp chat screen", "message notification dark"],
+    "электрон":    ["email inbox dark", "electronic message screen"],
+    "пользовател":["user profile screen", "account settings dark"],
+    "регистрац":   ["registration form screen", "signup page dark"],
+    "подозрит":    ["suspicious activity screen", "warning alert dark"],
+    "подделк":     ["fake website screen", "forged page browser"],
+    "фишингов":    ["phishing email fake", "phishing website screen"],
+    "кража":       ["data theft concept", "stealing data screen"],
+    "крад":        ["data theft concept", "hacker stealing data"],
+    "серьёзн":     ["serious threat concept", "critical alert screen"],
+    "последстви":  ["consequence concept dark", "damage assessment"],
+    "уйти":        ["logout screen", "sign out button"],
+    "отключ":      ["disconnected screen", "network offline"],
+    "блокировк":   ["account locked screen", "blocked access"],
+    "восстановл":  ["account recovery screen", "password reset"],
+    "нарушени":    ["security breach screen", "intrusion detected"],
+    "незаконн":    ["unauthorized access dark", "illegal access alert"],
+    "целев":       ["targeted attack concept", "spear phishing"],
+    "массов":      ["mass attack concept", "bulk data breach"],
+    "автоматическ":["automation screen", "bot concept dark"],
+    " оператор":   ["call center dark", "operator headset"],
+    "специалист":  ["IT specialist screen", "cybersecurity professional"],
+    "эксперт":     ["security expert screen", "analyst dashboard"],
+    "исследоват":  ["security research screen", "cyber analyst"],
+    "анти-virus":  ["antivirus scan screen", "malware detection"],
+    "антивирус":   ["antivirus scan screen", "security software"],
+    "брандмауэр":  ["firewall concept", "network security barrier"],
+    "воспроизв":   ["media player screen", "video playback"],
+    "запуск":      ["launch screen dark", "startup sequence"],
+    "трафик":      ["network traffic screen", "data flow visualization"],
+    "интерфейс":   ["software interface dark", "UI dashboard"],
+    "скриншот":    ["screenshot concept", "screen capture"],
+    "контроль":    ["monitoring dashboard dark", "control panel"],
+    "мониторинг":  ["security monitoring screen", "network monitor"],
+    "лог":         ["system log screen", "log entries terminal"],
+    "журнал":      ["audit log screen", "event log terminal"],
+    "архив":       ["archive files screen", "compressed folder"],
+    "бэкап":       ["backup progress screen", "data backup concept"],
+    "копия":       ["file copy screen", "backup creation"],
+    "восстанови":  ["data recovery screen", "restore files"],
+    "удалени":     ["file deletion screen", "delete confirmation"],
+    "форматир":    ["format disk screen", "disk formatting"],
+    " шифров":     ["encryption screen dark", "files being encrypted"],
+    "дешифр":      ["decryption screen", "unlocking files"],
+    "сертификат":  ["SSL certificate screen", "security certificate"],
+    "подпис":      ["digital signature screen", "code signing"],
+    "аутентифик":  ["authentication screen", "2FA verification"],
+    "двуфакторн":  ["two-factor auth screen", "2FA code entry"],
+    "доступ":      ["access granted screen", "permission granted"],
+    "ограничен":   ["access restricted screen", "permission denied"],
+    "разрешени":   ["permission screen", "authorization granted"],
+    "уровень":     ["security level screen", "threat level"],
+    "статус":      ["status dashboard", "system status"],
+    "уведомлен":   ["notification screen dark", "alert popup"],
+    "предупрежд":  ["warning screen", "alert notification"],
+    "ошибк":       ["error alert screen", "system error popup"],
+    "критическ":   ["critical error screen", "fatal error"],
+    "аварийн":     ["emergency screen", "system crash"],
+    "сбой":        ["system failure screen", "crash report"],
+    "зависан":     ["frozen screen", "application hang"],
+    "перегрузк":   ["overloaded server", "system overload"],
 }
 
 
@@ -2472,38 +2542,39 @@ def apply_camera(img, camera, p, seed, frame_i):
     if camera == "static":
         # дыхание: ±3 px по синусу от прогресса шота + лёгкий микро-зум.
         # Расширяем кадр на 8px и двигаем окно — краёв чёрных нет.
-        dx = int(3.0 * math.sin(p * math.tau * 1.5))
-        dy = int(2.5 * math.cos(p * math.tau * 1.5 + 1.1))
-        big = img.resize((W + 8, H + 8), Image.BICUBIC)
-        ox, oy = 4 - dx, 4 - dy
+        # S29: softer breathing (was ±3px, now ±2px)
+        dx = int(2.0 * math.sin(p * math.tau * 1.5))
+        dy = int(1.5 * math.cos(p * math.tau * 1.5 + 1.1))
+        big = img.resize((W + 6, H + 6), Image.BICUBIC)
+        ox, oy = 3 - dx, 3 - dy
         return big.crop((ox, oy, ox + W, oy + H))
     if camera == "shake":
         rnd = random.Random(seed + frame_i)
-        dx, dy = rnd.randrange(-9, 10), rnd.randrange(-9, 10)
+        dx, dy = rnd.randrange(-4, 5), rnd.randrange(-4, 5)  # S29: softer shake (was ±9)
         out = Image.new("RGB", (W, H), (0, 0, 0))
         out.paste(img, (dx, dy))
         return out
     if camera == "drift":
-        dx = int(-40 * p)
-        big = img.resize((W + 80, H), Image.BICUBIC)
-        return big.crop((80 + dx, 0, 80 + dx + W, H))
+        dx = int(-25 * p)  # S29: softer drift (was 40)
+        big = img.resize((W + 50, H), Image.BICUBIC)
+        return big.crop((50 + dx, 0, 50 + dx + W, H))
     if camera == "snap":
         # резкий наезд: snap-zoom к концу шота
-        s = 1.0 + 0.42 * (p ** 2)
+        s = 1.0 + 0.20 * (p ** 2)  # S29: softer snap (was 0.42)
         bw, bh = int(W * s), int(H * s)
         big = img.resize((bw, bh), Image.BICUBIC)
         return big.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
     if camera == "tilt":
-        # лёгкий наклон + дрейф (псевдо-тилт в посте)
-        ang = -2.0 + 4.0 * p
+        # S29: softer tilt (was ±2.0°, now ±1.2°)
+        ang = -1.2 + 2.4 * p
         big = img.resize((int(W * 1.12), int(H * 1.12)), Image.BICUBIC)
         big = big.rotate(ang, resample=Image.BICUBIC, center=(big.width // 2, big.height // 2))
         bw, bh = big.size
         return big.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
     if camera == "whip_pan":
-        # хлыст-камера внутри шота: быстрый горизонтальный пролёт со streaks
-        dx = int(W * 0.55 * p)
-        big = img.resize((W + int(W * 0.55) + 40, H), Image.BICUBIC)
+        # S29: softer whip-pan (was 0.55, too aggressive)
+        dx = int(W * 0.30 * p)
+        big = img.resize((W + int(W * 0.30) + 40, H), Image.BICUBIC)
         out = big.crop((dx, 0, dx + W, H))
         d = ImageDraw.Draw(out, "RGBA")
         rnd = random.Random(seed + frame_i // 3)
@@ -2511,9 +2582,8 @@ def apply_camera(img, camera, p, seed, frame_i):
             y = rnd.randrange(H)
             d.line([(0, y), (W, y)], fill=(150, 180, 230, 46))
         return out
-    # push_in / push_out — ход увеличен до 0.24: на 60fps движение должно
-    # быть РЕАЛЬНО видимым (иначе кадры сливаются в слайд-шоу)
-    s = (1.0 + 0.24 * p) if camera == "push_in" else (1.24 - 0.24 * p)
+    # push_in / push_out — S29: softer travel (was 0.24, too aggressive)
+    s = (1.0 + 0.12 * p) if camera == "push_in" else (1.12 - 0.12 * p)
     bw, bh = int(W * s), int(H * s)
     big = img.resize((bw, bh), Image.BICUBIC)
     return big.crop(((bw - W) // 2, (bh - H) // 2, (bw - W) // 2 + W, (bh - H) // 2 + H))
@@ -2696,7 +2766,7 @@ def build_soundtrack(shots, bounds, seconds, bpm, pause_win=None, sr=SR,
         i = int(end * sr)
         m = min(len(sfx), n - i)
         if m > 0 and i < n:
-            mix[i:i + m] += sfx[:m].astype(np.float64) * 0.5 * sfx_gain
+            mix[i:i + m] += sfx[:m].astype(np.float64) * 0.25 * sfx_gain  # S29: quieter
     if duck is not None and len(duck) == n:
         mix *= (1.0 - 0.65 * np.clip(duck, 0.0, 1.0))
     mix = np.clip(mix, -32768, 32767)
@@ -3370,8 +3440,14 @@ def render_frame(shot, p, fonts, P, stock=None):
     if shot.get("texts"):
         draw_texts(img, shot["texts"], p, fonts, P)
     # S28: субтитры в нижней трети экрана
-    if shot.get("subs"):
-        draw_texts(img, shot["subs"], p, fonts, P)
+    # S29: auto-generate subs from voice text when missing
+    subs = shot.get("subs")
+    if not subs:
+        vtxt = (shot.get("voice") or shot.get("sub") or "").strip()
+        if vtxt:
+            subs = [{"lines": [vtxt[:70]], "mode": "sub"}]
+    if subs:
+        draw_texts(img, subs, p, fonts, P)
     return img
 
 
