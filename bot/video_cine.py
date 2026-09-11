@@ -2841,7 +2841,7 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
                 break
             try:
                 url = ("https://api.pexels.com/videos/search?" + _up.urlencode(
-                    {"query": q, "per_page": 4, "orientation": orientation,
+                    {"query": q, "per_page": 6, "orientation": orientation,
                      "size": "medium"}))
                 req = _rq.Request(url, headers={"Authorization": pexels_key,
                                                 "User-Agent": _UA})
@@ -3114,10 +3114,11 @@ def _shot_stock_kws(shot):
 
 
 def _assign_stock_clips(shots, clip_groups, clip_q, topic):
-    """S28: контекстный подбор клипа шоту через _VOICE_STOCK_KW + _TOPIC_STOCK_KW.
+    """S33: контекстный подбор клипа шоту — improved matching.
 
-    Shot keywords (RU/EN) → keyword dicts → EN queries → clip_q match.
-    Используем оба словаря для максимально широкого покрытия.
+    Strategy: for each shot, find the clip whose query best matches the
+    shot's voice text (direct text overlap, not just keyword dict).
+    Falls back to keyword dict matching, then round-robin for leftovers.
     """
     assign = {}
     used = set()
@@ -3129,30 +3130,35 @@ def _assign_stock_clips(shots, clip_groups, clip_q, topic):
     for _kw, _qs in _VOICE_STOCK_KW.items():
         for _q in _qs:
             _q_to_kws.setdefault(_q, set()).add(_kw)
+    # S33: direct text matching — for each shot, score each clip query
+    # by word overlap with the shot's voice text
     for idx, s in enumerate(shots):
+        voice_lower = " " + (s.get("voice") or s.get("sub") or "").lower() + " "
         kws = _shot_stock_kws(s)
-        if not kws:
-            continue
-        # All EN queries that ANY of the shot's keywords maps to
+        # Build target queries from keywords
         target_queries: set[str] = set()
         for kw in kws:
             target_queries.update(_TOPIC_STOCK_KW.get(kw, []))
             target_queries.update(_VOICE_STOCK_KW.get(kw, []))
-        if not target_queries:
-            continue
+        # Score each clip by text similarity with voice text
         best = None
+        best_score = 0
         for ci, cq in enumerate(clip_q):
-            if ci in used and sum(1 for c in used if c == ci) >= 2:
+            if ci in used:
                 continue
-            # 1) exact match: clip query is one of the mapped target queries
-            # 2) partial: clip query contains a target substring or vice versa
+            # Score: word overlap between clip query and voice text
+            cq_words = set(cq.lower().split())
+            voice_words = set(voice_lower.split())
+            overlap = len(cq_words & voice_words)
+            # Boost for keyword dict match
             if cq in target_queries:
+                overlap += 3
+            elif any(tq in cq or cq in tq for tq in target_queries):
+                overlap += 1
+            if overlap > best_score:
+                best_score = overlap
                 best = ci
-                break
-            if any(tq in cq or cq in tq for tq in target_queries):
-                best = ci
-                break
-        if best is not None:
+        if best is not None and best_score > 0:
             assign[idx] = best
             used.add(best)
     # round-robin от hash темы (для разнообразия)
@@ -3161,7 +3167,7 @@ def _assign_stock_clips(shots, clip_groups, clip_q, topic):
     for idx in range(len(shots)):
         if idx in assign:
             continue
-        while ci in used and sum(1 for c in used if c == ci) >= 2:
+        while ci in used:
             ci = (ci + 1) % len(clip_groups)
         assign[idx] = ci
         used.add(ci)
@@ -3399,7 +3405,7 @@ def _assemble_voice(ffmpeg, tmpdir, items, total, sr=SR):
     return out
 
 
-def render_frame(shot, p, fonts, P, stock=None):
+def render_frame(shot, p, fonts, P, stock=None, sub_p=None):
     """Один кадр тела шота: сцена + камера + типографика.
 
     stock: {"frames": [ [кадры клипа0], [кадры клипа1], ...], "cache": {},
@@ -3407,7 +3413,11 @@ def render_frame(shot, p, fonts, P, stock=None):
     — если шоту назначен живой фон (shot["stock"] = индекс КЛИПА), рисуем
     сток + субтитр вместо painter'а. p выбирает кадр внутри клипа (движение).
     S28: если шот — картинка (shot["_is_image"]), рисуем Ken Burns эффект.
+    S33: sub_p — линейный прогресс для субтитров (p может быть eased
+    для камеры, но голос идёт линейно → субтитры должны быть linear).
     """
+    if sub_p is None:
+        sub_p = p
     pw = warp_progress(p, shot.get("speed", (1.0, 1.0)))
     si = shot.get("stock")
     # S28: Ken Burns для статичных картинок
@@ -3443,6 +3453,7 @@ def render_frame(shot, p, fonts, P, stock=None):
         draw_texts(img, shot["texts"], p, fonts, P)
     # S28: субтитры в нижней трети экрана
     # S29: auto-generate subs from voice text when missing
+    # S33: используем sub_p (linear) вместо p (eased) для синхронизации с голосом
     subs = shot.get("subs")
     if not subs:
         vtxt = (shot.get("voice") or shot.get("sub") or "").strip()
@@ -3450,12 +3461,12 @@ def render_frame(shot, p, fonts, P, stock=None):
             subs = [{"lines": [vtxt[:70]], "mode": "sub"}]
     if subs:
         vr = shot.get("_voice_ratio", 1.0)
-        if vr < 1.0 and p > vr:
+        if vr < 1.0 and sub_p > vr:
             # S30: fade out subs after voice ends (12% fade window)
-            fade = max(0.0, 1.0 - (p - vr) / 0.12)
+            fade = max(0.0, 1.0 - (sub_p - vr) / 0.12)
             if fade > 0.01:
                 overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-                draw_texts(overlay, subs, min(p, vr), fonts, P)
+                draw_texts(overlay, subs, min(sub_p, vr), fonts, P)
                 # reduce alpha by fade factor
                 r, g, b, a = overlay.split()
                 a = a.point(lambda x: int(x * fade))
@@ -3463,7 +3474,7 @@ def render_frame(shot, p, fonts, P, stock=None):
                 img.paste(Image.alpha_composite(img.convert("RGBA"),
                                                 overlay).convert("RGB"))
         else:
-            draw_texts(img, subs, p, fonts, P)
+            draw_texts(img, subs, sub_p, fonts, P)
     return img
 
 
@@ -3522,11 +3533,15 @@ def render_cinematic(shots, seconds, fps, out_silent, bpm, P, tmpdir="out/tmp_ci
     for sg in segments:
         if sg["kind"] == "body":
             s = sg["shot"]
+            n_m1 = max(1, sg["n"] - 1)
             for j in range(sg["n"]):
                 # M26-B: ease-in-out прогресса — разгон/торможение вместо
                 # линейного скольжения (линейные камеры = ощущение покадровости)
-                p = _ease_io(j / max(1, sg["n"] - 1))
-                proc.stdin.write(render_frame(s, p, fonts, P, stock).tobytes())
+                p = _ease_io(j / n_m1)
+                # S33: linear p for subs (voice is linear, camera is eased)
+                sub_p = j / n_m1
+                proc.stdin.write(render_frame(s, p, fonts, P, stock,
+                                              sub_p=sub_p).tobytes())
                 done += 1
         elif sg["kind"] == "trans":
             a, b = sg["a"], sg["b"]
@@ -3840,11 +3855,11 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
                     for q in qs:
                         if q not in all_q:
                             all_q.append(q)
-        all_q = all_q[:8]
-        clips, clip_q = (fetch_stock_clips(tmpdir, all_q, max_clips=8)
+        all_q = all_q[:12]
+        clips, clip_q = (fetch_stock_clips(tmpdir, all_q, max_clips=12)
                          if all_q else ([], []))
         # S28: скачиваем КАРТИНКИ для Ken Burns (fallback для шотов без клипов)
-        img_paths, img_queries = (fetch_stock_images(tmpdir, all_q, max_images=4)
+        img_paths, img_queries = (fetch_stock_images(tmpdir, all_q, max_images=6)
                                   if all_q else ([], []))
         if clips and clip_q:
             clip_groups = extract_stock_frames(
