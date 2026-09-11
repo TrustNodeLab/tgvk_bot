@@ -2841,7 +2841,7 @@ def fetch_stock_clips(tmpdir, queries, max_clips=4, orientation="portrait"):
                 break
             try:
                 url = ("https://api.pexels.com/videos/search?" + _up.urlencode(
-                    {"query": q, "per_page": 6, "orientation": orientation,
+                    {"query": q, "per_page": 4, "orientation": orientation,
                      "size": "medium"}))
                 req = _rq.Request(url, headers={"Authorization": pexels_key,
                                                 "User-Agent": _UA})
@@ -3855,11 +3855,11 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
                     for q in qs:
                         if q not in all_q:
                             all_q.append(q)
-        all_q = all_q[:12]
-        clips, clip_q = (fetch_stock_clips(tmpdir, all_q, max_clips=12)
+        all_q = all_q[:8]
+        clips, clip_q = (fetch_stock_clips(tmpdir, all_q, max_clips=8)
                          if all_q else ([], []))
         # S28: скачиваем КАРТИНКИ для Ken Burns (fallback для шотов без клипов)
-        img_paths, img_queries = (fetch_stock_images(tmpdir, all_q, max_images=6)
+        img_paths, img_queries = (fetch_stock_images(tmpdir, all_q, max_images=4)
                                   if all_q else ([], []))
         if clips and clip_q:
             clip_groups = extract_stock_frames(
