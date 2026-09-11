@@ -3122,6 +3122,8 @@ def _assign_stock_clips(shots, clip_groups, clip_q, topic):
     """
     assign = {}
     used = set()
+    if not clip_groups:
+        return assign  # нет клипов — всё получит round-robin в caller
     # Pre-build: every EN query → its set of source keys (from BOTH dicts)
     _q_to_kws: dict[str, set] = {}
     for _kw, _qs in _TOPIC_STOCK_KW.items():
@@ -3167,8 +3169,14 @@ def _assign_stock_clips(shots, clip_groups, clip_q, topic):
     for idx in range(len(shots)):
         if idx in assign:
             continue
-        while ci in used:
+        # S33: защита от бесконечного цикла при len(clip_groups)==1
+        # (разрешаем использование клипа до 2 раз, как было до S33)
+        guard = 0
+        while ci in used and sum(1 for c in used if c == ci) >= 2:
             ci = (ci + 1) % len(clip_groups)
+            guard += 1
+            if guard > len(clip_groups) * 2 + 4:
+                break  # теоретически недостижимо, но страховка
         assign[idx] = ci
         used.add(ci)
         ci = (ci + 1) % len(clip_groups)
