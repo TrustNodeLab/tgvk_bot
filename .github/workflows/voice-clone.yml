@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: '3.11'
 
-- name: Install deps
+      - name: Install deps
         run: |
           # torch 2.5.1 CPU: последняя пара без обязательного torchcodec (torchaudio 2.9 требует его для load)
           pip install --quiet torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
