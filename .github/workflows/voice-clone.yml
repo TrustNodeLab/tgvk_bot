@@ -1,0 +1,129 @@
+name: voice-clone
+on:
+  workflow_dispatch:
+    inputs:
+      text:
+        description: 'Текст для озвучки (по умолчанию — кибербезопасность)'
+        required: false
+        default: 'Кибербезопасность — это основа современного мира. Мошенники используют фишинг и социальную инженерию, чтобы украсть ваши данные. Согласитесь, это действительно важно!'
+
+jobs:
+  clone:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: |
+          pip install --quiet TTS==0.22.0
+
+      - name: Download 4 Russian Piper reference voices
+        run: |
+          mkdir -p models refs
+          for v in dmitri denis ruslan irina; do
+            curl -sL https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ru_RU-$v-medium.tar.bz2 | tar xj -C models
+          done
+          ls -d models/*/
+
+      - name: Install sherpa-onnx (reference synthesis)
+        run: |
+          pip install --quiet sherpa-onnx numpy scipy
+          python - <<'EOF'
+          import sherpa_onnx, numpy as np, glob, os
+          from scipy.io import wavfile
+          for d in sorted(glob.glob('models/vits-piper-ru_RU-*-medium')):
+              name = os.path.basename(d).replace('vits-piper-ru_RU-', '').replace('-medium', '')
+              onnx = os.path.join(d, 'model.onnx')
+              if not os.path.exists(onnx):
+                  src = glob.glob(os.path.join(d, '*.onnx'))[0]
+                  os.rename(src, onnx)
+                  js = glob.glob(os.path.join(d, '*.onnx.json'))
+                  if js:
+                      os.rename(js[0], os.path.join(d, 'model.onnx.json'))
+              cfg = sherpa_onnx.OfflineTtsConfig(
+                  model=sherpa_onnx.OfflineTtsModelConfig(
+                      vits=sherpa_onnx.OfflineTtsVitsModelConfig(
+                          model=onnx,
+                          tokens=os.path.join(d, 'tokens.txt'),
+                          lexicon='',
+                          data_dir=os.path.join(d, 'espeak-ng-data'),
+                          dict_dir='',
+                      ),
+                      num_threads=4,
+                      debug=False,
+                  ),
+                  rule_fsts='',
+                  max_num_sentences=1,
+              )
+              tts = sherpa_onnx.OfflineTts(cfg)
+              audio = tts.generate('Кибербезопасность — это основа современного мира. Мошенники используют фишинг и социальную инженерию, чтобы украсть ваши данные.', sid=0, speed=0.9)
+              samples = np.asarray(audio.samples, dtype=np.float32)
+              wavfile.write(f'refs/{name}.wav', audio.sample_rate, (samples * 32767).clip(-32768, 32767).astype(np.int16))
+              print(f'ref {name}.wav sr={audio.sample_rate} len={len(samples)}', flush=True)
+          EOF
+          ls -la refs/
+
+      - name: Clone voices with XTTS (4 voices x 3 pitches = 12 samples)
+        env:
+          CLONE_TEXT: ${{ github.event.inputs.text }}
+        run: |
+          python - <<'EOF'
+          import os, subprocess, json
+          text = os.environ.get('CLONE_TEXT', 'Кибербезопасность — это основа современного мира. Мошенники используют фишинг и социальную инженерию, чтобы украсть ваши данные. Согласитесь, это действительно важно!')
+          manifest = []
+          for name in ['dmitri', 'denis', 'ruslan', 'irina']:
+              for pitch in [0, 2, -2]:
+                  tag = f'xtts_{name}' + (f'_p{pitch:+d}' if pitch else '')
+                  out = f'samples/{tag}.wav'
+                  env = {**os.environ, 'REF_AUDIO': f'refs/{name}.wav', 'TEXT': text, 'OUT': out, 'LANG': 'ru', 'PITCH': str(pitch)}
+                  r = subprocess.run(['python', 'scripts/tts_clone.py'], env=env, capture_output=True, text=True)
+                  print(r.stdout, flush=True)
+                  if r.stderr:
+                      print(r.stderr[-2000:], flush=True)
+                  if r.returncode == 0 and os.path.exists(out):
+                      manifest.append([tag, out, 'wav'])
+                  else:
+                      print(f'FAILED {tag} rc={r.returncode}', flush=True)
+          with open('samples/manifest.json', 'w') as f:
+              json.dump(manifest, f)
+          print('manifest:', manifest, flush=True)
+          EOF
+
+      - name: Convert WAV to MP3
+        run: |
+          mkdir -p mp3
+          for f in samples/*.wav; do
+            b=$(basename "$f" .wav)
+            ffmpeg -y -loglevel error -i "$f" -codec:a libmp3lame -qscale:a 4 "mp3/$b.mp3"
+          done
+          ls -la mp3/
+
+      - name: Send samples to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+        run: |
+          jq -r '.[] | "\(.[0])\t\(.[1])\t\(.[2])"' samples/manifest.json | while IFS=$'\t' read -r NAME FILE FMT; do
+            URL="https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendAudio"
+            if [ "$FMT" = "wav" ]; then
+              FILE_MP3="mp3/${NAME}.mp3"
+              curl -sf -F "chat_id=${TELEGRAM_ADMIN_CHAT_ID}" -F "audio=@${FILE_MP3}" \
+                   -F "title=🎙️ ${NAME}" -F "caption=🎙️ ${NAME} — клон XTTS (rus)" \
+                   "$URL" > /dev/null || echo "FAILED send ${NAME}"
+            else
+              curl -sf -F "chat_id=${TELEGRAM_ADMIN_CHAT_ID}" -F "audio=@${FILE}" \
+                   -F "title=🎙️ ${NAME}" -F "caption=🎙️ ${NAME}" \
+                   "$URL" > /dev/null || echo "FAILED send ${NAME}"
+            fi
+          done
+          curl -sf -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -F "chat_id=${TELEGRAM_ADMIN_CHAT_ID}" \
+            -F "text=📭 Все образцы клонированных голосов XTTS отправлены. Выберите лучший голос и питч!" > /dev/null || true
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf models refs samples mp3
