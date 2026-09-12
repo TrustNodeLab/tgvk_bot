@@ -34,6 +34,18 @@ def load_xtts_model():
     mdir = snapshot_download("coqui/XTTS-v2")
     log(f"model dir: {mdir} ({time.time()-t0:.0f}s download/check)")
 
+    # torch>=2.6 грузит чекпоинты с weights_only=True по умолчанию, а XTTS .pth
+    # содержит встроенные объекты конфигов → UnpicklingError. Патчим на прежнее
+    # поведение (чекпоинт — официальный coqui, доверенный).
+    import torch
+    _orig_torch_load = torch.load
+
+    def _compat_load(*a, **k):
+        k["weights_only"] = False
+        return _orig_torch_load(*a, **k)
+
+    torch.load = _compat_load
+
     cfg = XttsConfig()
     cfg.load_json(os.path.join(mdir, "config.json"))
     model = Xtts.init_from_config(cfg)
