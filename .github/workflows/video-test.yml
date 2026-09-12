@@ -40,74 +40,55 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt imageio-ffmpeg edge-tts numpy silero
 
-      # S34: VoiceStudio — локальный Docker TTS-сервер.
+      # S34: VoiceStudio — локальный TTS-сервер.
       # GPU нет → CPU-режим.
       # S34c-факт: GGUF-бинарь НЕ входит в docker-образ (zero-byte placeholder)
       #   → omnivoice-gguf даёт 503. OmniVoice full — OOM на 7GB RAM.
-      # S34d: используем движок Sherpa-ONNX (CPU) + русская Piper-модель
-      #   ru_RU-dmitri-medium (~60MB, официальные GH releases k2-fsa/sherpa-onnx).
+      # S34d: движок Sherpa-ONNX (CPU) + русская Piper-модель ru_RU-dmitri-medium.
+      # S34e: sherpa требует имя файла model.onnx (не ru_RU-dmitri-medium.onnx).
+      # S34f: VoiceStudio-docker падает на Piper (не передаёт vits-data-dir →
+      #   "Not a model using characters as modeling unit") →
+      #   вместо docker поднимаем свой мини-сервер bot/tts_server.py
+      #   (тот же OpenAI-формат /v1/audio/speech, но data_dir=espeak-ng-data).
       - name: Start VoiceStudio
         run: |
-          docker run -d --name voicestudio -p 3900:3900 \
-            -e OMNIVOICE_TTS_BACKEND=sherpa-onnx \
-            -e OMNIVOICE_DEVICE=cpu \
-            -e OMNIVOICE_SHERPA_MODEL=/models/vits-piper-ru_RU-dmitri-medium \
-            -v voicestudio-models:/models \
-            palashdeb/omnivoice-studio:stable
-          echo "⏳ Ждём HTTP-сервер VoiceStudio..."
-          for i in $(seq 1 60); do
-            if curl -sf http://localhost:3900/health > /dev/null 2>&1; then
-              echo "✅ HTTP готов (${i}x5 сек)"
-              break
-            fi
-            sleep 5
-          done
-          curl -sf http://localhost:3900/health || {
-            echo "❌ VoiceStudio HTTP не поднялся за 5 мин. Логи:"
-            docker logs voicestudio --tail 60
-            exit 1
-          }
-          # Устанавливаем движок sherpa-onnx ВНУТРЬ контейнера (в образе его нет)
           echo "⏳ pip install sherpa-onnx (нужен кодек движка)..."
-          docker exec voicestudio sh -c \
-            'PY=$(command -v python3 || command -v python || ls /app/.venv/bin/python 2>/dev/null | head -1); \
-             echo "python: $PY"; $PY -m pip install --no-cache-dir --quiet sherpa-onnx' 2>&1 || {
-            echo "❌ не удалось поставить sherpa-onnx. Логи:"
-            docker logs voicestudio --tail 60
-            exit 1
-          }
-          # Скачиваем русскую модель Piper и кладём в volume /models
+          pip install --quiet sherpa-onnx || { echo "❌ не удалось поставить sherpa-onnx"; exit 1; }
+          # Скачиваем русскую модель Piper (~60MB)
           echo "⏳ Скачиваем ru_RU-dmitri-medium (~60MB)..."
-          docker exec voicestudio sh -c 'cd /models && curl -sL https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ru_RU-dmitri-medium.tar.bz2 | tar xj' || {
-            echo "❌ не удалось скачать модель. Логи:"
-            docker logs voicestudio --tail 60
-            exit 1
+          mkdir -p models
+          curl -sL https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ru_RU-dmitri-medium.tar.bz2 | tar xj -C models || {
+            echo "❌ не удалось скачать модель"; exit 1
           }
-          # S34e: sherpa-onnx требует имя ФАЙЛА model.onnx (не ru_RU-dmitri-medium.onnx)
-          docker exec voicestudio sh -c \
-            'cd /models/vits-piper-ru_RU-dmitri-medium && \
-             mv ru_RU-dmitri-medium.onnx model.onnx && \
-             mv ru_RU-dmitri-medium.onnx.json model.onnx.json && \
-             ls -la'
-          ls -la /models/vits-piper-ru_RU-dmitri-medium 2>/dev/null || \
-            docker exec voicestudio ls -la /models/vits-piper-ru_RU-dmitri-medium
-          echo "=== Engines (sherpa-onnx должен быть available) ==="
-          curl -sf http://localhost:3900/engines | head -c 1500 || true
-          # контейнеру нужно перечитать бэкенды — рестарт с теми же env
-          docker restart voicestudio
-          echo "⏳ Ждём после рестарта..."
+          # S34e: sherpa требует имя ФАЙЛА model.onnx (не ru_RU-dmitri-medium.onnx)
+          cd models/vits-piper-ru_RU-dmitri-medium
+          mv ru_RU-dmitri-medium.onnx model.onnx
+          mv ru_RU-dmitri-medium.onnx.json model.onnx.json
+          ls -la
+          cd ../..
+          # Запускаем мини-сервер (тот же OpenAI-совместимый API, что и VoiceStudio)
+          echo "⏳ Запускаем tts_server.py..."
+          nohup python bot/tts_server.py --model-dir models/vits-piper-ru_RU-dmitri-medium --port 3900 \
+            > out_tts_server.log 2>&1 &
+          echo "⏳ Ждём HTTP-сервер..."
           for i in $(seq 1 60); do
             if curl -sf http://localhost:3900/health > /dev/null 2>&1; then
-              echo "✅ VoiceStudio с sherpa-onnx готов (${i}x5 сек)"
+              echo "✅ TTS-сервер готов (${i}x5 сек)"
               break
             fi
             sleep 5
           done
           curl -sf http://localhost:3900/health || {
-            echo "❌ VoiceStudio не поднялся после рестарта. Логи:"
-            docker logs voicestudio --tail 60
+            echo "❌ TTS-сервер не поднялся за 5 мин. Лог:"
+            cat out_tts_server.log
             exit 1
           }
+          echo "⏳ Тест синтеза (короткая фраза)..."
+          curl -s -X POST http://localhost:3900/v1/audio/speech \
+            -H "Content-Type: application/json" \
+            -d '{"model":"tts-1","voice":"alloy","input":"Привет, это тест озвучки","response_format":"wav"}' \
+            -o out_tts_test.wav
+          ls -la out_tts_test.wav
 
       - name: Generate video
         env:
@@ -180,10 +161,9 @@ jobs:
       - name: Stop VoiceStudio
         if: always()
         run: |
-          echo "=== VoiceStudio логи перед остановкой (диагностика) ==="
-          docker logs voicestudio --tail 60 2>&1 || true
-          docker stop voicestudio || true
-          docker rm voicestudio || true
+          echo "=== TTS-сервер лог перед остановкой (диагностика) ==="
+          cat out_tts_server.log 2>/dev/null || true
+          pkill -f "tts_server.py" || true
 
       - name: Notify failure to Telegram
         if: failure()
