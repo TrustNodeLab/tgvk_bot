@@ -17,10 +17,12 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Install deps
+- name: Install deps
         run: |
-          # TTS 0.22.0 несовместим с новыми transformers (удалён BeamSearchScorer) — пиним 4.43.0
-          pip install --quiet TTS==0.22.0 'transformers==4.43.3' imageio-ffmpeg
+          # torch 2.5.1 CPU: последняя пара без обязательного torchcodec (torchaudio 2.9 требует его для load)
+          pip install --quiet torch==2.5.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+          # TTS 0.22.0 несовместим с новыми transformers (удалён BeamSearchScorer) — пиним 4.43.3
+          pip install --quiet TTS==0.22.0 'transformers==4.43.3' imageio-ffmpeg numpy==1.26.4
 
       - name: Download 4 Russian Piper reference voices
         run: |
