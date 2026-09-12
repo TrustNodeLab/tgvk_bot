@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""XTTS-v2 voice cloning pipeline (CPU, runs on GH Actions runner).
+"""XTTS-v2 voice cloning pipeline (CPU, headless — no TTS.api, no input()).
 
-Clones a reference voice sample with Coqui XTTS-v2 (multilingual, ru support),
-then applies optional pitch shift for character variation and speed control.
+Low-level Coqui XTTS API: XttsConfig + Xtts.init_from_config + model.synthesize.
+Model auto-downloaded via huggingface_hub.snapshot_download('coqui/XTTS-v2').
+Ru supported natively (16 languages).
 
-Usage (env vars):
-    REF_AUDIO   path to reference wav (10-30s of clean speech required)
-    TEXT        text to synthesize (ru by default)
-    OUT         output wav path
-    LANG        default 'ru' (validated against XTTS language set)
-    SPEED       default 1.0 (0.8-1.2 typical); speed<1 -> slower via time_stretch
-    PITCH       default 0 semitones; e.g. +2 brighter, -2 darker
+Exports:
+    load_xtts_model() -> (cfg, model)      (downloads ~1.8GB on first call)
+    synth_to_file(cfg, model, text, ref, out, lang='ru', speed=1.0, pitch=0.0)
+        -> writes int16 PCM wav (sr=24000) with np.interp speed/pitch post
+main() = single-shot CLI driven by env vars (REF_AUDIO/TEXT/OUT/LANG/SPEED/PITCH).
 """
 
 import os
@@ -25,6 +24,74 @@ def log(msg: str) -> None:
     print(f"[clone] {msg}", flush=True)
 
 
+def load_xtts_model():
+    """Download (if needed) + init XTTS-v2 on CPU. Returns (cfg, model)."""
+    t0 = time.time()
+    from huggingface_hub import snapshot_download
+    from TTS.tts.configs.xtts_config import XttsConfig
+    from TTS.tts.models.xtts import Xtts
+
+    mdir = snapshot_download("coqui/XTTS-v2")
+    log(f"model dir: {mdir} ({time.time()-t0:.0f}s download/check)")
+
+    cfg = XttsConfig()
+    cfg.load_json(os.path.join(mdir, "config.json"))
+    model = Xtts.init_from_config(cfg)
+    model.load_checkpoint(cfg, checkpoint_dir=mdir, eval=True)
+    model.cpu()
+    log(f"model ready in {time.time()-t0:.1f}s")
+    return cfg, model
+
+
+def synth_to_file(cfg, model, text: str, ref: str, out: str,
+                  lang: str = "ru", speed: float = 1.0, pitch: float = 0.0) -> int:
+    """Synthesize one utterance; returns 0 ok / nonzero fail."""
+    import numpy as np
+    from scipy.io import wavfile
+
+    if not os.path.isfile(ref):
+        log(f"ERROR: образец не найден: {ref}")
+        return 2
+
+    try:
+        out_dict = model.synthesize(text, cfg, speaker_wav=ref, language=lang)
+    except Exception as e:
+        log(f"ERROR synthesize: {e}")
+        return 1
+    wav = out_dict.get("wav")
+    if wav is None:
+        log("ERROR: no wav in synthesize result")
+        return 1
+    if hasattr(wav, "cpu"):  # torch tensor
+        wav = wav.detach().cpu().numpy()
+    samples = np.asarray(wav, dtype=np.float32).reshape(-1)
+    sr = 24000
+
+    # speed: linear resample
+    if speed != 1.0 and 0.5 < speed < 2.0:
+        n_out = int(len(samples) / speed)
+        x_old = np.linspace(0.0, 1.0, len(samples), endpoint=False)
+        x_new = np.linspace(0.0, 1.0, n_out, endpoint=False)
+        samples = np.interp(x_new, x_old, samples).astype(np.float32)
+
+    # pitch: resample up/down then back (semitones)
+    if pitch != 0.0 and abs(pitch) >= 0.01:
+        f = 2.0 ** (pitch / 12.0)
+        n_p = int(len(samples) * f)
+        x_old = np.linspace(0.0, 1.0, len(samples), endpoint=False)
+        x_new = np.linspace(0.0, 1.0, n_p, endpoint=False)
+        pitched = np.interp(x_new, x_old, samples).astype(np.float32)
+        x_old2 = np.linspace(0.0, 1.0, len(pitched), endpoint=False)
+        x_new2 = np.linspace(0.0, 1.0, len(samples), endpoint=False)
+        samples = np.interp(x_new2, x_old2, pitched).astype(np.float32)
+
+    out_i16 = (samples * 32767.0).clip(-32768, 32767).astype(np.int16)
+    os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
+    wavfile.write(out, sr, out_i16)
+    log(f"OK {len(text)} chars -> {os.path.getsize(out)} bytes ({out})")
+    return 0
+
+
 def main() -> int:
     ref = os.environ.get("REF_AUDIO", "")
     text = os.environ.get("TEXT", "")
@@ -33,87 +100,30 @@ def main() -> int:
     speed = float(os.environ.get("SPEED", "1.0"))
     pitch = float(os.environ.get("PITCH", "0"))
 
-    if not ref:
-        log("ERROR: REF_AUDIO не задан (путь к образцу голоса)")
-        return 2
-    if not text:
-        log("ERROR: TEXT не задан")
+    if not ref or not text:
+        log("ERROR: нужны REF_AUDIO и TEXT")
         return 2
     if lang not in VALID_LANGS:
-        log(f"ERROR: LANG='{lang}' не поддерживается XTTS. Допустимо: {sorted(VALID_LANGS)}")
+        log(f"ERROR: LANG='{lang}' не поддерживается. Допустимо: {sorted(VALID_LANGS)}")
         return 2
-    if not os.path.isfile(ref):
-        log(f"ERROR: образец не найден: {ref}")
-        return 2
-
-    os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
 
     log(f"ref={ref} lang={lang} speed={speed} pitch={pitch:+g} text_len={len(text)}")
+    cfg, model = load_xtts_model()
 
-    # --- model load (first run downloads ~1.8GB from HF, subsequent cached) ---
-    t0 = time.time()
-    try:
-        from TTS.api import TTS
-    except Exception as e:
-        log(f"ERROR: не удалось импортировать TTS: {e}")
-        return 1
-
-    log("creating XTTS-v2 (cpu)...")
-    tts = TTS("tts_models/multilingual/multi-dataset/xtts_v2", gpu=False)
-    log(f"model ready in {time.time()-t0:.1f}s")
-
-    # --- warm-up short utterance (model first synthesis is slow) ---
+    # warm-up (first synthesis is slow)
     t0 = time.time()
     tmp_warm = os.path.join(os.path.dirname(os.path.abspath(out)) or ".", "_warmup.wav")
-    tts.tts_to_file(text="Привет.", file_path=tmp_warm, speaker_wav=ref, language=lang)
+    synth_to_file(cfg, model, "Привет.", ref, tmp_warm, lang=lang)
+    try:
+        os.remove(tmp_warm)
+    except OSError:
+        pass
     log(f"warmup done in {time.time()-t0:.1f}s")
 
-    # --- main synthesis ---
     t0 = time.time()
-    tmp_main = os.path.join(os.path.dirname(os.path.abspath(out)) or ".", "_main.wav")
-    tts.tts_to_file(text=text, file_path=tmp_main, speaker_wav=ref, language=lang)
-    log(f"synth done in {time.time()-t0:.1f}s")
-
-    # --- post-processing: speed + pitch via numpy/scipy (no librosa needed) ---
-    import numpy as np
-    from scipy.io import wavfile
-
-    sr, data = wavfile.read(tmp_main)
-    if data.dtype != np.int16:
-        data = (data * 32767).clip(-32768, 32767).astype(np.int16)
-    samples = data.astype(np.float32) / 32767.0
-
-    # speed: linear resample (simple, no phase artifacts for small factors)
-    if speed != 1.0 and speed > 0.5 and speed < 2.0:
-        n_out = int(len(samples) / speed)
-        x_old = np.linspace(0, 1, len(samples), endpoint=False)
-        x_new = np.linspace(0, 1, n_out, endpoint=False)
-        samples = np.interp(x_new, x_old, samples).astype(np.float32)
-
-    # pitch: linear resample up/down then back to original rate (semitones)
-    if pitch != 0.0:
-        factor = 2.0 ** (pitch / 12.0)
-        n_pitch = int(len(samples) * factor)
-        x_old = np.linspace(0, 1, len(samples), endpoint=False)
-        x_new = np.linspace(0, 1, n_pitch, endpoint=False)
-        pitched = np.interp(x_new, x_old, samples).astype(np.float32)
-        # resample back to original length (keeps duration, shifts pitch)
-        x_old2 = np.linspace(0, 1, len(pitched), endpoint=False)
-        x_new2 = np.linspace(0, 1, len(samples), endpoint=False)
-        samples = np.interp(x_new2, x_old2, pitched).astype(np.float32)
-
-    out_i16 = (samples * 32767).clip(-32768, 32767).astype(np.int16)
-    wavfile.write(out, sr, out_i16)
-
-    # cleanup temp files
-    for tmp in (tmp_warm, tmp_main):
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-
-    log(f"OK {len(text)} chars -> {os.path.getsize(out)} bytes ({out})")
-    return 0
+    rc = synth_to_file(cfg, model, text, ref, out, lang=lang, speed=speed, pitch=pitch)
+    log(f"main synth done in {time.time()-t0:.1f}s")
+    return rc
 
 
 if __name__ == "__main__":

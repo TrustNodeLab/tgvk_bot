@@ -72,25 +72,30 @@ jobs:
           CLONE_TEXT: ${{ github.event.inputs.text }}
         run: |
           python - <<'EOF'
-          import os, subprocess, json
+          import os, sys, json
+          sys.path.insert(0, 'scripts')
+          from tts_clone import load_xtts_model, synth_to_file, log
+
           text = os.environ.get('CLONE_TEXT', 'Кибербезопасность — это основа современного мира. Мошенники используют фишинг и социальную инженерию, чтобы украсть ваши данные. Согласитесь, это действительно важно!')
+          log(f'loading XTTS once; text_len={len(text)}')
+          cfg, model = load_xtts_model()
+
           manifest = []
           for name in ['dmitri', 'denis', 'ruslan', 'irina']:
               for pitch in [0, 2, -2]:
                   tag = f'xtts_{name}' + (f'_p{pitch:+d}' if pitch else '')
                   out = f'samples/{tag}.wav'
-                  env = {**os.environ, 'REF_AUDIO': f'refs/{name}.wav', 'TEXT': text, 'OUT': out, 'LANG': 'ru', 'PITCH': str(pitch)}
-                  r = subprocess.run(['python', 'scripts/tts_clone.py'], env=env, capture_output=True, text=True)
-                  print(r.stdout, flush=True)
-                  if r.stderr:
-                      print(r.stderr[-2000:], flush=True)
-                  if r.returncode == 0 and os.path.exists(out):
+                  rc = synth_to_file(cfg, model, text, f'refs/{name}.wav', out,
+                                     lang='ru', speed=1.0, pitch=float(pitch))
+                  if rc == 0 and os.path.exists(out):
                       manifest.append([tag, out, 'wav'])
                   else:
-                      print(f'FAILED {tag} rc={r.returncode}', flush=True)
+                      print(f'FAILED {tag} rc={rc}', flush=True)
           with open('samples/manifest.json', 'w') as f:
               json.dump(manifest, f)
           print('manifest:', manifest, flush=True)
+          if not manifest:
+              raise SystemExit('NO SAMPLES GENERATED — abort')
           EOF
 
       - name: Convert WAV to MP3
