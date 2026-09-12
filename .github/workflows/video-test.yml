@@ -60,6 +60,15 @@ jobs:
           }
           echo "=== Engines ==="
           curl -sf http://localhost:3900/engines | head -c 1000 || true
+          # S34b: контейнер может умереть через минуты (OOM при скачивании модели).
+          # Ждём модель: повторный health после паузы, чтобы генерация не ушла в fallback.
+          echo "⏳ Контрольная проверка: ждём 60с и перепроверяем health..."
+          sleep 60
+          curl -sf http://localhost:3900/health && echo "✅ VoiceStudio стабилен после ожидания" || {
+            echo "❌ VoiceStudio умер после старта. Логи:"
+            docker logs voicestudio --tail 60
+            exit 1
+          }
 
       - name: Generate video
         env:
@@ -132,6 +141,8 @@ jobs:
       - name: Stop VoiceStudio
         if: always()
         run: |
+          echo "=== VoiceStudio логи перед остановкой (диагностика) ==="
+          docker logs voicestudio --tail 60 2>&1 || true
           docker stop voicestudio || true
           docker rm voicestudio || true
 
