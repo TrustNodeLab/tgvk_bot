@@ -40,37 +40,65 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt imageio-ffmpeg edge-tts numpy silero
 
-      # S34: VoiceStudio (OmniVoice) — локальный Docker TTS-сервер
-      # GPU нет → CPU-режим; модель скачивается лениво при первом запросе.
-      # S34c: OMNIVOICE_TTS_BACKEND=omnivoice-gguf — квантованная модель Q4_K_M (~659MB)
-      # вместо полной OmniVoice (multi-GB), которая OOM-kill'илась на раннере с 7GB RAM.
+      # S34: VoiceStudio — локальный Docker TTS-сервер.
+      # GPU нет → CPU-режим.
+      # S34c-факт: GGUF-бинарь НЕ входит в docker-образ (zero-byte placeholder)
+      #   → omnivoice-gguf даёт 503. OmniVoice full — OOM на 7GB RAM.
+      # S34d: используем движок Sherpa-ONNX (CPU) + русская Piper-модель
+      #   ru_RU-dmitri-medium (~60MB, официальные GH releases k2-fsa/sherpa-onnx).
       - name: Start VoiceStudio
         run: |
           docker run -d --name voicestudio -p 3900:3900 \
-            -e OMNIVOICE_TTS_BACKEND=omnivoice-gguf \
+            -e OMNIVOICE_TTS_BACKEND=sherpa-onnx \
             -e OMNIVOICE_DEVICE=cpu \
+            -e OMNIVOICE_SHERPA_MODEL=/models/vits-piper-ru_RU-dmitri-medium \
+            -v voicestudio-models:/models \
             palashdeb/omnivoice-studio:stable
-          echo "⏳ Ожидание VoiceStudio (модель скачивается при первом запуске)..."
-          for i in $(seq 1 120); do
+          echo "⏳ Ждём HTTP-сервер VoiceStudio..."
+          for i in $(seq 1 60); do
             if curl -sf http://localhost:3900/health > /dev/null 2>&1; then
-              echo "✅ VoiceStudio готов (${i}x5 сек)"
+              echo "✅ HTTP готов (${i}x5 сек)"
               break
             fi
             sleep 5
           done
           curl -sf http://localhost:3900/health || {
-            echo "❌ VoiceStudio не стартовал за 10 мин. Логи:"
-            docker logs voicestudio
+            echo "❌ VoiceStudio HTTP не поднялся за 5 мин. Логи:"
+            docker logs voicestudio --tail 60
             exit 1
           }
-          echo "=== Engines ==="
-          curl -sf http://localhost:3900/engines | head -c 1000 || true
-          # S34b: контейнер может умереть через минуты (OOM при скачивании модели).
-          # Ждём модель: повторный health после паузы, чтобы генерация не ушла в fallback.
-          echo "⏳ Контрольная проверка: ждём 60с и перепроверяем health..."
-          sleep 60
-          curl -sf http://localhost:3900/health && echo "✅ VoiceStudio стабилен после ожидания" || {
-            echo "❌ VoiceStudio умер после старта. Логи:"
+          # Устанавливаем движок sherpa-onnx ВНУТРЬ контейнера (в образе его нет)
+          echo "⏳ pip install sherpa-onnx (нужен кодек движка)..."
+          docker exec voicestudio sh -c \
+            'PY=$(command -v python3 || command -v python || ls /app/.venv/bin/python 2>/dev/null | head -1); \
+             echo "python: $PY"; $PY -m pip install --no-cache-dir --quiet sherpa-onnx' 2>&1 || {
+            echo "❌ не удалось поставить sherpa-onnx. Логи:"
+            docker logs voicestudio --tail 60
+            exit 1
+          }
+          # Скачиваем русскую модель Piper и кладём в volume /models
+          echo "⏳ Скачиваем ru_RU-dmitri-medium (~60MB)..."
+          docker exec voicestudio sh -c 'cd /models && curl -sL https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ru_RU-dmitri-medium.tar.bz2 | tar xj' || {
+            echo "❌ не удалось скачать модель. Логи:"
+            docker logs voicestudio --tail 60
+            exit 1
+          }
+          ls -la /models/vits-piper-ru_RU-dmitri-medium 2>/dev/null || \
+            docker exec voicestudio ls -la /models/vits-piper-ru_RU-dmitri-medium
+          echo "=== Engines (sherpa-onnx должен быть available) ==="
+          curl -sf http://localhost:3900/engines | head -c 1500 || true
+          # контейнеру нужно перечитать бэкенды — рестарт с теми же env
+          docker restart voicestudio
+          echo "⏳ Ждём после рестарта..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:3900/health > /dev/null 2>&1; then
+              echo "✅ VoiceStudio с sherpa-onnx готов (${i}x5 сек)"
+              break
+            fi
+            sleep 5
+          done
+          curl -sf http://localhost:3900/health || {
+            echo "❌ VoiceStudio не поднялся после рестарта. Логи:"
             docker logs voicestudio --tail 60
             exit 1
           }
