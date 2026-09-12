@@ -66,6 +66,16 @@ ELEVENLABS_MODEL = "eleven_multilingual_v2"
 ELEVENLABS_VOICE = os.environ.get("ELEVENLABS_VOICE_ID",
                                   "onwK4e9ZLuTAKqWW03F9")
 
+# S34: VoiceStudio (OmniVoice) — локальный Docker-сервер TTS (порт 3900),
+# бесплатная альтернатива ElevenLabs: клонирование голоса, 600+ языков.
+# OpenAI-совместимый API: POST /v1/audio/speech. Активируется
+# TTS_PROVIDER=voicestudio. VOICESTUDIO_URL — адрес сервера
+# (дефолт 127.0.0.1:3900/v1), VOICESTUDIO_VOICE — имя голоса или путь
+# к референс-wav (3-10 сек) для клонирования.
+VOICESTUDIO_URL = os.environ.get("VOICESTUDIO_URL", "http://127.0.0.1:3900/v1")
+VOICESTUDIO_VOICE = os.environ.get("VOICESTUDIO_VOICE", "alloy")
+VOICESTUDIO_TIMEOUT = int(os.environ.get("VOICESTUDIO_TIMEOUT", "640"))
+
 
 def _font(path, size, weight):
     f = ImageFont.truetype(path, size)
@@ -491,6 +501,72 @@ def _tts_elevenlabs(items, voice, tmpdir):
     return outs
 
 
+def _tts_voicestudio(items, voice, tmpdir):
+    """VoiceStudio (OmniVoice) — локальный Docker-сервер, OpenAI-совместимый API.
+
+    Возвращает список mp3-файлов как _tts_elevenlabs. voice = имя голоса
+    (пресет) или путь к референс-wav (3-10 сек) для клонирования.
+    Таймауты щедрые: на CPU генерация медленная (по умолчанию 640 сек).
+    """
+    import time as _time
+    import requests
+    base = VOICESTUDIO_URL.rstrip("/")
+    vid = voice if (voice and voice != VOICE_DEFAULT) else VOICESTUDIO_VOICE
+    # Список доступных голосов — для отладки (в GH Actions этот вызов дешёвый)
+    try:
+        rv = requests.get(f"{base}/audio/voices", timeout=15)
+        if rv.status_code == 200:
+            voices = rv.json()
+            if isinstance(voices, list):
+                print(f"[video] voicestudio голоса ({len(voices)}): "
+                      f"{', '.join(str(v.get('id', v)) if isinstance(v, dict) else str(v) for v in voices[:12])}")
+            else:
+                print(f"[video] voicestudio голоса: {str(voices)[:200]}")
+    except Exception as e:
+        print(f"[video] voicestudio /voices недоступен: {e}")
+    outs = []
+    ffmpeg = find_ffmpeg()
+    for i, s in enumerate(items):
+        path = os.path.join(tmpdir, f"sec_{i}.mp3")
+        wav_path = os.path.join(tmpdir, f"sec_{i}.wav")
+        last_err = None
+        for attempt in range(3):
+            try:
+                r = requests.post(
+                    f"{base}/audio/speech",
+                    headers={"Content-Type": "application/json"},
+                    json={"model": "tts-1", "voice": vid,
+                          "input": s["voice"], "response_format": "wav"},
+                    timeout=VOICESTUDIO_TIMEOUT)
+                r.raise_for_status()
+                with open(wav_path, "wb") as fh:
+                    fh.write(r.content)
+                if not r.content:
+                    raise RuntimeError("пустой ответ сервера")
+                # wav -> mp3 (единый формат для склейки в make_voiceover_sections)
+                r2 = subprocess.run(
+                    [ffmpeg, "-y", "-i", wav_path, "-c:a", "libmp3lame", path],
+                    capture_output=True)
+                if r2.returncode != 0 or not os.path.exists(path) or os.path.getsize(path) < 100:
+                    raise RuntimeError("конвертация wav->mp3 не удалась")
+                last_err = None
+                break
+            except Exception as e:
+                last_err = e
+                print(f"[video] voicestudio retry {attempt + 1}/3 sec_{i}: {e}")
+                if attempt < 2:
+                    _time.sleep(3 * (attempt + 1))
+        if last_err is not None and not os.path.exists(path):
+            print(f"[video] voicestudio FAILED sec_{i}: {last_err}")
+            outs.append(None)
+        else:
+            outs.append(path)
+            print(f"[video] voicestudio {i + 1}/{len(items)} ok ({vid})")
+        if os.path.exists(wav_path):
+            os.remove(wav_path)
+    return outs
+
+
 # S31: Silero TTS — бесплатный нейросетевой голос, без API-ключей.
 # Speakers: eugene (муж. диктор), aidar, baya, kseniya, xenia.
 # pip install silero (или torch.hub.load) — модель ~200MB, работает на CPU.
@@ -580,6 +656,11 @@ def make_voiceover_sections(ffmpeg, sections, voice, tmpdir):
             print(f"[video] озвучка {len(sections)} секций "
                   f"(silero, speaker={voice or SILERO_VOICE})...")
             files = _tts_silero(sections, voice, tmpdir)
+        elif tts_provider == "voicestudio":
+            # S34: VoiceStudio (OmniVoice) — локальный Docker-сервер
+            print(f"[video] озвучка {len(sections)} секций "
+                  f"(voicestudio {voice or VOICESTUDIO_VOICE}, {VOICESTUDIO_URL})...")
+            files = _tts_voicestudio(sections, voice, tmpdir)
         elif os.environ.get("ELEVENLABS_API_KEY"):
             # ElevenLabs — премиум (если есть ключ)
             print(f"[video] озвучка {len(sections)} секций "

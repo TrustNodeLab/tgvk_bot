@@ -40,6 +40,27 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt imageio-ffmpeg edge-tts numpy silero
 
+      # S34: VoiceStudio (OmniVoice) — локальный Docker TTS-сервер
+      # GPU нет → CPU-режим; модель скачивается лениво при первом запросе (~3-10 мин).
+      - name: Start VoiceStudio
+        run: |
+          docker run -d --name voicestudio -p 3900:3900 palashdeb/omnivoice-studio:stable
+          echo "⏳ Ожидание VoiceStudio (модель скачивается при первом запуске)..."
+          for i in $(seq 1 120); do
+            if curl -sf http://localhost:3900/health > /dev/null 2>&1; then
+              echo "✅ VoiceStudio готов (${i}x5 сек)"
+              break
+            fi
+            sleep 5
+          done
+          curl -sf http://localhost:3900/health || {
+            echo "❌ VoiceStudio не стартовал за 10 мин. Логи:"
+            docker logs voicestudio
+            exit 1
+          }
+          echo "=== Engines ==="
+          curl -sf http://localhost:3900/engines | head -c 1000 || true
+
       - name: Generate video
         env:
           SCRIPT_TEXT: ${{ github.event.inputs.script }}
@@ -52,6 +73,10 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
           ELEVENLABS_VOICE_ID: ${{ secrets.ELEVENLABS_VOICE_ID }}
+          TTS_PROVIDER: voicestudio
+          VOICESTUDIO_URL: http://localhost:3900/v1
+          VOICESTUDIO_VOICE: alloy
+          VOICESTUDIO_TIMEOUT: "620"
         run: |
           EXTRA=""
           if [ -n "$SCRIPT_TEXT" ]; then
@@ -103,6 +128,12 @@ jobs:
               -F document="@out/video_test.srt" \
               -F caption="📝 Субтитры (SRT)"
           fi
+
+      - name: Stop VoiceStudio
+        if: always()
+        run: |
+          docker stop voicestudio || true
+          docker rm voicestudio || true
 
       - name: Notify failure to Telegram
         if: failure()
