@@ -19,7 +19,7 @@ jobs:
 
       - name: Install deps
         run: |
-          pip install --quiet TTS==0.22.0
+          pip install --quiet TTS==0.22.0 imageio-ffmpeg
 
       - name: Download 4 Russian Piper reference voices
         run: |
@@ -96,9 +96,11 @@ jobs:
       - name: Convert WAV to MP3
         run: |
           mkdir -p mp3
+          FFMPEG=$(python -c "import imageio_ffmpeg; print(imageio_ffmpeg.get_ffmpeg_exe())")
+          echo "ffmpeg: $FFMPEG"
           for f in samples/*.wav; do
             b=$(basename "$f" .wav)
-            ffmpeg -y -loglevel error -i "$f" -codec:a libmp3lame -qscale:a 4 "mp3/$b.mp3"
+            "$FFMPEG" -y -loglevel error -i "$f" -codec:a libmp3lame -qscale:a 4 "mp3/$b.mp3"
           done
           ls -la mp3/
 
