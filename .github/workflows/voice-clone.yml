@@ -19,7 +19,8 @@ jobs:
 
       - name: Install deps
         run: |
-          pip install --quiet TTS==0.22.0 imageio-ffmpeg
+          # TTS 0.22.0 несовместим с новыми transformers (удалён BeamSearchScorer) — пиним 4.43.0
+          pip install --quiet TTS==0.22.0 'transformers==4.43.3' imageio-ffmpeg
 
       - name: Download 4 Russian Piper reference voices
         run: |
