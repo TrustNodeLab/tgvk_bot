@@ -83,6 +83,12 @@ jobs:
             docker logs voicestudio --tail 60
             exit 1
           }
+          # S34e: sherpa-onnx требует имя ФАЙЛА model.onnx (не ru_RU-dmitri-medium.onnx)
+          docker exec voicestudio sh -c \
+            'cd /models/vits-piper-ru_RU-dmitri-medium && \
+             mv ru_RU-dmitri-medium.onnx model.onnx && \
+             mv ru_RU-dmitri-medium.onnx.json model.onnx.json && \
+             ls -la'
           ls -la /models/vits-piper-ru_RU-dmitri-medium 2>/dev/null || \
             docker exec voicestudio ls -la /models/vits-piper-ru_RU-dmitri-medium
           echo "=== Engines (sherpa-onnx должен быть available) ==="
