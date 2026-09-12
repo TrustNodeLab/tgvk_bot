@@ -1,0 +1,67 @@
+name: Voice samples comparison
+
+on:
+  workflow_dispatch:
+    inputs:
+      text:
+        description: "Текст для сравнения голосов (русский)"
+        required: false
+        default: "Кибербезопасность — это основа современного мира. Мошенники используют фишинг и социальную инженерию, чтобы украсть ваши данные. Согласитесь, это действительно важно!"
+
+jobs:
+  voices:
+    runs-on: ubuntu-latest
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install --quiet sherpa-onnx edge-tts numpy
+
+      # S34f: sherpa-onnx работает напрямую (без docker VoiceStudio);
+      # S34e: piper tar кладёт ru_RU-{voice}-medium.onnx — rename делает tts_samples.py
+      - name: Download 4 Russian Piper models
+        run: |
+          mkdir -p models
+          for v in dmitri denis ruslan irina; do
+            echo "⏳ Скачиваем ru_RU-$v-medium..."
+            curl -sL https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-ru_RU-${v}-medium.tar.bz2 | tar xj -C models || {
+              echo "❌ не удалось скачать $v"; exit 1
+            }
+          done
+          ls -d models/*/
+
+      - name: Generate voice samples
+        env:
+          SAMPLE_TEXT: ${{ github.event.inputs.text }}
+        run: |
+          python scripts/tts_samples.py || {
+            echo "❌ генерация семплов упала"; exit 1
+          }
+
+      - name: Send samples to Telegram
+        if: success()
+        run: |
+          jq -r '.[] | "\(.[0])\t\(.[1])\t\(.[2])"' samples/manifest.json | \
+          while IFS=$'\t' read -r NAME FILE FMT; do
+            echo "📤 Отправляю: $NAME ($FMT)"
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendAudio" \
+              -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
+              -F audio="@${FILE}" \
+              -F title="$NAME" \
+              -F caption="🎙️ $NAME — сравнение голосов"
+            echo ""
+          done
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d '{"chat_id":"'"${TELEGRAM_ADMIN_CHAT_ID}"'","text":"🗳️ Все '"$(jq -r 'length' samples/manifest.json)"' образцов отправлены в этом чате. Послушайте и скажите, какой голос больше нравится!"}'
+
+      - name: Cleanup models
+        if: always()
+        run: rm -rf models samples
