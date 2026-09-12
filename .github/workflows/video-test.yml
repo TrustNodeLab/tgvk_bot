@@ -41,10 +41,15 @@ jobs:
         run: pip install -r requirements.txt imageio-ffmpeg edge-tts numpy silero
 
       # S34: VoiceStudio (OmniVoice) — локальный Docker TTS-сервер
-      # GPU нет → CPU-режим; модель скачивается лениво при первом запросе (~3-10 мин).
+      # GPU нет → CPU-режим; модель скачивается лениво при первом запросе.
+      # S34c: OMNIVOICE_TTS_BACKEND=omnivoice-gguf — квантованная модель Q4_K_M (~659MB)
+      # вместо полной OmniVoice (multi-GB), которая OOM-kill'илась на раннере с 7GB RAM.
       - name: Start VoiceStudio
         run: |
-          docker run -d --name voicestudio -p 3900:3900 palashdeb/omnivoice-studio:stable
+          docker run -d --name voicestudio -p 3900:3900 \
+            -e OMNIVOICE_TTS_BACKEND=omnivoice-gguf \
+            -e OMNIVOICE_DEVICE=cpu \
+            palashdeb/omnivoice-studio:stable
           echo "⏳ Ожидание VoiceStudio (модель скачивается при первом запуске)..."
           for i in $(seq 1 120); do
             if curl -sf http://localhost:3900/health > /dev/null 2>&1; then
