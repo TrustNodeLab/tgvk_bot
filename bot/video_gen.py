@@ -548,7 +548,10 @@ def _tts_voicestudio(items, voice, tmpdir):
                     [ffmpeg, "-y", "-i", wav_path, "-c:a", "libmp3lame", path],
                     capture_output=True)
                 if r2.returncode != 0 or not os.path.exists(path) or os.path.getsize(path) < 100:
-                    raise RuntimeError("конвертация wav->mp3 не удалась")
+                    err_tail = (r2.stderr or b"").decode("utf-8", "replace")[-400:]
+                    raise RuntimeError(
+                        f"конвертация wav->mp3 не удалась (rc={r2.returncode}, "
+                        f"wav={os.path.getsize(wav_path)}B): {err_tail}")
                 last_err = None
                 break
             except Exception as e:
