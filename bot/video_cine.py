@@ -3337,9 +3337,12 @@ def _layout_voice_spans(shots, vmap, sec_durs):
             c2["trans_out"] = "hard_cut"
             c2["sfx"] = "none"
             c2["seed"] = s.get("seed", 1) + k
-            c2["subs"] = [{"lines": [parts[k][:70]], "mode": "sub"}] \
-                if parts[k] else []
-            c2["sub"] = parts[k][:70]
+            # S38c: parts может быть короче n (пустой sub при YouTube без
+            # субтитров → _split_words возвращает [""]). Guard от IndexError.
+            _pk = parts[k] if k < len(parts) else ""
+            c2["subs"] = [{"lines": [_pk[:70]], "mode": "sub"}] \
+                if _pk else []
+            c2["sub"] = _pk[:70]
             c2["_voice_sec"] = sub  # actual voice duration for subs sync
             refs.append(c2)
             prev_vis, prev_cam = vis, cam
