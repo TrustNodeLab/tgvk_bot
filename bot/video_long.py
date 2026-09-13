@@ -178,56 +178,122 @@ def _fallback_script(topic, minutes, format):
     return out
 
 
+def _stock_query_from_body(body, topic=""):
+    """Генерирует УНИКАЛЬНЫЙ EN stock query из текста body через keyword matching.
+
+    Ищет ключевые слова в тексте и возвращает соответствующий Pexels query.
+    Если совпадений нет — fallback на generic запросы.
+    """
+    if not body:
+        return _ru_to_en_query(topic, topic)
+    low = body.lower()
+    # Ищем совпадения в _VOICE_STOCK_KW (content-level matching)
+    for kw, queries in cine._VOICE_STOCK_KW.items():
+        if kw in low:
+            return random.choice(queries)
+    # Ищем совпадения в _TOPIC_STOCK_KW
+    for kw, queries in cine._TOPIC_STOCK_KW.items():
+        if kw in low:
+            return random.choice(queries)
+    # Fallback: generic запросы по теме
+    return _ru_to_en_query(body[:60], topic)
+
+
 def write_script(topic, minutes, format, provider=None):
-    """Сценарий секциями [{heading, body, query, role}] через LLM + fallback."""
+    """Сценарий секциями [{heading, body, query, role}] — по секции через LLM.
+
+    Каждая секция генерируется ОТДЕЛЬНЫМ LLM-вызовом с minimum chars.
+    Это решает проблему GigaChat, который при одном вызове даёт мало текста.
+    """
     total = _target_chars(minutes)
     plan = _blueprint(topic, minutes, format)
-    spec = "\n".join(
-        f"- {role}: ~{int(total * share)} символов текста для диктора"
-        for role, share in plan)
-    prompt = (
-        f"Ты — сценарист YouTube-канала о кибербезопасности и технологиях. "
-        f"Напиши сценарий ролика в формате {format} на тему «{topic}». "
-        f"Всего ~{total} символов дикторского текста (МИНИМУМ {total // 2} символов). "
-        f"Это ОЧЕНЬ длинный ролик на {minutes} минут — пиши подробно, с фактами, "
-        f"деталями, примерами. Каждая секция должна быть не менее "
-        f"{int(total / len(plan) * 0.8)} символов.\n"
-        f"Структура:\n{spec}\n"
-        f"Правила: body — живой дикторский текст (факты по теме, без воды, "
-        f"без приветствий дольше 1 фразы); heading — короткое название части "
-        f"(до 6 слов); query — 2-4 слова на АНГЛИЙСКОМ для поиска сток-видео "
-        f"под эту часть. Верни ТОЛЬКО валидный JSON без пояснений и markdown: "
-        f'{{"sections": [{{"heading": "...", "body": "...", "query": "..."}}]}}')
+    per_section_min = max(300, int(total / len(plan) * 0.6))
+    secs = []
+
     if llm is not None:
-        for attempt in range(3):
-            try:
-                raw = llm._complete([{"role": "user", "content": prompt}],
-                                    provider)
-                m = re.search(r"\{.*\}", raw, re.S)
-                data = json.loads(m.group(0) if m else raw)
-                secs = []
-                for i, (role, _share) in enumerate(plan):
-                    s = (data.get("sections") or [])[i:i + 1]
-                    s = s[0] if s else {}
-                    body = str(s.get("body") or "")[:6000]
-                    query_raw = str(s.get("query") or "")[:60]
-                    # Гарантируем EN-запрос для Pexels
+        for i, (role, share) in enumerate(plan):
+            budget = max(300, int(total * share))
+            role_name = {"hook": "заставка/вступление",
+                         "chapter": "основная часть",
+                         "argument": "аргумент",
+                         "item": "элемент топа",
+                         "thesis": "тезис",
+                         "verdict": "вердикт",
+                         "finale": "финал/выводы",
+                         "outro": "завершение"}.get(role, role)
+            prompt = (
+                f"Ты — сценарист YouTube-канала о кибербезопасности и технологиях. "
+                f"Напиши ЧАСТЬ {i+1} из {len(plan)} ({role_name}) сценария "
+                f"на тему «{topic}» (формат {format}).\n"
+                f"Это {role_name} ролика на {minutes} минут.\n"
+                f"Требуется МИНИМУМ {per_section_min} символов дикторского текста "
+                f"(цель ~{budget} символов).\n"
+                f"Правила:\n"
+                f"- body — живой дикторский текст: факты, детали, примеры, цифры, "
+                f"имена, даты. Без воды и приветствий.\n"
+                f"- heading — короткое название (до 6 слов)\n"
+                f"- query — 2-3 слова на АНГЛИЙСКОМ для поиска сток-видео "
+                f"(УНИКАЛЬНЫЕ для этой секции, НЕ повторяй query из предыдущих частей)\n"
+                f"Уже написаны секции:\n"
+                + "\n".join(f"  {j+1}. [{prev['role']}] query: {prev['query']}"
+                            for j, prev in enumerate(secs) if prev.get("query"))
+                + f"\n\nВерни ТОЛЬКО валидный JSON: "
+                f'{{"heading":"...","body":"...","query":"..."}}')
+            for attempt in range(2):
+                try:
+                    raw = llm._complete([{"role": "user", "content": prompt}],
+                                        provider)
+                    # Парсим JSON — может быть в markdown code block
+                    cleaned = re.sub(r"```json\s*|\s*```", "", raw.strip())
+                    m = re.search(r"\{.*\}", cleaned, re.S)
+                    data = json.loads(m.group(0) if m else cleaned)
+                    body = str(data.get("body") or "")[:8000]
+                    heading = str(data.get("heading") or f"{topic}: часть {i}")[:80]
+                    query_raw = str(data.get("query") or "")[:60]
+                    # Гарантируем EN-запрос для Pexels + уникальность
                     query_en = _ru_to_en_query(query_raw, topic)
-                    secs.append({
-                        "heading": str(s.get("heading") or f"{topic}: часть {i}")[:80],
-                        "body": body,
-                        "query": query_en,
-                        "role": role, "method": "llm"})
-                total_chars = sum(len(s['body']) for s in secs)
-                if any(s["body"] for s in secs):
-                    print(f"[long] сценарий LLM: {len(secs)} секций "
-                          f"({total_chars} симв, цель {total})")
-                    if total_chars >= total * 0.5:
-                        return secs
-                    print(f"[long] LLM вернул мало текста ({total_chars} < {total//2}), повтор...")
+                    # Проверяем длину
+                    if len(body) >= per_section_min:
+                        break
+                    print(f"[long] секция {i+1}: мало текста "
+                          f"({len(body)} < {per_section_min}), повтор...")
+                except Exception as e:
+                    print(f"[long] секция {i+1}: ошибка LLM "
+                          f"({type(e).__name__}), попытка {attempt+1}/2")
                     continue
-            except Exception as e:
-                print(f"[long] LLM сценарий не удался ({type(e).__name__}) — шаблон")
+            else:
+                # LLM не справился — используем шаблон для этой секции
+                fb = _fallback_script(topic, minutes, format)
+                if i < len(fb):
+                    body = fb[i].get("body", "")
+                    heading = fb[i].get("heading", heading)
+                    query_en = fb[i].get("query", query_en)
+                    print(f"[long] секция {i+1}: fallback на шаблон")
+                else:
+                    body = f"Разбираем тему «{topic}», часть {i+1}. " * 20
+                    print(f"[long] секция {i+1}: generic fallback")
+
+            secs.append({
+                "heading": heading,
+                "body": body,
+                "query": query_en,
+                "role": role,
+                "method": "llm" if body and "template" not in str(body) else "template"})
+
+        total_chars = sum(len(s['body']) for s in secs)
+        print(f"[long] сценарий LLM: {len(secs)} секций "
+              f"({total_chars} симв, цель {total})")
+        if total_chars >= total * 0.3:
+            return secs
+        print(f"[long] LLM дал {total_chars} символов — дополняем fallback")
+        # Дополняем короткие секции шаблонным текстом
+        fb = _fallback_script(topic, minutes, format)
+        for j, s in enumerate(secs):
+            if len(s["body"]) < per_section_min and j < len(fb):
+                s["body"] = s["body"] + " " + fb[j].get("body", "")
+                s["method"] = "llm+template"
+        return secs
+
     return _fallback_script(topic, minutes, format)
 
 
@@ -406,11 +472,34 @@ def build_long_shots(sections, topic, seed=7, target_sec=None):
 # ---------- стоки 16:9 по секциям ----------
 
 def fetch_section_stock(ffmpeg, tmpdir, sections, max_sec=15):
-    """По 2-3 landscape-клипам на секцию -> общие кадры. Возвращает [png...]."""
+    """По 2-3 landscape-клипам на секцию -> общие кадры. Возвращает [png...].
+
+    Query генерируется ИЗ BODY текста (content-level matching) для максимального
+    разнообразия — каждая секция получает УНИКАЛЬНЫЙ stock-запрос.
+    """
     frames_all = []
+    used_queries = set()  # избегаем повторов
     for si, sec in enumerate(sections[:max_sec]):
-        q_raw = (sec.get("query") or "").strip()
-        q = _ru_to_en_query(q_raw, sec.get("heading", ""))
+        # Генерируем query из body (content-level) + fallback на sec["query"]
+        body = (sec.get("body") or "")
+        q = _stock_query_from_body(body, sec.get("heading", ""))
+        # Если уже использовали — пробуем другой из body
+        if q in used_queries:
+            # Ищем второе совпадение в body
+            q2 = _stock_query_from_body(body[100:], sec.get("heading", ""))
+            if q2 != q:
+                q = q2
+            else:
+                # Fallback на generic с вариацией
+                fallbacks = ["technology abstract", "digital concept dark",
+                             "data visualization", "cyber security concept",
+                             "modern office night", "city skyline night",
+                             "computer screen dark", "server room dark",
+                             "network abstract", "hacker typing dark",
+                             "police operation", "money counting machine"]
+                q = random.choice([f for f in fallbacks if f not in used_queries]
+                                  or fallbacks)
+        used_queries.add(q)
         if not q:
             continue
         sdir = os.path.join(tmpdir, f"stock_s{si}")
