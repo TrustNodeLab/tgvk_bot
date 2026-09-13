@@ -516,9 +516,14 @@ def fetch_section_stock(ffmpeg, tmpdir, sections, max_sec=15):
             fr = cine.extract_stock_frames(
                 ffmpeg, clips, os.path.join(sdir, "frames"))
             if fr:
-                flat = [x for grp in fr for x in grp]
-                frames_all.extend(flat)
-                print(f"[long] секция {si}: сток «{q}» ({len(flat)} кадров, {len(clips)} клипов)")
+                # НЕ flattening — храним клипы как [[кадры_клипа_0], ...]
+                # чтобы render_cinematic мог проигрывать ДВИЖЕНИЕ в каждом шоте
+                for grp in fr:
+                    if grp:
+                        frames_all.append(grp)
+                total_frames = sum(len(g) for g in frames_all)
+                print(f"[long] секция {si}: сток «{q}» ({len(clips)} клипов, "
+                      f"{total_frames} кадров, {len(frames_all)} клипов-всего)")
         except Exception as e:
             print(f"[long] секция {si}: сток недоступен ({type(e).__name__})")
             continue
