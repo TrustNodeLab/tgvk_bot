@@ -179,24 +179,106 @@ def _fallback_script(topic, minutes, format):
 
 
 def _stock_query_from_body(body, topic=""):
-    """Генерирует УНИКАЛЬНЫЙ EN stock query из текста body через keyword matching.
+    """Генерирует УНИКАЛЬНЫЙ EN stock query из текста body.
 
-    Ищет ключевые слова в тексте и возвращает соответствующий Pexels query.
-    Если совпадений нет — fallback на generic запросы.
+    S38c: Для YouTube-документалки используем ДРАМАТИЧНЫЕ реальные клипы
+    (drone footage, police raids, money, news), а НЕ screen-based (login, url bar).
     """
     if not body:
         return _ru_to_en_query(topic, topic)
     low = body.lower()
-    # Ищем совпадения в _VOICE_STOCK_KW (content-level matching)
-    for kw, queries in cine._VOICE_STOCK_KW.items():
+
+    # --- DOC-специфичные запросы (для YouTube-документалки) ---
+    _DOC_KW = {
+        # Драматика / криминал
+        "арест": ["police arrest suspect night", "handcuffs close up"],
+        "полиц": ["police operation raid", "police car lights night"],
+        "расследован": ["detective investigation board", "detective desk files"],
+        "федерал": ["federal agents operation", "government building exterior"],
+        "суд": ["courtroom trial", "judge gavel close up"],
+        "приговор": ["prison bars close up", "jail cell door"],
+        "штраф": ["money penalty fine", "court documents"],
+        "задержан": ["police arrest suspect", "suspect handcuffed"],
+        "подозрева": ["interrogation room", "suspect shadow"],
+        "преступлен": ["crime scene tape", "evidence markers"],
+        "жертва": ["victim silhouette dark", "crime scene evidence"],
+        # Деньги / финансы
+        "миллиард": ["money counting machine", "stacks hundred dollar bills"],
+        "миллион": ["cash counting machine", "money bundles"],
+        "доллар": ["us dollar bills close", "hundred dollar bill macro"],
+        "деньги": ["money counting machine", "cash register close up"],
+        "банк": ["bank building exterior", "bank vault door"],
+        "bitcoin": ["bitcoin coin physical", "cryptocurrency mining rig"],
+        "крипт": ["bitcoin coin close up", "cryptocurrency trading chart"],
+        "валют": ["currency exchange board", "money counting machine"],
+        "счет": ["bank statement document", "financial chart screen"],
+        # Технологии / кибер
+        "взлом": ["hacker typing dark room", "computer screen code dark"],
+        "хакер": ["hacker hands keyboard dark", "hacker silhouette screen"],
+        "атак": ["cyber attack concept", "server room dark"],
+        "вирус": ["malware virus concept", "computer virus alert"],
+        "данные": ["data stream abstract", "binary code scrolling"],
+        "сервер": ["server room racks", "data center corridor"],
+        "интернет": ["internet cable close up", "fiber optic cable"],
+        "телефон": ["smartphone notification dark", "phone call screen"],
+        "экран": ["computer screen dark code", "monitor glowing dark"],
+        "код": ["programming code screen", "terminal code scrolling"],
+        "систем": ["system abstract digital", "network visualization"],
+        "сеть": ["network cables server", "router lights blinking"],
+        "защит": ["firewall concept", "security lock digital"],
+        "безопасн": ["security camera close", "security control room"],
+        # География / локации
+        "город": ["city skyline aerial", "city night lights drone"],
+        "здание": ["building exterior aerial", "office building night"],
+        "улица": ["street view dashcam", "city street traffic"],
+        "стран": ["country landscape aerial", "map world highlighted"],
+        "границ": ["border crossing checkpoint", "passport control"],
+        "аэропорт": ["airport terminal", "airplane takeoff runway"],
+        "порта": ["cargo ship port aerial", "container port drone"],
+        "завод": ["factory industrial aerial", "smokestack industrial"],
+        # Люди / общество
+        "жител": ["city people walking", "crowd street"],
+        "президент": ["government podium speech", "press conference"],
+        "директор": ["businessman office", "corporate meeting"],
+        "компани": ["corporate office interior", "business meeting"],
+        "команд": ["team collaboration office", "teamwork desk"],
+        "ناس": ["crowd people city", "people walking street"],
+        "жертв": ["sad person window", "lonely person city"],
+        # Новости / медиа
+        "новост": ["news broadcast studio", "newspaper headline close"],
+        "журналист": ["press camera journalist", "microphone interview"],
+        "стат": ["newspaper article close", "news article printed"],
+        "публикац": ["magazine article printed", "news headline paper"],
+        "пресс": ["press conference podium", "camera crew filming"],
+        # Время / динамика
+        "результат": ["success concept abstract", "victory celebration"],
+        "ошибк": ["error warning screen", "red alert warning"],
+        "проблем": ["problem concept abstract", "challenge obstacle"],
+        "опасн": ["danger warning sign", "hazard tape"],
+        "риск": ["risk concept", "warning triangle"],
+        "угроз": ["threat warning", "danger alert"],
+        "последств": ["consequence concept", "aftermath destruction"],
+    }
+
+    # Ищем совпадения в DOC-словаре
+    for kw, queries in _DOC_KW.items():
         if kw in low:
             return random.choice(queries)
-    # Ищем совпадения в _TOPIC_STOCK_KW
-    for kw, queries in cine._TOPIC_STOCK_KW.items():
-        if kw in low:
-            return random.choice(queries)
-    # Fallback: generic запросы по теме
-    return _ru_to_en_query(body[:60], topic)
+
+    # Fallback: generic documentary queries
+    doc_fallbacks = [
+        "city skyline aerial drone", "police operation night",
+        "money counting machine", "server room dark",
+        "hacker typing dark room", "federal building exterior",
+        "courtroom trial", "prison bars close up",
+        "newspaper headline close", "smartphone notification dark",
+        "traffic city night", "construction site aerial",
+        "data center corridor", "security camera close up",
+        "bank building night", "bitcoin coin physical",
+        "airplane takeoff runway", "cargo ship port aerial",
+        "factory industrial aerial", "crowd people city street",
+    ]
+    return random.choice(doc_fallbacks)
 
 
 def write_script(topic, minutes, format, provider=None):
@@ -360,11 +442,12 @@ def _mkshot(sid, act, dur, visual, camera, texts, trans_out, sfx="none",
             voice="", sub="", sec=0):
     if typ is None:
         typ = "cinematic"
-    subs = ([{"lines": [sub[:SUB_MAX]], "mode": "sub"}]
-            if (sub and typ == "cinematic") else [])
+    # S38c: YouTube 16:9 — НЕТ субтитров. Субтитры только для TikTok 9:16.
+    # Визуальные шоты должны рассказывать историю сами (как у Мамая).
+    subs = []
     return {"id": sid, "sec": sec, "act": act, "dur": dur, "visual": visual,
             "camera": camera, "texts": texts, "subs": subs,
-            "sub": sub[:SUB_MAX], "voice": voice[:CHUNK_MAX],
+            "sub": "", "voice": voice[:CHUNK_MAX],
             "trans_out": trans_out, "sfx": sfx, "speed": speed,
             "accent": accent, "fx": fx, "type": typ}
 
@@ -531,16 +614,18 @@ def fetch_section_stock(ffmpeg, tmpdir, sections, max_sec=15):
 
 
 def assign_section_stock(shots, frames):
-    """Живые фоны — текстовым-less cinematic шотам, каждый 2-й шот."""
+    """Живые фоны — ВСЕМ cinematic шотам с голосом (а не каждому 2-му).
+
+    S38c: каждый шот с голосом должен иметь визуал, чтобы YouTube-зритель
+    видел ДВИЖЕНИЕ на экране, а не чёрные экраны/абстракции.
+    """
     if not frames:
         return 0
     ci, n = 0, 0
     for s in shots:
         if cine.shot_kind(s) == "cinematic" and not s.get("texts"):
-            # каждый 2-й такой шот — живой фон (больше variety)
-            if n % 2 == 0:
-                s["stock"] = ci % len(frames)
-                ci += 1
+            s["stock"] = ci % len(frames)
+            ci += 1
             n += 1
     print(f"[long] живые фоны назначены {ci}/{n} шотам")
     return ci
@@ -638,13 +723,24 @@ def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
         print(f"[long] EDL {edl_in}: {len(shots)} шотов на пересборку")
         sections = []
     elif script_text and str(script_text).strip():
-        parsed = vg.parse_script(str(script_text))
-        sections = [{"heading": p.get("heading", f"Часть {i + 1}"),
-                     "body": p.get("body", ""),
-                     "query": topic, "role": "chapter",
-                     "method": "article"}
-                    for i, p in enumerate(parsed)]
-        print(f"[long] статья: {len(sections)} секций")
+        # S38c: НЕ парсим статью в sections — вместо этого генерируем
+        # ПОЛНЫЙ сценарий через per-section LLM, используя статью как контекст.
+        # parse_script() даёт мало секций и русские query → 22с видео.
+        # write_script() делает per-section LLM → 15мин + EN queries → Pexels.
+        print(f"[long] from_post: переключаемся на per-section LLM "
+              f"(article {len(script_text)} chars → {minutes} мин сценарий)")
+        # Передаём topic из статьи + topic из аргумента
+        combined_topic = topic
+        try:
+            parsed_article = vg.parse_script(str(script_text))
+            if parsed_article:
+                # Берём заголовок из статьи как тему
+                article_head = parsed_article[0].get("heading", "")
+                if article_head and len(article_head) > 5:
+                    combined_topic = f"{topic}: {article_head}"
+        except Exception:
+            pass
+        sections = write_script(combined_topic, minutes, format, provider)
     else:
         sections = write_script(topic, minutes, format, provider)
     if not edl_in:
@@ -779,15 +875,13 @@ def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
             mix2 = cine.np.clip(mix2, -32768, 32767).astype(cine.np.int16)
             cine.write_wav(bed_wav, mix2)
         vg.mux_audio(ffmpeg, silent, bed_wav, out, real_dur)
-    # --- EDL + SRT рядом с роликом
+    # --- EDL рядом с роликом (SRT НЕ генерируем — YouTube без субтитров)
     base, _ = os.path.splitext(out)
     epath = edl_out or (base + ".edl.json")
-    spath = base + ".srt"
     dump_edl(epath, topic, format, minutes, fps, shots, bounds)
-    _, nsubs = dump_srt(spath, shots, bounds)
     size = os.path.getsize(out)
     print(f"[long] ГОТОВО: {out} ({size / 1048576:.1f} MB, {real_dur:.1f} c, "
-          f"{format}, 16:9) + EDL ({len(shots)} шотов) + SRT ({nsubs} реплик)")
+          f"{format}, 16:9) + EDL ({len(shots)} шотов)")
     return out
 
 
