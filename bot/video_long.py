@@ -42,6 +42,82 @@ SUB_MAX = 70
 
 FORMATS = ("doc", "breakdown", "top10")
 
+# --- RU → EN stock query translation (для Pexels API) ---
+_RU_EN_STOCK = {
+    "ダーкнет": "darknet", "даркнет": "darknet", "тёмный": "dark",
+    "кибербезопасн": "cybersecurity", "безопасн": "security",
+    "крипто": "bitcoin cryptocurrency", "bitcoin": "bitcoin cryptocurrency",
+    "биткоин": "bitcoin", "монета": "bitcoin coin close up",
+    "взлом": "hacker typing dark", "атака": "cyber attack concept",
+    "хакер": "hacker typing dark", "проникновен": "data breach concept",
+    "федерал": "federal agents raid", "расследован": "detective investigation",
+    "полиц": "police operation", "арест": "police arrest suspect",
+    " задержан": "police arrest", "подозрева": "suspect interrogation",
+    "офис": "modern office interior", "здание": "building exterior aerial",
+    "город": "city skyline", "улица": "street view dashcam",
+    "деньги": "money counting machine", "доллар": "us dollar bills close",
+    "банкнот": "printing money press", "банк": "bank building night",
+    "компьютер": "computer screen dark", "монитор": "monitor screen data",
+    "клавиатур": "keyboard typing close", "экран": "screen glowing dark",
+    "телефон": "smartphone notification", "смартфон": "smartphone dark",
+    "приложен": "mobile app screen", "соцсет": "social media phone",
+    "данные": "data stream abstract", "информац": "binary code screen",
+    "сервер": "server room racks", "дата-центр": "data center corridor",
+    "сетев": "network cables close", "провайд": "internet cable close",
+    "вирус": "malware virus concept", "троян": "trojan horse concept",
+    "фишинг": "phishing email fake", "мошеннич": "fraud concept abstract",
+    "скам": "scam concept dark", "обман": "deception concept",
+    "связь": "communication tower", "интернет": "internet cable close",
+    "веб": "website screen dark", "сайт": "web browser screen",
+    "поиск": "search engine screen", "торговл": "stock trading screen",
+    "рынок": "stock market chart", "акци": "stock market screen",
+    "технолог": "technology abstract", "инновац": "innovation concept",
+    "платформ": "digital platform abstract", "систем": "system abstract",
+    "программ": "code screen dark", "код": "programming code screen",
+    "разработк": "developer workspace", "команд": "team collaboration office",
+    "оператив": "military operation", "спецоперац": "special operation raid",
+    "война": "military drone footage", "оружи": "weapon close up",
+    "контрол": "security control room", "наблюд": "surveillance camera",
+    "камера": "cctv camera close", "мониторинг": "monitoring room screens",
+    "угроз": "threat warning screen", "риск": "risk concept abstract",
+    "уязвим": "vulnerability concept", "защит": "firewall concept abstract",
+    "шифр": "encryption lock concept", "пароль": "password typing keyboard",
+    "аутентификац": "biometric scan close", "доступ": "access control gate",
+    "перехват": "wiretap concept", "шпион": "spy camera lens",
+    "река": "river aerial view", "тропик": "tropical river drone",
+    "мост": "bridge aerial view", "деревн": "village aerial view",
+    "завод": "factory industrial", "производств": "manufacturing line",
+    "склад": "warehouse interior", "лаборатори": "laboratory research",
+    "медицин": "medical technology", "лечени": "hospital interior",
+    "здоровь": "health technology", "искусственн": "artificial intelligence",
+    "нейросет": "neural network abstract", "алгоритм": "algorithm abstract",
+    "автоматизац": "automation robot", "робот": "robot arm industrial",
+    "механизм": "gear mechanism close", "двигатель": "engine close up",
+    "транспорт": "traffic night city", "автомобил": "car traffic night",
+    "самолёт": "airplane takeoff", "корабл": "cargo ship aerial",
+}
+
+
+def _ru_to_en_query(text, topic=""):
+    """Переводит русский запрос в английский для Pexels."""
+    if not text:
+        return topic or "technology abstract"
+    low = text.lower().strip()
+    # Если уже на английском — вернуть как есть
+    if all(ord(c) < 128 or c in ".,!? -" for c in low):
+        return low[:60]
+    # Ищем совпадения в словаре
+    for ru_kw, en_q in _RU_EN_STOCK.items():
+        if ru_kw in low:
+            return en_q
+    # Fallback: generic запросы по теме
+    generic = [
+        "technology abstract", "digital concept dark", "data visualization",
+        "cyber security concept", "modern office night", "city skyline night",
+        "computer screen dark", "server room dark", "network abstract",
+    ]
+    return random.choice(generic)
+
 
 # ---------- сценарий ----------
 
@@ -95,8 +171,10 @@ def _fallback_script(topic, minutes, format):
                     f"пригодятся в финале. " * 12)
         else:
             head, body = f"{topic}", f"Про «{topic}». " * 20
+        # Гарантируем EN-запрос для Pexels
+        query_en = _ru_to_en_query(f"{topic} {head}", topic)
         out.append({"heading": head[:80], "body": body[:budget + 400],
-                    "query": f"{topic}", "role": role, "method": "template"})
+                    "query": query_en, "role": role, "method": "template"})
     return out
 
 
@@ -110,33 +188,46 @@ def write_script(topic, minutes, format, provider=None):
     prompt = (
         f"Ты — сценарист YouTube-канала о кибербезопасности и технологиях. "
         f"Напиши сценарий ролика в формате {format} на тему «{topic}». "
-        f"Всего ~{total} символов дикторского текста. Структура:\n{spec}\n"
+        f"Всего ~{total} символов дикторского текста (МИНИМУМ {total // 2} символов). "
+        f"Это ОЧЕНЬ длинный ролик на {minutes} минут — пиши подробно, с фактами, "
+        f"деталями, примерами. Каждая секция должна быть не менее "
+        f"{int(total / len(plan) * 0.8)} символов.\n"
+        f"Структура:\n{spec}\n"
         f"Правила: body — живой дикторский текст (факты по теме, без воды, "
         f"без приветствий дольше 1 фразы); heading — короткое название части "
         f"(до 6 слов); query — 2-4 слова на АНГЛИЙСКОМ для поиска сток-видео "
         f"под эту часть. Верни ТОЛЬКО валидный JSON без пояснений и markdown: "
         f'{{"sections": [{{"heading": "...", "body": "...", "query": "..."}}]}}')
     if llm is not None:
-        try:
-            raw = llm._complete([{"role": "user", "content": prompt}],
-                                provider)
-            m = re.search(r"\{.*\}", raw, re.S)
-            data = json.loads(m.group(0) if m else raw)
-            secs = []
-            for i, (role, _share) in enumerate(plan):
-                s = (data.get("sections") or [])[i:i + 1]
-                s = s[0] if s else {}
-                secs.append({
-                    "heading": str(s.get("heading") or f"{topic}: часть {i}")[:80],
-                    "body": str(s.get("body") or "")[:6000],
-                    "query": str(s.get("query") or topic)[:60],
-                    "role": role, "method": "llm"})
-            if any(s["body"] for s in secs):
-                print(f"[long] сценарий LLM: {len(secs)} секций "
-                      f"({sum(len(s['body']) for s in secs)} симв)")
-                return secs
-        except Exception as e:
-            print(f"[long] LLM сценарий не удался ({type(e).__name__}) — шаблон")
+        for attempt in range(3):
+            try:
+                raw = llm._complete([{"role": "user", "content": prompt}],
+                                    provider)
+                m = re.search(r"\{.*\}", raw, re.S)
+                data = json.loads(m.group(0) if m else raw)
+                secs = []
+                for i, (role, _share) in enumerate(plan):
+                    s = (data.get("sections") or [])[i:i + 1]
+                    s = s[0] if s else {}
+                    body = str(s.get("body") or "")[:6000]
+                    query_raw = str(s.get("query") or "")[:60]
+                    # Гарантируем EN-запрос для Pexels
+                    query_en = _ru_to_en_query(query_raw, topic)
+                    secs.append({
+                        "heading": str(s.get("heading") or f"{topic}: часть {i}")[:80],
+                        "body": body,
+                        "query": query_en,
+                        "role": role, "method": "llm"})
+                total_chars = sum(len(s['body']) for s in secs)
+                if any(s["body"] for s in secs):
+                    print(f"[long] сценарий LLM: {len(secs)} секций "
+                          f"({total_chars} симв, цель {total})")
+                    if total_chars >= total * 0.5:
+                        return secs
+                    print(f"[long] LLM вернул мало текста ({total_chars} < {total//2}), повтор...")
+                    continue
+            except Exception as e:
+                print(f"[long] LLM сценарий не удался ({type(e).__name__}) — шаблон")
     return _fallback_script(topic, minutes, format)
 
 
@@ -178,9 +269,22 @@ _ROLE_ACT = {"hook": "hook", "thesis": "problem", "chapter": "problem",
 _VISUALS = ["phone_message", "login_screen", "keyboard", "qr_scan",
             "token_panel", "server_corridor", "cables", "person",
             "phone_call", "face_glow", "eye", "server_rack",
-            "switch_macro", "consequence", "bokeh", "message"]
+            "switch_macro", "consequence", "bokeh", "message",
+            "bitcoin_closeup", "city_skyline", "police_raid",
+            "data_center", "hacker_screen", "money_counting",
+            "drone_aerial", "news_article", "federal_building",
+            "courtroom", "evidence_table", "interrogation_room",
+            "military_convoy", "tropical_river", "port_cargo",
+            "printing_press", "atm_machine", "security_fence",
+            "lock_mechanism", "code_screen", "cloud_server",
+            "firewall", "wiretap_device", "gps_tracker",
+            "satellite_dish", "underground_tunnel", "wire_room",
+            "control_panel", "emergency_light", "broken_glass",
+            "dark_corridor", "flashlight_beam", "badge_closeup",
+            "map_pinpoint", "car_chase", "night_vision"]
 _PEAK_POOL = ["attack_grid", "face_glow", "server_corridor", "eye",
-              "consequence"]
+              "consequence", "police_raid", "federal_building",
+              "money_counting", "hacker_screen", "drone_aerial"]
 _CAMERAS = ["push_in", "drift", "push_out", "tilt", "whip_pan", "snap"]
 _TRANS = ["hard_cut", "whip", "zoom", "match", "hard_cut", "dip"]
 
@@ -301,26 +405,31 @@ def build_long_shots(sections, topic, seed=7, target_sec=None):
 
 # ---------- стоки 16:9 по секциям ----------
 
-def fetch_section_stock(ffmpeg, tmpdir, sections, max_sec=12):
-    """По 1 landscape-клипу на секцию -> общие кадры. Возвращает [png...]."""
+def fetch_section_stock(ffmpeg, tmpdir, sections, max_sec=15):
+    """По 2-3 landscape-клипам на секцию -> общие кадры. Возвращает [png...]."""
     frames_all = []
     for si, sec in enumerate(sections[:max_sec]):
-        q = (sec.get("query") or "").strip()
+        q_raw = (sec.get("query") or "").strip()
+        q = _ru_to_en_query(q_raw, sec.get("heading", ""))
         if not q:
             continue
         sdir = os.path.join(tmpdir, f"stock_s{si}")
         try:
-            clips, _ = cine.fetch_stock_clips(sdir, [q], max_clips=1,
+            clips, _ = cine.fetch_stock_clips(sdir, [q], max_clips=3,
                                               orientation="landscape")
+            if not clips:
+                # fallback: пробуем общий запрос
+                clips, _ = cine.fetch_stock_clips(
+                    sdir, ["technology abstract"], max_clips=2,
+                    orientation="landscape")
             if not clips:
                 continue
             fr = cine.extract_stock_frames(
                 ffmpeg, clips, os.path.join(sdir, "frames"))
             if fr:
-                # M25: extract_stock_frames вернул [ [кадры..], ... ] — плоско
                 flat = [x for grp in fr for x in grp]
                 frames_all.extend(flat)
-                print(f"[long] секция {si}: сток «{q}» ({len(flat)} кадров)")
+                print(f"[long] секция {si}: сток «{q}» ({len(flat)} кадров, {len(clips)} клипов)")
         except Exception as e:
             print(f"[long] секция {si}: сток недоступен ({type(e).__name__})")
             continue
@@ -328,18 +437,18 @@ def fetch_section_stock(ffmpeg, tmpdir, sections, max_sec=12):
 
 
 def assign_section_stock(shots, frames):
-    """Живые фоны — текстовым-less cinematic шотам, по кругу секций."""
+    """Живые фоны — текстовым-less cinematic шотам, каждый 2-й шот."""
     if not frames:
         return 0
     ci, n = 0, 0
     for s in shots:
         if cine.shot_kind(s) == "cinematic" and not s.get("texts"):
-            # каждый 2-й такой шот — живой фон (микс, не сплошняк)
+            # каждый 2-й такой шот — живой фон (больше variety)
             if n % 2 == 0:
                 s["stock"] = ci % len(frames)
                 ci += 1
             n += 1
-    print(f"[long] живые фоны назначены {ci} шотам")
+    print(f"[long] живые фоны назначены {ci}/{n} шотам")
     return ci
 
 
