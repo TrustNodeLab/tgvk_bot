@@ -13,13 +13,11 @@
   python bot/tts_server_xtts.py --ref-audio refs/ruslan.wav --pitch -2 --port 3900
 """
 import argparse
-import io
 import json
 import os
 import sys
 import tempfile
 import time
-import wave
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 # подключаем scripts/tts_clone.py (load_xtts_model + synth_to_file)
@@ -53,8 +51,8 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _synth(self, text: str) -> tuple:
-        """Синтез -> (wav_bytes, sample_rate). Промежуточный файл в temp."""
+    def _synth(self, text: str) -> bytes:
+        """Синтез -> полные WAV bytes (RIFF-заголовок + PCM). Промежуточный файл в temp."""
         fd, tmp = tempfile.mkstemp(suffix=".wav")
         os.close(fd)
         try:
@@ -62,11 +60,8 @@ class Handler(BaseHTTPRequestHandler):
                                lang=self.lang, speed=self.speed, pitch=self.pitch)
             if rc != 0:
                 raise RuntimeError("XTTS synth rc=%d" % rc)
-            with wave.open(tmp, "rb") as w:
-                sr = w.getframerate()
-                n = w.getnframes()
-                pcm = w.readframes(n)
-            return pcm, sr
+            with open(tmp, "rb") as fh:
+                return fh.read()
         finally:
             try:
                 os.remove(tmp)
@@ -96,7 +91,7 @@ class Handler(BaseHTTPRequestHandler):
             body = json.loads(self.rfile.read(ln).decode("utf-8"))
             text = body.get("input", "")
             t0 = time.time()
-            wav, sr = self._synth(text)
+            wav = self._synth(text)  # полные WAV bytes (RIFF + PCM)
             sys.stderr.write("[tts] synthesized %d chars in %.1fs (%d bytes)\n"
                              % (len(text), time.time() - t0, len(wav)))
         except Exception as e:  # noqa: BLE001
