@@ -295,6 +295,10 @@ def write_script(topic, minutes, format, provider=None):
     if llm is not None:
         for i, (role, share) in enumerate(plan):
             budget = max(300, int(total * share))
+            # Инициализируем переменные ДО цикла retry (на случай HTTPError)
+            body = ""
+            heading = f"{topic}: часть {i + 1}"
+            query_en = _ru_to_en_query(topic, topic)
             role_name = {"hook": "заставка/вступление",
                          "chapter": "основная часть",
                          "argument": "аргумент",
