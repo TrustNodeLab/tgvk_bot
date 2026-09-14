@@ -705,13 +705,13 @@ def generate_long(topic=None, minutes=6, format="doc", out="out/video_long.mp4",
     try:
         return _generate_long_inner(
             topic, minutes, format, out, fps, tmpdir, voice, no_audio,
-            voice_over, edl_out, edl_in, script_text, provider, seed)
+            voice_over, edl_out, srt_out, edl_in, script_text, provider, seed)
     finally:
         cine.set_aspect("9:16")
 
 
 def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
-                         no_audio, voice_over, edl_out, edl_in,
+                         no_audio, voice_over, edl_out, srt_out, edl_in,
                          script_text, provider, seed):
     import shutil as _sh
     topic = (topic or "Как вас взламывают через фишинг").strip()
