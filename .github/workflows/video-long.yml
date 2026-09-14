@@ -159,11 +159,48 @@ jobs:
         if: success()
         run: |
           CAPTION="🎬 Длинное видео готово (${{ github.event.inputs.minutes }} мин, ${{ github.event.inputs.format }}, run ${{ github.run_id }})${{ github.event.inputs.script != '' && ' — по статье' || '' }}${{ github.event.inputs.from_post != '' && ' — по посту' || '' }}"
+          # Telegram Bot API: лимит 50MB — сжимаем полный 1080p до <50MB (720p, цикл CRF)
+          python - <<'EOF'
+          import subprocess, os, sys
+          import imageio_ffmpeg
+          ff = imageio_ffmpeg.get_ffmpeg_exe()
+          src = "out/video_long.mp4"
+          size = os.path.getsize(src)
+          print(f"[tg] исходник: {size/1048576:.1f} MB")
+          MAX = 48 * 1048576
+          if size <= MAX:
+              print("[tg] размер ок, шлём как есть")
+              sys.exit(0)
+          ok = False
+          for crf in (26, 28, 30, 32, 34):
+              dst = f"out/tg_crf{crf}.mp4"
+              r = subprocess.run([ff, "-y", "-v", "error", "-i", src,
+                                 "-c:v", "libx264", "-preset", "veryfast", "-crf", str(crf),
+                                 "-vf", "scale=1280:720", "-c:a", "aac", "-b:a", "96k",
+                                 "-movflags", "+faststart", dst], capture_output=True)
+              if r.returncode != 0:
+                  print(f"[tg] crf {crf} FAILED: {(r.stderr or b'')[-200:]!r}")
+                  continue
+              s = os.path.getsize(dst)
+              print(f"[tg] crf {crf}: {s/1048576:.1f} MB")
+              if s <= MAX:
+                  os.replace(dst, "out/video_long_50.mp4")
+                  ok = True
+                  break
+          if not ok:
+              print("::error::не удалось сжать видео до 50MB")
+              sys.exit(1)
+          EOF
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
             -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
             -F video="@out/video_long.mp4" \
             -F supports_streaming=true \
-            -F caption="$CAPTION"
+            -F caption="$CAPTION" || true
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendVideo" \
+            -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
+            -F video="@out/video_long_50.mp4" \
+            -F supports_streaming=true \
+            -F caption="$CAPTION (сжатая до 50MB для Telegram)"
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
             -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
             -F document="@out/video_long.edl.json" \
