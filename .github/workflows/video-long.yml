@@ -145,16 +145,15 @@ jobs:
             --minutes "${{ github.event.inputs.minutes }}" \
             --format "${{ github.event.inputs.format }}" \
             --out out/video_long.mp4 \
-            --srt-out out/video_long.srt $EXTRA
+            --edl-out out/video_long.edl.json $EXTRA
 
-      - name: Upload video + EDL + SRT
+      - name: Upload video + EDL
         uses: actions/upload-artifact@v4
         with:
           name: video-long
           path: |
             out/video_long.mp4
             out/video_long.edl.json
-            out/video_long.srt
           retention-days: 14
 
       - name: Send video to Telegram
@@ -213,12 +212,6 @@ jobs:
               -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
               -F document="@out/video_long.edl.json" \
               -F caption="🧩 Монтажный лист (EDL): правь текст/порядок и пересобирай через --edl-in"
-          fi
-          if [ -f "out/video_long.srt" ]; then
-            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
-              -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
-              -F document="@out/video_long.srt" \
-              -F caption="💬 Субтитры (SRT)"
           fi
 
       - name: Stop VoiceStudio

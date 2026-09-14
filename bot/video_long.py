@@ -461,6 +461,54 @@ def _tx(*lines, mode="pop"):
              "mode": mode}]
 
 
+# S40: категории спрайтов + эвристика выбора по тексту секции
+_PIXEL_CATS = ["emotions", "people", "soldiers", "photographers",
+               "red-ties", "funny1", "funny2"]
+
+
+def _pixel_cats_for(text, heading=""):
+    """Подбирает категории спрайтов под тему секции (по ключевым словам)."""
+    t = f"{heading} {text}".lower()
+    if any(w in t for w in ("полиц", "арест", "задерж", "рейд", "спецназ",
+                            "фсб", "ордер", "наручник")):
+        return ["soldiers", "red-ties", "people"]
+    if any(w in t for w in ("хакер", "даркнет", "сеть", "сервер", "код",
+                            "биткоин", "крипто", "взлом", "шифр")):
+        return ["people", "emotions", "photographers"]
+    if any(w in t for w in ("журнал", "репорт", "пресс", "камер", "съёмк")):
+        return ["photographers", "people", "emotions"]
+    return ["emotions", "funny1", "funny2"]
+
+
+def _pixel_interstitial(rnd, si, sec, n):
+    """Пиксель-арт вставка 2.5с: 1-3 спрайта на неоновом фоне (S40)."""
+    text = sec.get("body", "")
+    heading = sec.get("heading", "")
+    cats = _pixel_cats_for(text, heading)
+    sprite_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "sprites")
+    paths = []
+    for cat in cats[:2]:
+        cdir = os.path.join(sprite_dir, cat)
+        if not os.path.isdir(cdir):
+            continue
+        files = sorted(f for f in os.listdir(cdir) if f.lower().endswith(".png"))
+        if not files:
+            continue
+        pick = rnd.sample(files, min(rnd.randint(1, 2), len(files)))
+        for f in pick:
+            paths.append(f"{cat}/{f}")
+    if not paths:
+        return None
+    shot = _mkshot(
+        f"L{si:02d}_px", "accel", 2.5,
+        {"type": "pixel_scene", "sprites": paths[:3]}, "push_in",
+        [], "hard_cut", "click", (1.2, 1.2), "accent", "", "graphic",
+        sec=si)
+    shot["seed"] = rnd.randint(1, 10 ** 6)
+    return shot
+
+
 def build_long_shots(sections, topic, seed=7, target_sec=None):
     """Секции -> shot list без лимита длины (longform).
 
@@ -520,6 +568,10 @@ def build_long_shots(sections, topic, seed=7, target_sec=None):
                     _tx(*lines[:2]), "hard_cut", "click", (1.4, 1.4),
                     "accent", "", "typography", sec=si))
                 shots[-1]["seed"] = rnd.randint(1, 10 ** 6)
+            # S40: пиксель-арт вставка между секциями (как в исходнике Мамая)
+            px = _pixel_interstitial(rnd, si, sec, len(shots))
+            if px:
+                shots.append(px)
         # пауза посередине ролика
         if si + 1 == max(1, len(sections) // 2) and len(sections) > 1:
             shots.append(_mkshot(
@@ -635,7 +687,7 @@ def assign_section_stock(shots, frames):
     return ci
 
 
-# ---------- EDL / SRT (монтажный лист) ----------
+# ---------- EDL (монтажный лист) ----------
 
 def dump_edl(path, topic, format, minutes, fps, shots, bounds):
     edl_shots = []
@@ -651,28 +703,6 @@ def dump_edl(path, topic, format, minutes, fps, shots, bounds):
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(edl, fh, ensure_ascii=False, indent=1)
     return path
-
-
-def _srt_ts(sec):
-    ms = int(sec * 1000)
-    return (f"{ms // 3600000:02d}:{(ms // 60000) % 60:02d}:"
-            f"{(ms // 1000) % 60:02d},{ms % 1000:03d}")
-
-
-def dump_srt(path, shots, bounds):
-    out = []
-    n = 0
-    for i, s in enumerate(shots):
-        text = (s.get("sub") or s.get("voice") or "").strip()
-        if not text:
-            continue
-        st = bounds[i] if i < len(bounds) else 0.0
-        en = bounds[i + 1] if i + 1 < len(bounds) else st + 1.0
-        n += 1
-        out.append(f"{n}\n{_srt_ts(st)} --> {_srt_ts(en)}\n{text}\n")
-    with open(path, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(out))
-    return path, n
 
 
 def load_edl(path):
@@ -692,7 +722,7 @@ def load_edl(path):
 
 def generate_long(topic=None, minutes=6, format="doc", out="out/video_long.mp4",
                   fps=FPS_LONG, tmpdir="out/tmp_long", voice=vg.VOICE_DEFAULT,
-                  no_audio=False, voice_over=True, edl_out=None, srt_out=None,
+                  no_audio=False, voice_over=True, edl_out=None,
                   edl_in=None, script_text=None, provider=None, seed=7):
     """Тема -> длинный ролик 16:9 + EDL/SRT."""
     import shutil as _sh
@@ -705,13 +735,13 @@ def generate_long(topic=None, minutes=6, format="doc", out="out/video_long.mp4",
     try:
         return _generate_long_inner(
             topic, minutes, format, out, fps, tmpdir, voice, no_audio,
-            voice_over, edl_out, srt_out, edl_in, script_text, provider, seed)
+            voice_over, edl_out, edl_in, script_text, provider, seed)
     finally:
         cine.set_aspect("9:16")
 
 
 def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
-                         no_audio, voice_over, edl_out, srt_out, edl_in,
+                         no_audio, voice_over, edl_out, edl_in,
                          script_text, provider, seed):
     import shutil as _sh
     topic = (topic or "Как вас взламывают через фишинг").strip()
@@ -879,17 +909,13 @@ def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
             mix2 = cine.np.clip(mix2, -32768, 32767).astype(cine.np.int16)
             cine.write_wav(bed_wav, mix2)
         vg.mux_audio(ffmpeg, silent, bed_wav, out, real_dur)
-    # --- EDL рядом с роликом (+ SRT, если запрошен)
+    # --- EDL рядом с роликом
     base, _ = os.path.splitext(out)
     epath = edl_out or (base + ".edl.json")
     dump_edl(epath, topic, format, minutes, fps, shots, bounds)
-    srt_info = ""
-    if srt_out:
-        _, srt_n = dump_srt(srt_out, shots, bounds)
-        srt_info = f", SRT ({srt_n} реплик)"
     size = os.path.getsize(out)
     print(f"[long] ГОТОВО: {out} ({size / 1048576:.1f} MB, {real_dur:.1f} c, "
-          f"{format}, 16:9) + EDL ({len(shots)} шотов){srt_info}")
+          f"{format}, 16:9) + EDL ({len(shots)} шотов)")
     return out
 
 
@@ -906,7 +932,6 @@ def main(argv=None):
     ap.add_argument("--voice", default=vg.VOICE_DEFAULT)
     ap.add_argument("--no-audio", action="store_true")
     ap.add_argument("--edl-out", default="")
-    ap.add_argument("--srt-out", default="")
     ap.add_argument("--edl-in", default="")
     ap.add_argument("--script-file", default="")
     ap.add_argument("--from-post", default="",
@@ -938,7 +963,6 @@ def main(argv=None):
     generate_long(topic=a.topic, minutes=a.minutes, format=fmt, out=a.out,
                   fps=a.fps, tmpdir=a.tmpdir, voice=a.voice,
                   no_audio=a.no_audio, edl_out=a.edl_out or None,
-                  srt_out=a.srt_out or None,
                   edl_in=a.edl_in or None, script_text=script_text,
                   provider=a.provider, seed=a.seed)
 

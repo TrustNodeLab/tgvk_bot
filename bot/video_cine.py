@@ -50,6 +50,9 @@ W, H = 1080, 1920
 FPS_CINE = 60              # 60 fps: плавный монтаж (эталон TikTok HEVC 60fps; 120 — опция через --fps)
 SR = 24000  # частота дискретизации синтезированного звука
 
+# S40: каталог пиксель-арт спрайтов (вырезаны из depositphotos-сеток)
+SPRITES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sprites")
+
 EXO2 = vg.EXO2
 JURA = vg.JURA
 
@@ -2358,6 +2361,49 @@ def paint_scene(visual, p, seed, P, fonts, accent_key="accent"):
                           outline=col, width=3)
         img = _glow_spot(img.convert("RGBA"), W // 2, H // 2, 250, accent, 50).convert("RGB")
         d = ImageDraw.Draw(img, "RGBA")
+    elif isinstance(visual, dict) and visual.get("type") == "pixel_scene":
+        # S40: пиксель-арт вставка — спрайты с альфой на тёмном неоновом фоне
+        _bokeh_layer(d, seed + 40, P, 12)
+        sprites = visual.get("sprites") or []
+        if sprites:
+            try:
+                paths = [sp if os.path.isabs(sp) else os.path.join(SPRITES_DIR, sp)
+                         for sp in sprites]
+                imgs = []
+                for ph in paths:
+                    if not os.path.isfile(ph):
+                        continue
+                    s_img = Image.open(ph).convert("RGBA")
+                    # высота спрайта ~45-55% кадра
+                    target_h = int(H * (0.38 + 0.14 * rnd.random()))
+                    ratio = target_h / s_img.height
+                    s_img = s_img.resize((max(1, int(s_img.width * ratio)),
+                                          target_h), Image.LANCZOS)
+                    imgs.append(s_img)
+                if imgs:
+                    total_w = sum(i.width for i in imgs) + 40 * (len(imgs) - 1)
+                    x0 = (W - total_w) // 2
+                    base_y = H // 2 + int(90 * (1 - p))
+                    for i, s_img in enumerate(imgs):
+                        sx = x0 + sum(img.width + 40 for img in imgs[:i])
+                        sy = base_y - s_img.height // 2
+                        # неоновое свечение за спрайтом
+                        glow_r = max(s_img.width, s_img.height) // 2 + 30
+                        gx = sx + s_img.width // 2
+                        gy = sy + s_img.height // 2
+                        img = _glow_spot(img.convert("RGBA"), gx, gy, glow_r,
+                                         accent, 60).convert("RGB")
+                        d = ImageDraw.Draw(img, "RGBA")
+                        # лёгкое пиксельное покачивание
+                        off = int(6 * math.sin(p * math.pi * 2 + i * 1.7))
+                        img.paste(s_img, (sx, sy + off), s_img)
+                        d = ImageDraw.Draw(img, "RGBA")
+            except Exception as e:
+                print(f"[cine] pixel_scene: {e}")
+        # ретро-сканлайны поверх
+        for y in range(0, H, 8):
+            d.line([(0, y), (W, y)], fill=(240, 248, 255, 16))
+        _center_text(d, int(H * 0.78), "// ПИКСЕЛЬ-АРТ // 16:9", f_xs, P["sub"], W // 2)
 
     img = _vignette(img)
     img = _grain(img, seed)
