@@ -692,7 +692,7 @@ def load_edl(path):
 
 def generate_long(topic=None, minutes=6, format="doc", out="out/video_long.mp4",
                   fps=FPS_LONG, tmpdir="out/tmp_long", voice=vg.VOICE_DEFAULT,
-                  no_audio=False, voice_over=True, edl_out=None,
+                  no_audio=False, voice_over=True, edl_out=None, srt_out=None,
                   edl_in=None, script_text=None, provider=None, seed=7):
     """Тема -> длинный ролик 16:9 + EDL/SRT."""
     import shutil as _sh
@@ -879,13 +879,17 @@ def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
             mix2 = cine.np.clip(mix2, -32768, 32767).astype(cine.np.int16)
             cine.write_wav(bed_wav, mix2)
         vg.mux_audio(ffmpeg, silent, bed_wav, out, real_dur)
-    # --- EDL рядом с роликом (SRT НЕ генерируем — YouTube без субтитров)
+    # --- EDL рядом с роликом (+ SRT, если запрошен)
     base, _ = os.path.splitext(out)
     epath = edl_out or (base + ".edl.json")
     dump_edl(epath, topic, format, minutes, fps, shots, bounds)
+    srt_info = ""
+    if srt_out:
+        _, srt_n = dump_srt(srt_out, shots, bounds)
+        srt_info = f", SRT ({srt_n} реплик)"
     size = os.path.getsize(out)
     print(f"[long] ГОТОВО: {out} ({size / 1048576:.1f} MB, {real_dur:.1f} c, "
-          f"{format}, 16:9) + EDL ({len(shots)} шотов)")
+          f"{format}, 16:9) + EDL ({len(shots)} шотов){srt_info}")
     return out
 
 
@@ -902,6 +906,7 @@ def main(argv=None):
     ap.add_argument("--voice", default=vg.VOICE_DEFAULT)
     ap.add_argument("--no-audio", action="store_true")
     ap.add_argument("--edl-out", default="")
+    ap.add_argument("--srt-out", default="")
     ap.add_argument("--edl-in", default="")
     ap.add_argument("--script-file", default="")
     ap.add_argument("--from-post", default="",
@@ -933,6 +938,7 @@ def main(argv=None):
     generate_long(topic=a.topic, minutes=a.minutes, format=fmt, out=a.out,
                   fps=a.fps, tmpdir=a.tmpdir, voice=a.voice,
                   no_audio=a.no_audio, edl_out=a.edl_out or None,
+                  srt_out=a.srt_out or None,
                   edl_in=a.edl_in or None, script_text=script_text,
                   provider=a.provider, seed=a.seed)
 
