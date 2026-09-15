@@ -30,6 +30,11 @@ class TelegramAPI:
             params["offset"] = offset
         return self._call("getUpdates", **params)
 
+    def set_my_commands(self, commands: list):
+        """Регистрирует команды бота (видимы через «☰» / «/» в Telegram)."""
+        import json
+        return self._call("setMyCommands", commands=json.dumps(commands))
+
     def send_message(self, chat_id, text, reply_markup=None, parse_mode=None):
         params = {"chat_id": chat_id, "text": text}
         if reply_markup:

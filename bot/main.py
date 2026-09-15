@@ -169,6 +169,34 @@ BTN_HISTORY_SEND = "📤 Отправить в TG и VK"
 
 INBOX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inbox.json")
 
+# Команды бота, видимые через «☰» / «/» в Telegram (setMyCommands).
+BOT_COMMANDS = [
+    {"command": "start", "description": "Приветствие и меню"},
+    {"command": "menu", "description": "Показать главное меню"},
+    {"command": "video", "description": "🎬 Собрать длинное видео из новостей"},
+    {"command": "status", "description": "Состояние бота и групп"},
+    {"command": "sources", "description": "Источники поиска"},
+    {"command": "history", "description": "История постов"},
+    {"command": "autopost", "description": "Тумблер автопостинга"},
+    {"command": "help", "description": "Как пользоваться ботом"},
+    {"command": "ping", "description": "Проверка связи"},
+    {"command": "dev", "description": "Написать разработчику (/dev текст)"},
+]
+
+
+def _register_commands(tg: TelegramAPI):
+    """Регистрирует команды бота (setMyCommands) — они появляются в меню «☰»
+    Telegram, даже если пользователь ещё не открывал чат."""
+    try:
+        tg.set_my_commands(BOT_COMMANDS)
+        print("[bot] setMyCommands: OK", flush=True)
+    except Exception as e:
+        try:
+            tg.set_my_commands(BOT_COMMANDS)
+            print("[bot] setMyCommands: OK (retry)", flush=True)
+        except Exception as e2:
+            print(f"[warn] setMyCommands: {e} / {e2}", file=sys.stderr)
+
 
 def buttons(draft_id: str):
     """Кнопки у превью: callback_data 'action:draft_id', чтобы обработать именно
@@ -212,8 +240,10 @@ HELP_TEXT = (
     "видео (ролик придёт в этот чат ~через 2-3 часа)\n\n"
     "Команды:\n"
     "/start — приветствие и меню\n"
+    "/video — собрать длинное видео из новостей (1 кнопка)\n"
     "/status — состояние бота\n"
     "/autopost — тумблер автопостинга\n"
+    "/ping — проверка связи\n"
     "/dev <текст> — написать разработчику"
 )
 
@@ -548,16 +578,19 @@ def _save_inbox(data: dict):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def _deliver_inbox_messages(tg: TelegramAPI, admin_chat_id: str):
-    """Доставка ответов разработчика (to_user) пользователю при старте запуска."""
+def _deliver_inbox_messages(tg: TelegramAPI, admin_chat_id: str, state: dict):
+    """Доставка ответов разработчика (to_user) пользователю при старте запуска.
+    К каждому сообщению прикрепляем reply-клавиатуру, чтобы кнопки всегда
+    оставались на экране."""
     try:
         inbox = _load_inbox()
+        kb = menu_keyboard(state)
         for msg in inbox.get("to_user", []):
             try:
-                tg.send_message(admin_chat_id, msg, parse_mode="HTML")
+                tg.send_message(admin_chat_id, msg, parse_mode="HTML", reply_markup=kb)
             except Exception:
                 try:
-                    tg.send_message(admin_chat_id, msg)
+                    tg.send_message(admin_chat_id, msg, reply_markup=kb)
                 except Exception:
                     pass
         if inbox.get("to_user"):
@@ -705,7 +738,7 @@ def _process_update(tg: TelegramAPI, vk: VKAPI, state: dict, admin_chat_id: str,
             handle_history_pick(tg, admin_chat_id, state, int(text))
         elif text in (BTN_STATUS, BTN_SOURCES, BTN_HELP, BTN_HOME):
             handle_menu_button(tg, admin_chat_id, state, text)
-        elif text == BTN_VIDEO:
+        elif text in (BTN_VIDEO, "/video"):
             handle_video_digest(tg, admin_chat_id, state)
         elif text in (BTN_AUTOPOST, BTN_AP_ON, BTN_AP_OFF, "/autopost"):
             handle_autopost_button(tg, admin_chat_id, state)
@@ -728,6 +761,24 @@ def _process_update(tg: TelegramAPI, vk: VKAPI, state: dict, admin_chat_id: str,
             handle_new_text(tg, admin_chat_id, text, state=state)
 
 
+def _ensure_menu(tg: TelegramAPI, admin_chat_id: str, state: dict):
+    """Показывает reply-клавиатуру пользователю, если она не показывалась давно.
+    Reply-клавиатура остаётся на экране, пока бот не пришлёт скрывающую —
+    поэтому достаточно показывать её не чаще раза в 12 часов."""
+    try:
+        now_ms = int(datetime.utcnow().timestamp() * 1000)
+        last = state.get("menu_shown_ts") or 0
+        if now_ms - last < 12 * 3600 * 1000:
+            return
+        tg.send_message(admin_chat_id, WELCOME_TEXT,
+                        reply_markup=menu_keyboard(state), parse_mode="HTML")
+        state["menu_shown_ts"] = now_ms
+        st.save_state(state)
+        print("[bot] menu keyboard shown", flush=True)
+    except Exception as e:
+        print(f"[warn] _ensure_menu: {e}", file=sys.stderr)
+
+
 def run():
     bot_token = os.environ["TELEGRAM_BOT_TOKEN"]
     admin_chat_id = os.environ["TELEGRAM_ADMIN_CHAT_ID"]
@@ -738,12 +789,19 @@ def run():
     tg = TelegramAPI(bot_token)
     vk = VKAPI(vk_token, vk_group_id, album_id=os.environ.get("VK_ALBUM_ID"))
 
+    # Регистрируем команды (setMyCommands) — видны через «☰» / «/» в Telegram.
+    _register_commands(tg)
+
     state = st.load_state()
     _last_post_summary.clear()
     _last_post_summary.update(state.get("last_post") or {})
 
     # Мост с разработчиком: доставляем ответы (to_user), оставленные прошлым workflow.
-    _deliver_inbox_messages(tg, admin_chat_id)
+    _deliver_inbox_messages(tg, admin_chat_id, state)
+
+    # Reply-клавиатура: показываем при старте (если давно не показывали), чтобы
+    # кнопки всегда были на экране — даже если пользователь ещё не жал /start.
+    _ensure_menu(tg, admin_chat_id, state)
 
     # --- webhook-режим: пришёл ровно один апдейт от Cloudflare Worker ---
     # Приоритетнее обычного запуска: если задан TELEGRAM_UPDATE_JSON, обрабатываем
