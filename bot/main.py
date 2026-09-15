@@ -167,6 +167,10 @@ BTN_AP_OFF = "⏸ Выключить автопостинг"
 BTN_HISTORY = "📜 История"
 BTN_HISTORY_SEND = "📤 Отправить в TG и VK"
 
+# Версия раскладки reply-клавиатуры: меняем при изменении состава/порядка
+# кнопок, чтобы _ensure_menu показал новую клавиатуру сразу у всех.
+MENU_LAYOUT_VERSION = 2
+
 INBOX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inbox.json")
 
 # Команды бота, видимые через «☰» / «/» в Telegram (setMyCommands).
@@ -249,12 +253,13 @@ HELP_TEXT = (
 
 
 def menu_keyboard(state: dict):
-    """Главное меню (reply-клавиатура): статус, автопостинг-тумблер, видео-дайджест,
-    источники, история, помощь."""
+    """Главное меню (reply-клавиатура): статус, автопостинг-тумблер,
+    источники, история, помощь; внизу — кнопка видео-дайджеста."""
     return reply_keyboard([
         [BTN_STATUS, BTN_AUTOPOST],
-        [BTN_VIDEO, BTN_SOURCES],
-        [BTN_HISTORY, BTN_HELP, BTN_HOME],
+        [BTN_SOURCES, BTN_HISTORY],
+        [BTN_HELP, BTN_HOME],
+        [BTN_VIDEO],
     ])
 
 
@@ -768,11 +773,15 @@ def _ensure_menu(tg: TelegramAPI, admin_chat_id: str, state: dict):
     try:
         now_ms = int(datetime.utcnow().timestamp() * 1000)
         last = state.get("menu_shown_ts") or 0
-        if now_ms - last < 12 * 3600 * 1000:
-            return
+        # Показываем клавиатуру, если ещё не показывали раскладку этой версии
+        # (menu_layout_version) ИЛИ прошло больше 12 часов с последнего показа.
+        if state.get("menu_layout_version") or 0 >= MENU_LAYOUT_VERSION:
+            if now_ms - last < 12 * 3600 * 1000:
+                return
         tg.send_message(admin_chat_id, WELCOME_TEXT,
                         reply_markup=menu_keyboard(state), parse_mode="HTML")
         state["menu_shown_ts"] = now_ms
+        state["menu_layout_version"] = MENU_LAYOUT_VERSION
         st.save_state(state)
         print("[bot] menu keyboard shown", flush=True)
     except Exception as e:
