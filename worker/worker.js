@@ -8,7 +8,7 @@
 //           из склада строго по слотам, догонка недостающей платформы).
 
 import * as kv from "./lib/kv.js";
-import { loadSources } from "./lib/feeds.js";
+import { loadSources, fetchArticleExcerpt } from "./lib/feeds.js";
 import {
   tick as schedulerTick,
   dispatchToGitHub,
@@ -64,9 +64,10 @@ import {
   loadMgConfig,
   saveMgConfig,
   resetMgConfig,
+  fetchMultiFeeds,
 } from "./lib/multigroup.js";
 
-const VERSION = "3.0.2";
+const VERSION = "3.1.0";
 
 // ---------- тексты ----------
 
@@ -106,6 +107,10 @@ const HELP_TEXT =
   "/videotest [сек] — демо-видео 9:16 или ответом на текст (сценарий)\n" +
   "/cine &lt;тема&gt; — cinematic-трейлер 9:16 (~55 сек); ответом на статью — видео ПО ТЕКСТУ\n" +
   "/long [минут] [формат] &lt;тема&gt; — длинное видео 16:9 для YouTube (1-40 мин, doc/breakdown/top10)\n" +
+  "/video — видео-дайджест одной кнопкой: сам соберу 3–5 свежих новостей и запущу ролик\n" +
+  "<b>Служебное:</b>\n" +
+  "/ping — проверка связи, /history — история публикаций\n" +
+  "/dev &lt;текст&gt; — передать сообщение разработчику\n" +
   "<b>Мультигруппы VK:</b>\n" +
   "/mg — статус групп (DGC/LostLink/LostArt), /mg-tick — публикация по слотам\n" +
   "/mg-edit — конфиг групп, /mg-approve on|off — согласование постов\n" +
@@ -152,6 +157,10 @@ const COMMANDS = [
   { command: "videotest", description: "Видео 9:16: демо или по сценарию" },
   { command: "cine", description: "Видео 9:16: cinematic-трейлер по теме / статье" },
   { command: "long", description: "Видео 16:9: длинный ролик для YouTube (1-40 мин)" },
+  { command: "video", description: "Видео-дайджест: собрать свежие новости и сделать ролик" },
+  { command: "ping", description: "Проверка связи" },
+  { command: "history", description: "История публикаций" },
+  { command: "dev", description: "Сообщение разработчику" },
 ];
 
 // ---------- меню: reply-клавиатура + инлайн-кнопки ----------
@@ -172,6 +181,7 @@ const BTN_DRYRUN = "🧪 Dry-run";
 const BTN_EVENT = "🎪 Ивент";
 const BTN_MULTI = "👥 Мультигруппы";
 const BTN_MORE = "☰ Ещё";
+const BTN_VIDEO = "🎬 Видео из новостей";
 
 // Постоянная reply-клавиатура под строкой ввода.
 function replyKeyboard(rows) {
@@ -190,7 +200,7 @@ const MAIN_KB = replyKeyboard([
   [BTN_DRAFTS, BTN_STOCK, BTN_NEW_POST],
   [BTN_SCHEDULE, BTN_SOURCES, BTN_ANALYTICS],
   [BTN_SETTINGS, BTN_STATS, BTN_MORE],
-  [BTN_HELP],
+  [BTN_VIDEO, BTN_HELP],
 ]);
 
 // Ответ по нажатию reply-кнопки -> команда (кроме «Сделать пост» — там подсказка).
@@ -210,6 +220,7 @@ const BTN_CMDS = {
   [BTN_EVENT]: "/event",
   [BTN_MULTI]: "/mg",
   [BTN_MORE]: "/menu",
+  [BTN_VIDEO]: "/video",
 };
 
 // «☰ Ещё»: второстепенные команды, которым не место на главной клавиатуре.
@@ -2222,7 +2233,7 @@ async function handleCommand(env, state, chatId, text, msg) {
             `🎬 <b>Длинное видео запущено</b> («${escHtml(topic.slice(0, 80))}», ${r.minutes} мин, ${r.format})` +
             (r.custom ? `, по твоей статье` : `, сценарий пишу сам`) + `\n` +
             `Собираю в GitHub Actions — это займёт ~15–30 мин.\n` +
-            `Пришлю сюда же MP4 + монтажный лист (EDL) и субтитры (SRT).`);
+            `Пришлю сюда же MP4 + монтажный лист (EDL).`);
         } else if (r.reason === "no github") {
           await sendMessage(env, chatId,
             `⚠️ Длинное видео недоступно: в воркере нет GITHUB_TOKEN/OWNER/REPO. ` +
@@ -2232,6 +2243,139 @@ async function handleCommand(env, state, chatId, text, msg) {
         }
       } catch (e) {
         await sendMessage(env, chatId, `⚠️ Не смог запустить длинное видео: ${escHtml(e.message)}`);
+      }
+      break;
+    }
+
+    case "/ping":
+      await sendMessage(env, chatId, "🏓 pong");
+      break;
+
+    case "/history": {
+      // История публикаций из KV publish_log (без GitHub — мгновенно).
+      const log = await kv.getLog(env) || [];
+      const lines = log.slice(0, 10).map((e) => {
+        const who = [];
+        if (e.tg_ok) who.push("🟢");
+        if (e.vk_ok) who.push("🔵");
+        const mark = who.length ? who.join("") : "⚪";
+        return `${mark} <b>${escHtml(String(e.title || e.id || "—").slice(0, 70))}</b>\n      ${fmtTime(e.published_at)} · ${escHtml(e.kind || "news")}`;
+      });
+      const msg =
+        "📜 <b>История публикаций</b>\n\n" +
+        (lines.length ? lines.join("\n") : "Пока пусто.") +
+        (log.length > 10 ? `\n\n… и ещё ${log.length - 10} записей (/export — полный список)` : "");
+      await sendMessage(env, chatId, msg, { parse_mode: "HTML" });
+      break;
+    }
+
+    case "/dev": {
+      // Сообщение разработчику: дописываем в bot/inbox.json через GitHub Contents API.
+      const bodyTxt = String(args || "").trim();
+      if (!bodyTxt) {
+        await sendMessage(env, chatId,
+          `📨 <b>Сообщение разработчику</b>\n\n` +
+          `Формат: <code>/dev &lt;текст&gt;</code>\n` +
+          `Например: <code>/dev добавь кнопку «Архив»</code>\n\n` +
+          `Передам в bot/inbox.json — разработчик увидит и ответит сюда же.`,
+          { parse_mode: "HTML" });
+        break;
+      }
+      const { GITHUB_TOKEN, OWNER, REPO } = env;
+      if (!GITHUB_TOKEN || !OWNER || !REPO) {
+        await sendMessage(env, chatId,
+          `⚠️ /dev недоступен: в воркере нет GITHUB_TOKEN/OWNER/REPO. ` +
+          `Добавьте секреты и задеплойте воркер заново.`);
+        break;
+      }
+      const path = "bot/inbox.json";
+      const ghHeaders = {
+        Authorization: `Bearer ${GITHUB_TOKEN}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "tgvk-bot-webhook",
+        "Content-Type": "application/json",
+      };
+      try {
+        const getRes = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${path}`, { headers: ghHeaders });
+        if (!getRes.ok) throw new Error(`github GET ${getRes.status}`);
+        const meta = await getRes.json();
+        const cur = JSON.parse(atob(meta.content.replace(/\n/g, "")) || "{}");
+        cur.from_user = cur.from_user || [];
+        cur.from_user.push({
+          ts: new Date().toISOString(),
+          chat_id: String(chatId),
+          text: bodyTxt.slice(0, 2000),
+        });
+        const contentB64 = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify(cur, null, 2))));
+        const putRes = await fetch(`https://api.github.com/repos/${OWNER}/${REPO}/contents/${path}`, {
+          method: "PUT",
+          headers: ghHeaders,
+          body: JSON.stringify({
+            message: "bot: dev message from " + chatId,
+            content: contentB64,
+            sha: meta.sha,
+          }),
+        });
+        if (!putRes.ok) throw new Error(`github PUT ${putRes.status}`);
+        await sendMessage(env, chatId, "📨 <b>Передано разработчику.</b> Ответ придёт сюда же.");
+      } catch (e) {
+        await sendMessage(env, chatId, `⚠️ Не смог передать: ${escHtml(e.message)}`);
+      }
+      break;
+    }
+
+    case "/video": {
+      // 🎬 Видео-дайджест одной кнопкой: Worker сам собирает 3-5 свежих новостей
+      // из RU+EN лент, читает их полностью и запускает длинный ролик (M23).
+      try {
+        const [ru, en] = await Promise.all([
+          fetchMultiFeeds("ru", { limit: 8 }),
+          fetchMultiFeeds("en", { limit: 8 }),
+        ]);
+        // Кросс-языковой дедуп по заголовку: похожие сюжеты из разных лент — один.
+        const seen = [];
+        const items = [];
+        for (const it of [...ru, ...en]) {
+          const fp = String(it.title || "").toLowerCase().replace(/[^a-zа-яё0-9]+/gi, " ").trim().slice(0, 60);
+          const dup = seen.some((s) => {
+            const a = s.split(" "), b = fp.split(" ");
+            const inter = a.filter((w) => b.includes(w)).length;
+            return inter / Math.max(1, Math.min(a.length, b.length)) >= 0.6;
+          });
+          if (!fp || dup) continue;
+          seen.push(fp);
+          items.push(it);
+          if (items.length >= 5) break;
+        }
+        if (!items.length) {
+          await sendMessage(env, chatId, "😕 Свежих новостей в лентах не нашёл. Попробуй позже или <code>/long &lt;тема&gt;</code>", { parse_mode: "HTML" });
+          break;
+        }
+        // Читаем полные тексты статей (макс 3 за раз, чтобы уложиться в лимит webhook).
+        const texts = await Promise.all(
+          items.slice(0, 3).map((it) => fetchArticleExcerpt(it.link || "", 2200, 8000))
+        );
+        const topic = items.map((it) => String(it.title || "").trim()).join("; ").slice(0, 300);
+        const fromPost = items
+          .map((it, i) => `${i + 1}. ${it.title}\n${(texts[i] || "").slice(0, 2200)}`)
+          .join("\n\n")
+          .slice(0, 3500);
+        const r = await dispatchVideoLong(env, 15, "doc", topic, fromPost);
+        if (r.ok) {
+          await sendMessage(env, chatId,
+            `🎬 <b>Видео-дайджест запущен</b> по ${items.length} новостям\n\n` +
+            items.map((it, i) => `${i + 1}. <b>${escHtml(String(it.title).slice(0, 90))}</b>\n   ${escHtml(String(it.link || "").replace(/^https?:\/\/(www\.)?/, "").split("/")[0])}`).join("\n") +
+            `\n\nСобираю в GitHub Actions — это займёт ~15–30 мин.\n` +
+            `Пришлю сюда же MP4 + монтажный лист (EDL).`);
+        } else if (r.reason === "no github") {
+          await sendMessage(env, chatId,
+            `⚠️ Видео недоступно: в воркере нет GITHUB_TOKEN/OWNER/REPO. ` +
+            `Добавьте секреты и задеплойте воркер заново.`);
+        } else {
+          await sendMessage(env, chatId, `⚠️ Не смог запустить видео: ${escHtml(r.reason || "ошибка")}`);
+        }
+      } catch (e) {
+        await sendMessage(env, chatId, `⚠️ Не смог запустить видео-дайджест: ${escHtml(e.message)}`);
       }
       break;
     }
