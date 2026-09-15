@@ -159,47 +159,12 @@ BTN_CANCEL = "❌ Отмена"
 BTN_STATUS = "📊 Статус"
 BTN_AUTOPOST = "🔄 Автопостинг"
 BTN_SOURCES = "📰 Источники"
-BTN_VIDEO = "🎬 Видео из новостей"
 BTN_HELP = "❓ Помощь"
 BTN_HOME = "🏠 В меню"
 BTN_AP_ON = "▶️ Включить автопостинг"
 BTN_AP_OFF = "⏸ Выключить автопостинг"
 BTN_HISTORY = "📜 История"
 BTN_HISTORY_SEND = "📤 Отправить в TG и VK"
-
-# Версия раскладки reply-клавиатуры: меняем при изменении состава/порядка
-# кнопок, чтобы _ensure_menu показал новую клавиатуру сразу у всех.
-MENU_LAYOUT_VERSION = 2
-
-INBOX_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "inbox.json")
-
-# Команды бота, видимые через «☰» / «/» в Telegram (setMyCommands).
-BOT_COMMANDS = [
-    {"command": "start", "description": "Приветствие и меню"},
-    {"command": "menu", "description": "Показать главное меню"},
-    {"command": "video", "description": "🎬 Собрать длинное видео из новостей"},
-    {"command": "status", "description": "Состояние бота и групп"},
-    {"command": "sources", "description": "Источники поиска"},
-    {"command": "history", "description": "История постов"},
-    {"command": "autopost", "description": "Тумблер автопостинга"},
-    {"command": "help", "description": "Как пользоваться ботом"},
-    {"command": "ping", "description": "Проверка связи"},
-    {"command": "dev", "description": "Написать разработчику (/dev текст)"},
-]
-
-
-def _register_commands(tg: TelegramAPI):
-    """Регистрирует команды бота (setMyCommands) — они появляются в меню «☰»
-    Telegram, даже если пользователь ещё не открывал чат."""
-    try:
-        tg.set_my_commands(BOT_COMMANDS)
-        print("[bot] setMyCommands: OK", flush=True)
-    except Exception as e:
-        try:
-            tg.set_my_commands(BOT_COMMANDS)
-            print("[bot] setMyCommands: OK (retry)", flush=True)
-        except Exception as e2:
-            print(f"[warn] setMyCommands: {e} / {e2}", file=sys.stderr)
 
 
 def buttons(draft_id: str):
@@ -239,30 +204,19 @@ HELP_TEXT = (
     "новости сразу, без твоего участия\n\n"
     "• <b>История</b> — в меню: список последних опубликованных постов, "
     "можно отправить любой из них ещё раз в TG-канал и VK\n\n"
-    "• <b>🎬 Видео из новостей</b> — бот сам возьмёт 3-5 свежих новостей, "
-    "прочитает статьи целиком, перепишет через ИИ и запустит сборку длинного "
-    "видео (ролик придёт в этот чат ~через 2-3 часа)\n\n"
     "Команды:\n"
     "/start — приветствие и меню\n"
-    "/menu — показать главное меню\n"
-    "/video — собрать длинное видео из новостей (1 кнопка)\n"
     "/status — состояние бота\n"
-    "/sources — источники поиска\n"
-    "/history — история постов\n"
-    "/autopost — тумблер автопостинга\n"
-    "/ping — проверка связи\n"
-    "/dev <текст> — написать разработчику"
+    "/autopost — тумблер автопостинга"
 )
 
 
 def menu_keyboard(state: dict):
-    """Главное меню (reply-клавиатура): статус, автопостинг-тумблер,
-    источники, история, помощь; внизу — кнопка видео-дайджеста."""
+    """Главное меню (reply-клавиатура): статус, автопостинг-тумблер, источники, история, помощь."""
     return reply_keyboard([
         [BTN_STATUS, BTN_AUTOPOST],
         [BTN_SOURCES, BTN_HISTORY],
         [BTN_HELP, BTN_HOME],
-        [BTN_VIDEO],
     ])
 
 
@@ -478,154 +432,6 @@ def handle_autopost_button(tg: TelegramAPI, admin_chat_id: str, state: dict):
     tg.send_message(admin_chat_id, msg_text, reply_markup=kb)
 
 
-# ---------- видео-дайджест из новостей ----------
-# Одна кнопка: бот сам берёт 3-5 свежих новостей из общих лент (ru+en),
-# читает каждую статью целиком (fetch_full_article в digest.py), просит
-# GigaChat переписать всё в связный дайджест (тема + вступление) и запускает
-# workflow video-long.yml (workflow_dispatch). Через ~3 часа готовый ролик
-# приходит в этот же чат сам.
-
-def handle_video_digest(tg: TelegramAPI, admin_chat_id: str, state: dict):
-    """Кнопка «🎬 Видео из новостей»: 3-5 новостей -> полные тексты -> LLM-дайджест
-    -> запуск сборки длинного видео в GitHub Actions."""
-    try:
-        import multigroups as mg
-        import digest as dg
-
-        items = []
-        for lang in ("ru", "en"):
-            try:
-                feeds = mg.fetch_multi_feeds(lang, limit=8)
-                items.extend(feeds)
-            except Exception as e:
-                print(f"[video] fetch {lang} feeds: {e}")
-        if not items:
-            tg.send_message(admin_chat_id,
-                            "😕 Не нашёл свежих новостей в лентах. Попробуй позже.",
-                            reply_markup=menu_keyboard(state))
-            return
-
-        # дедуп по заголовку (как в мультигруппах) + топ-5 по свежести
-        seen = set()
-        top = []
-        for it in sorted(items, key=lambda x: x.get("pub_ts", 0), reverse=True):
-            fp = title_fingerprint(it.get("title") or "")
-            if fp and fp in seen:
-                continue
-            if fp:
-                seen.add(fp)
-            top.append(it)
-            if len(top) >= 5:
-                break
-        if len(top) < 3:
-            tg.send_message(admin_chat_id,
-                            f"😕 Свежих новостей маловато ({len(top)} из 5). Попробуй позже.",
-                            reply_markup=menu_keyboard(state))
-            return
-
-        tg.send_message(admin_chat_id,
-                        f"📚 Читаю {len(top)} статей целиком и собираю дайджест… (1-2 мин)")
-
-        articles = dg.fetch_articles([it.get("link", "") for it in top])
-        for it, (title, text) in zip(top, articles):
-            it["text"] = text or ""
-            if title and not it.get("title"):
-                it["title"] = title
-
-        digest_data = dg.build_video_digest(top)
-        dg.dispatch_video_workflow(
-            topic=digest_data["topic"],
-            from_post=digest_data["from_post"],
-            minutes="15",
-            format="doc",
-        )
-        heads = "\n".join(f"• {it.get('title', '')[:80]}" for it in top)
-        tg.send_message(
-            admin_chat_id,
-            "🎬 <b>Видео запущено!</b> Рендер займёт ~2-3 часа, готовый ролик "
-            "придёт в этот чат сам.\n\n"
-            f"📰 Новости:\n{heads}\n\n"
-            f"📝 Тема: {digest_data['topic'][:300]}",
-            parse_mode="HTML",
-            reply_markup=menu_keyboard(state),
-        )
-    except Exception as e:
-        traceback.print_exc()
-        try:
-            tg.send_message(admin_chat_id, f"⚠️ Не удалось запустить видео: {e}",
-                            reply_markup=menu_keyboard(state))
-        except Exception:
-            pass
-
-
-def title_fingerprint(title: str) -> str:
-    """Стабильная сигнатура заголовка для дедупа (как в multigroups)."""
-    t = re.sub(r"[\W_]+", " ", (title or "").lower())
-    return " ".join(w for w in t.split() if len(w) > 3)[:80]
-
-
-# ---------- мост «пользователь <-> разработчик» ----------
-# bot/inbox.json лежит в репозитории и коммитится workflow'ом после каждого
-# запуска бота. Пользователь пишет разработчику через /dev <текст> (блок
-# from_user), разработчик отвечает, записывая in to_user прямо в файл /
-# через бота; при следующем запуске бот доставляет ответ пользователю.
-
-def _load_inbox() -> dict:
-    try:
-        with open(INBOX_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        data = {}
-    data.setdefault("from_user", [])
-    data.setdefault("to_user", [])
-    return data
-
-
-def _save_inbox(data: dict):
-    with open(INBOX_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def _deliver_inbox_messages(tg: TelegramAPI, admin_chat_id: str, state: dict):
-    """Доставка ответов разработчика (to_user) пользователю при старте запуска.
-    К каждому сообщению прикрепляем reply-клавиатуру, чтобы кнопки всегда
-    оставались на экране."""
-    try:
-        inbox = _load_inbox()
-        kb = menu_keyboard(state)
-        for msg in inbox.get("to_user", []):
-            try:
-                tg.send_message(admin_chat_id, msg, parse_mode="HTML", reply_markup=kb)
-            except Exception:
-                try:
-                    tg.send_message(admin_chat_id, msg, reply_markup=kb)
-                except Exception:
-                    pass
-        if inbox.get("to_user"):
-            inbox["to_user"] = []
-            _save_inbox(inbox)
-    except Exception:
-        pass
-
-
-def handle_dev_message(tg: TelegramAPI, admin_chat_id: str, text: str):
-    """/dev <текст> — сообщение разработчику (уходит в bot/inbox.json from_user)."""
-    body = text.split(" ", 1)[1].strip() if " " in text else ""
-    if not body:
-        tg.send_message(admin_chat_id, "Напиши так: /dev <текст>")
-        return
-    try:
-        inbox = _load_inbox()
-        inbox["from_user"].append({
-            "ts": now_ekb().isoformat(timespec="seconds"),
-            "text": body,
-        })
-        _save_inbox(inbox)
-        tg.send_message(admin_chat_id, "📨 Передано разработчику. Ответ придёт сюда же.")
-    except Exception as e:
-        tg.send_message(admin_chat_id, f"⚠️ Не сохранил сообщение: {e}")
-
-
 # ---------- история постов ----------
 
 HISTORY_PAGE = 5
@@ -746,26 +552,13 @@ def _process_update(tg: TelegramAPI, vk: VKAPI, state: dict, admin_chat_id: str,
             handle_history_pick(tg, admin_chat_id, state, int(text))
         elif text in (BTN_STATUS, BTN_SOURCES, BTN_HELP, BTN_HOME):
             handle_menu_button(tg, admin_chat_id, state, text)
-        elif text in (BTN_VIDEO, "/video"):
-            handle_video_digest(tg, admin_chat_id, state)
         elif text in (BTN_AUTOPOST, BTN_AP_ON, BTN_AP_OFF, "/autopost"):
             handle_autopost_button(tg, admin_chat_id, state)
-        elif text == "/ping":
-            tg.send_message(admin_chat_id, "🏓 pong")
-        elif text.startswith("/dev") or text.startswith("/msg"):
-            handle_dev_message(tg, admin_chat_id, text)
         elif text == "/start" or text == "/menu":
             state["history_mode"] = False
             st.save_state(state)
             tg.send_message(admin_chat_id, WELCOME_TEXT,
                             reply_markup=menu_keyboard(state), parse_mode="HTML")
-        elif text == "/sources":
-            state["history_mode"] = False
-            st.save_state(state)
-            tg.send_message(admin_chat_id, sources_message(),
-                            reply_markup=menu_keyboard(state), parse_mode="HTML")
-        elif text == "/history":
-            handle_history_list(tg, admin_chat_id, state)
         elif text == "/help":
             tg.send_message(admin_chat_id, HELP_TEXT,
                             reply_markup=menu_keyboard(state), parse_mode="HTML")
@@ -774,28 +567,6 @@ def _process_update(tg: TelegramAPI, vk: VKAPI, state: dict, admin_chat_id: str,
                             reply_markup=menu_keyboard(state), parse_mode="HTML")
         elif text and not text.startswith("/"):
             handle_new_text(tg, admin_chat_id, text, state=state)
-
-
-def _ensure_menu(tg: TelegramAPI, admin_chat_id: str, state: dict):
-    """Показывает reply-клавиатуру пользователю, если она не показывалась давно.
-    Reply-клавиатура остаётся на экране, пока бот не пришлёт скрывающую —
-    поэтому достаточно показывать её не чаще раза в 12 часов."""
-    try:
-        now_ms = int(datetime.utcnow().timestamp() * 1000)
-        last = state.get("menu_shown_ts") or 0
-        # Показываем клавиатуру, если ещё не показывали раскладку этой версии
-        # (menu_layout_version) ИЛИ прошло больше 12 часов с последнего показа.
-        if state.get("menu_layout_version") or 0 >= MENU_LAYOUT_VERSION:
-            if now_ms - last < 12 * 3600 * 1000:
-                return
-        tg.send_message(admin_chat_id, WELCOME_TEXT,
-                        reply_markup=menu_keyboard(state), parse_mode="HTML")
-        state["menu_shown_ts"] = now_ms
-        state["menu_layout_version"] = MENU_LAYOUT_VERSION
-        st.save_state(state)
-        print("[bot] menu keyboard shown", flush=True)
-    except Exception as e:
-        print(f"[warn] _ensure_menu: {e}", file=sys.stderr)
 
 
 def run():
@@ -808,28 +579,9 @@ def run():
     tg = TelegramAPI(bot_token)
     vk = VKAPI(vk_token, vk_group_id, album_id=os.environ.get("VK_ALBUM_ID"))
 
-    # Удаляем webhook Cloudflare Worker, чтобы Telegram присылал апдейты
-    # через getUpdates (polling). Worker продолжает работать как KV/R2-бэкенд
-    # и сканер RSS (cron каждые 5 мин), но обработку команд берёт main.py.
-    try:
-        tg._call("deleteWebhook")
-        print("[bot] deleteWebhook: OK", flush=True)
-    except Exception as e:
-        print(f"[bot] deleteWebhook: {e}", flush=True)
-
-    # Регистрируем команды (setMyCommands) — видны через «☰» / «/» в Telegram.
-    _register_commands(tg)
-
     state = st.load_state()
     _last_post_summary.clear()
     _last_post_summary.update(state.get("last_post") or {})
-
-    # Мост с разработчиком: доставляем ответы (to_user), оставленные прошлым workflow.
-    _deliver_inbox_messages(tg, admin_chat_id, state)
-
-    # Reply-клавиатура: показываем при старте (если давно не показывали), чтобы
-    # кнопки всегда были на экране — даже если пользователь ещё не жал /start.
-    _ensure_menu(tg, admin_chat_id, state)
 
     # --- webhook-режим: пришёл ровно один апдейт от Cloudflare Worker ---
     # Приоритетнее обычного запуска: если задан TELEGRAM_UPDATE_JSON, обрабатываем
