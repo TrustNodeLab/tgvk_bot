@@ -244,8 +244,11 @@ HELP_TEXT = (
     "видео (ролик придёт в этот чат ~через 2-3 часа)\n\n"
     "Команды:\n"
     "/start — приветствие и меню\n"
+    "/menu — показать главное меню\n"
     "/video — собрать длинное видео из новостей (1 кнопка)\n"
     "/status — состояние бота\n"
+    "/sources — источники поиска\n"
+    "/history — история постов\n"
     "/autopost — тумблер автопостинга\n"
     "/ping — проверка связи\n"
     "/dev <текст> — написать разработчику"
@@ -749,13 +752,20 @@ def _process_update(tg: TelegramAPI, vk: VKAPI, state: dict, admin_chat_id: str,
             handle_autopost_button(tg, admin_chat_id, state)
         elif text == "/ping":
             tg.send_message(admin_chat_id, "🏓 pong")
-        elif text.startswith("/dev ") or text.startswith("/msg "):
+        elif text.startswith("/dev") or text.startswith("/msg"):
             handle_dev_message(tg, admin_chat_id, text)
         elif text == "/start" or text == "/menu":
             state["history_mode"] = False
             st.save_state(state)
             tg.send_message(admin_chat_id, WELCOME_TEXT,
                             reply_markup=menu_keyboard(state), parse_mode="HTML")
+        elif text == "/sources":
+            state["history_mode"] = False
+            st.save_state(state)
+            tg.send_message(admin_chat_id, sources_message(),
+                            reply_markup=menu_keyboard(state), parse_mode="HTML")
+        elif text == "/history":
+            handle_history_list(tg, admin_chat_id, state)
         elif text == "/help":
             tg.send_message(admin_chat_id, HELP_TEXT,
                             reply_markup=menu_keyboard(state), parse_mode="HTML")
