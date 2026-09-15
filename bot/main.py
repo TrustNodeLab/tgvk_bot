@@ -808,6 +808,15 @@ def run():
     tg = TelegramAPI(bot_token)
     vk = VKAPI(vk_token, vk_group_id, album_id=os.environ.get("VK_ALBUM_ID"))
 
+    # Удаляем webhook Cloudflare Worker, чтобы Telegram присылал апдейты
+    # через getUpdates (polling). Worker продолжает работать как KV/R2-бэкенд
+    # и сканер RSS (cron каждые 5 мин), но обработку команд берёт main.py.
+    try:
+        tg._call("deleteWebhook")
+        print("[bot] deleteWebhook: OK", flush=True)
+    except Exception as e:
+        print(f"[bot] deleteWebhook: {e}", flush=True)
+
     # Регистрируем команды (setMyCommands) — видны через «☰» / «/» в Telegram.
     _register_commands(tg)
 
