@@ -644,6 +644,21 @@ def build_news_payload(group: dict, cfg: dict) -> dict:
             desc = re.sub(r"<[^>]+>", " ", it["description"] or "")
             desc = re.sub(r"\s+", " ", desc).strip()[:500]
 
+            # --- полный текст статьи (S41): читаем оригинал и переписываем ---
+            # Вместо короткой RSS-выжимки делаем полноценный читаемый пост:
+            # fetch_full_article вытаскивает тело статьи, rewrite_news_full
+            # переписывает его живым русским (GigaChat). Если не получилось —
+            # остаёмся на прежнем коротком пути.
+            body = ""
+            try:
+                import digest as dg
+                _at, _text = dg.fetch_full_article(it["link"])
+                if _text and len(_text) >= 300:
+                    body = dg.rewrite_news_full(_text, title)
+                    print(f"[multigroups] {group['name']}: полный текст ({(len(_text))} симв) -> рерайт {len(body)} симв")
+            except Exception as e:
+                print(f"[multigroups] {group['name']}: полный текст не удался: {e}")
+
             # Семантический дедуп: похожая новость уже выходила в любой группе.
             if is_duplicate_title(title):
                 print(f"[multigroups] {group['name']}: дубль заголовка, пропускаю: {title[:50]}")
@@ -663,7 +678,9 @@ def build_news_payload(group: dict, cfg: dict) -> dict:
                     desc = d2
 
             text = f"🎮 {title}\n\n"
-            if desc:
+            if body:
+                text += f"{body}\n\n"
+            elif desc:
                 text += f"{desc}\n\n"
             text += f"🔗 Подробнее: {it['link']}\n{group['footer']}"
             text = text[:VK_POST_LIMIT]

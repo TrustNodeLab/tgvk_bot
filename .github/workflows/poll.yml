@@ -84,6 +84,8 @@ jobs:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_PROVIDER: ${{ vars.LLM_PROVIDER }}
           LLM_MODEL: ${{ vars.LLM_MODEL }}
+          # Для «🎬 Видео из новостей»: PAT со scope workflow (запуск video-long.yml).
+          GH_PAT: ${{ secrets.GH_PAT }}
           TELEGRAM_UPDATE_JSON: ${{ github.event.inputs.telegram_update }}
           TELEGRAM_UPDATE_JSON_2: ${{ github.event.inputs.telegram_update_2 }}
           TELEGRAM_UPDATE_JSON_3: ${{ github.event.inputs.telegram_update_3 }}
@@ -101,3 +103,19 @@ jobs:
       # не коммитит data/ — меньше нагрузка на GitHub и нет конфликтов пуша.
       # Если remote-бэкенд не настроен (нет секретов), state.py сам запишет файлы,
       # и они останутся на раннере (эфемерно) — поведение как раньше не гарантируется.
+
+      # Мост «пользователь <-> разработчик»: пользователь пишет через /dev <текст>
+      # (main.py кладёт в bot/inbox.json from_user), разработчик отвечает полем
+      # to_user. Файл коммитим обратно, чтобы сообщения уходили в репозиторий.
+      - name: Commit inbox
+        run: |
+          git config user.name "trustnode-bot"
+          git config user.email "bot@trustnode.local"
+          git add bot/inbox.json
+          if git diff --cached --quiet; then
+            echo "inbox.json не изменился"
+            exit 0
+          fi
+          git commit -m "bot: inbox sync $(date -u +%FT%TZ)"
+          git pull --rebase --autostash || true
+          git push origin HEAD:main
