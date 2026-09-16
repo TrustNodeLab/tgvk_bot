@@ -38,6 +38,7 @@ import {
   setMyCommands,
   resolveTelegramChannel,
   vkCall,
+  tgCall,
 } from "./lib/telegram.js";
 import { fmtTime, escHtml } from "./lib/text.js";
 import { ekbNow, plural } from "./lib/config.js";
