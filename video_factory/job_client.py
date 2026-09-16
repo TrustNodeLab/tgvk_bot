@@ -31,7 +31,13 @@ def send_callback(cfg: Config, job_id: str, status: str, progress: int | None = 
         f"{worker_url.rstrip('/')}/api/video/callback",
         data=body,
         method="POST",
-        headers={"Content-Type": "application/json", "X-VF-Signature": sig, "X-VF-Timestamp": str(ts)},
+        headers={
+            "Content-Type": "application/json",
+            "X-VF-Signature": sig,
+            "X-VF-Timestamp": str(ts),
+            # Cloudflare бот-фильтр режет Python-urllib UA (403) — шлём нормальный.
+            "User-Agent": "tgvk-bot-webhook/1.0 (+https://github.com/TrustNodeLab/tgvk_bot)",
+        },
     )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -49,7 +55,15 @@ def fetch_job(cfg: Config, job_id: str) -> dict | None:
         return None
     import urllib.request
 
-    req = urllib.request.Request(f"{worker_url.rstrip('/')}/api/video/{job_id}", headers={"X-Bot-Auth": token})
+    req = urllib.request.Request(
+        f"{worker_url.rstrip('/')}/api/video/{job_id}",
+        headers={
+            "X-Bot-Auth": token,
+            # Cloudflare бот-фильтр режет Python-urllib UA (403) — шлём нормальный.
+            "User-Agent": "tgvk-bot-webhook/1.0 (+https://github.com/TrustNodeLab/tgvk_bot)",
+            "Accept": "application/json",
+        },
+    )
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))

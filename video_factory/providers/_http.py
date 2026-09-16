@@ -8,8 +8,17 @@ import urllib.request
 from typing import Any
 
 
+# Cloudflare бот-фильтр режет запросы с User-Agent: Python-urllib/3.x (HTTP 403).
+# Все исходящие запросы шлём с нормальным UA, чтобы достучаться до Worker API.
+DEFAULT_HEADERS = {
+    "User-Agent": "tgvk-bot-webhook/1.0 (+https://github.com/TrustNodeLab/tgvk_bot)",
+    "Accept": "application/json, */*",
+}
+
+
 def _request(url: str, method: str, body: bytes | None, headers: dict, timeout: float = 60.0) -> Any:
-    req = urllib.request.Request(url, data=body, method=method, headers=headers)
+    merged = {**DEFAULT_HEADERS, **headers}
+    req = urllib.request.Request(url, data=body, method=method, headers=merged)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()

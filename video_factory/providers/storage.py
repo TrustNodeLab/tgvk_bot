@@ -56,7 +56,17 @@ class R2Storage:
         import urllib.request
 
         url = f"{self.worker_url}/files/{name}"
-        req = urllib.request.Request(url, data=data, method="PUT", headers={"X-Bot-Auth": self.token, "Content-Type": content_type})
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method="PUT",
+            headers={
+                "X-Bot-Auth": self.token,
+                "Content-Type": content_type,
+                # Cloudflare бот-фильтр режет Python-urllib UA (403) — шлём нормальный.
+                "User-Agent": "tgvk-bot-webhook/1.0 (+https://github.com/TrustNodeLab/tgvk_bot)",
+            },
+        )
         try:
             with urllib.request.urlopen(req, timeout=120) as resp:
                 if resp.status not in (200, 201):
