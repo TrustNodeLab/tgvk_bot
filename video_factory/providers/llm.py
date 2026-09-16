@@ -101,12 +101,20 @@ class GigaChatLLM:
         now = time.time()
         if self._token and self._token[1] > now + 60:
             return self._token[0]
-        # OAuth token endpoint (GigaChat)
-        data = f"scope={self.base_url}/api/personal_scope".encode()
+        # OAuth token endpoint: НУЦ-сертификат + отдельный хост ngw.devices.sberbank.ru:9443.
+        # На API-хосте (gigachat.devices.sberbank.ru/api/v2/oauth) WAF отдаёт 403 SynGX.
+        oauth_url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+        data = b"scope=GIGACHAT_API_PERS"
         headers = {"Authorization": f"Basic {self.api_key}", "Content-Type": "application/x-www-form-urlencoded", "RqUID": str(uuid.uuid4())}
-        resp = _post(f"{self.base_url}/api/v2/oauth", data=data, headers=headers)
+        resp = _post(oauth_url, data=data, headers=headers)
         tok = resp.get("access_token", "")
-        self._token = (tok, now + int(resp.get("expires_at", 1800)))
+        # GigaChat отдаёт expires_at в миллисекундах unix-времени — приводим к секундам.
+        exp_ms = resp.get("expires_at", 1800000)
+        try:
+            expires_s = float(exp_ms) / 1000.0
+        except (TypeError, ValueError):
+            expires_s = now + 1800
+        self._token = (tok, expires_s)
         return tok
 
     def complete_json(self, system: str, user: str, schema_hint: str = "") -> dict:
