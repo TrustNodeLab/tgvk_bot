@@ -116,16 +116,38 @@ class TestTTS:
 class EdgeTTS:
     """Microsoft Edge neural voices — free, high quality RU."""
     # VOICE_MAP = {"ru": "ru-RU-DmitryNeural", "en": "en-US-GuyNeural"}
+    # GitHub runner часто даёт транзиентный NoAudioReceived (Edge API блокирует
+    # первое соединение) — повторяем синтез до 3 раз с паузой.
     def synthesize(self, text: str, voice: str, out_path: Path) -> TTSSegment:
+        import asyncio
+        import time
+
         import edge_tts
 
-        async def _run():
-            communicate = edge_tts.Communicate(text, voice or "ru-RU-DmitryNeural")
-            await communicate.save(str(out_path))
+        last_err = None
+        # голоса: основной, затем запасной RU, затем EN (если MS блокирует первый)
+        voices = [voice or "ru-RU-DmitryNeural", "ru-RU-SvetlanaNeural", "en-US-GuyNeural"]
+        for v in voices:
+            for attempt in range(1, 4):
+                try:
+                    async def _run():
+                        communicate = edge_tts.Communicate(text, v)
+                        await communicate.save(str(out_path))
 
-        import asyncio
+                    asyncio.run(_run())
+                    if out_path.exists() and out_path.stat().st_size > 0:
+                        break
+                    raise TimeoutError("empty tts output")
+                except Exception as e:  # noqa: BLE001 — ретраим любой сбой Edge
+                    last_err = e
+                    if attempt < 3:
+                        time.sleep(2 * attempt)
+            else:
+                continue  # голос не дал аудио — пробуем следующий
+            break
+        else:
+            raise last_err or RuntimeError("edge-tts failed")
 
-        asyncio.run(_run())
         # Word boundaries via subprocess metadata (text) — approximate alignment:
         dur = _probe_duration(out_path)
         return TTSSegment(path=out_path, duration_s=dur, words=_proportional_words(text, dur), provider="edge")
