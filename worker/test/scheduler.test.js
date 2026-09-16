@@ -102,6 +102,9 @@ export function installFetchMock(dispatchStatus = 204, mixOptions = {}) {
       if (u.includes("/actions/workflows/video-long.yml/dispatches")) {
         return new Response(dispatchStatus === 204 ? null : "boom", { status: dispatchStatus });
       }
+      if (u.includes("/actions/workflows/video-render.yml/dispatches")) {
+        return new Response(dispatchStatus === 204 ? null : "boom", { status: dispatchStatus });
+      }
       return jsonResp({});
     }
     // любые фиды — пустой RSS, чтобы скан не находил новостей

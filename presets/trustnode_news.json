@@ -1,0 +1,56 @@
+{
+  "$schema": "https://raw.githubusercontent.com/TrustNodeLab/tgvk_bot/main/presets/trustnode_news.json",
+  "name": "trustnode_news",
+  "label": "TrustNode News — тёмный минимализм",
+  "duration_s": 55,
+  "resolution": "720x1280@30",
+  "palette": {
+    "bg": "#0A0E18",
+    "accent": "#3882FF",
+    "accent2": "#FF4048",
+    "text": "#EEF0F6",
+    "subtitle": "#FFFFFF"
+  },
+  "visual": {
+    "style": "dark_minimal",
+    "background": "topographic",
+    "media_container": {
+      "x0": 0.08,
+      "y0": 0.16,
+      "x1": 0.92,
+      "y1": 0.92,
+      "radius": 28
+    },
+    "motion": "kenburns",
+    "crop": "smart"
+  },
+  "typography": {
+    "font": "fonts/Exo2-Variable.ttf",
+    "overlay_size": 52,
+    "subtitle_size": 38,
+    "max_overlay_chars": 34,
+    "max_subtitle_chars": 60
+  },
+  "subtitles": {
+    "format": "srt+ass",
+    "burned_in": true,
+    "cyrillic": true
+  },
+  "audio": {
+    "music": "",
+    "music_volume": 0.12,
+    "duck_db": -9.0,
+    "sfx": []
+  },
+  "llm": {
+    "system_style": "dark minimal, concise, factual, no clickbait",
+    "scene_min_s": 4,
+    "scene_max_s": 20,
+    "language": "ru"
+  },
+  "cost_control": {
+    "cache_first": true,
+    "prefer_web_over_generated": true,
+    "max_assets_from_web": 6
+  }
+}
