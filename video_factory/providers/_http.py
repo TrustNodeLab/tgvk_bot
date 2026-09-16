@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import ssl
 import urllib.error
 import urllib.request
 from typing import Any
@@ -16,10 +17,43 @@ DEFAULT_HEADERS = {
 }
 
 
+def _ssl_context() -> ssl.SSLContext | None:
+    """HTTPS-контекст с bundle сертификатов certifi (если доступен).
+
+    Нужно для API с нестандартной цепочкой (например, gigachat.devices.sberbank.ru
+    заканчивается self-signed intermediate: urllib на GitHub-раннере падает с
+    CERTIFICATE_VERIFY_FAILED, а requests+certifi работает). Если certifi не
+    установлен — возвращаем None, и urlopen использует системный контекст.
+    """
+    try:
+        import certifi  # pip install certifi
+    except Exception:
+        return None
+    try:
+        return ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        return None
+
+
+_SL_CONTEXT: ssl.SSLContext | None = None  # кэш контекста (создаётся один раз)
+
+
 def _request(url: str, method: str, body: bytes | None, headers: dict, timeout: float = 60.0) -> Any:
     merged = {**DEFAULT_HEADERS, **headers}
     req = urllib.request.Request(url, data=body, method=method, headers=merged)
+    ctx = None
+    global _SL_CONTEXT
+    if _SL_CONTEXT is None:
+        _SL_CONTEXT = _ssl_context()
+    ctx = _SL_CONTEXT
     try:
+        if ctx is not None:
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
+                raw = resp.read()
+                ctype = resp.headers.get("Content-Type", "")
+                if "application/json" in ctype or raw[:1] in (b"{", b"["):
+                    return json.loads(raw.decode("utf-8", "replace")), resp.status
+                return raw, resp.status
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read()
             ctype = resp.headers.get("Content-Type", "")
