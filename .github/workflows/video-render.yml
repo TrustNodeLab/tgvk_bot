@@ -41,6 +41,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install Pillow requests imageio-ffmpeg numpy edge-tts
 
+      - name: Debug worker reachability
+        run: |
+          echo "BOT_WORKER_URL=[${BOT_WORKER_URL}]"
+          echo "JOB_ID=[${{ github.event.inputs.job_id }}]"
+          curl -sv -H "X-Bot-Auth: ${BOT_WORKER_TOKEN}" \
+            "${BOT_WORKER_URL}/api/video/${{ github.event.inputs.job_id }}" 2>&1 | tail -20 || true
+
       - name: Run render pipeline
         id: render
         env:

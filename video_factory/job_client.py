@@ -53,5 +53,6 @@ def fetch_job(cfg: Config, job_id: str) -> dict | None:
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             return json.loads(resp.read().decode("utf-8"))
-    except Exception:
+    except Exception as e:
+        print(f"[fetch] error fetching job {job_id}: {e}", file=os.sys.stderr)
         return None
