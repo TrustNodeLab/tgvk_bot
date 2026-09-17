@@ -128,7 +128,7 @@ function feedRss(items) {
   return `<rss version="2.0"><channel>${xml}</channel></rss>`;
 }
 
-test("/video собирает новости из лент и запускает Video Factory (video-render.yml)", async () => {
+test("/video собирает новости из лент и запускает video-long.yml", async () => {
   const { default: worker } = await import("file:///C:/Users/user/Desktop/tgvk_bot/worker/worker.js");
   const calls = { tg: [], github: [], feeds: [] };
   const now = new Date().toUTCString();
@@ -140,7 +140,7 @@ test("/video собирает новости из лент и запускает
     }
     if (u.includes("api.github.com")) {
       calls.github.push({ url: u, opts });
-      if (u.includes("/actions/workflows/video-render.yml/dispatches")) {
+      if (u.includes("/actions/workflows/video-long.yml/dispatches")) {
         return new Response(null, { status: 204 });
       }
       return jsonResp({});
@@ -157,11 +157,13 @@ test("/video собирает новости из лент и запускает
   };
   const env = makeEnv();
   await webhook(worker, env, "/video");
-  const disp = calls.github.filter((c) => c.url.includes("/actions/workflows/video-render.yml/dispatches"));
-  assert.equal(disp.length, 1, "video-render.yml диспатчен");
+  const disp = calls.github.filter((c) => c.url.includes("/actions/workflows/video-long.yml/dispatches"));
+  assert.equal(disp.length, 1, "video-long.yml диспатчен");
   const payload = JSON.parse(disp[0].opts.body || "{}");
-  assert.equal(payload.inputs.job_id, payload.inputs.job_id, "передаётся job_id");
-  assert.ok(payload.inputs.job_id.startsWith("vj_"), "job_id в формате vj_*");
+  assert.equal(payload.inputs.minutes, "15", "15 минут по умолчанию");
+  assert.equal(payload.inputs.format, "doc", "формат doc");
+  assert.ok(payload.inputs.topic.includes("Хакеры атакуют"), "тема из заголовка новости");
+  assert.ok(payload.inputs.script.length > 0, "сценарий собран из новостей");
   assert.ok(
     calls.tg.some((c) => c.url.includes("/sendMessage") && tgText(c).includes("Видео-дайджест запущен")),
     "админу подтверждение запуска"

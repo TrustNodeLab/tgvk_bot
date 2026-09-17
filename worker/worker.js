@@ -38,7 +38,6 @@ import {
   setMyCommands,
   resolveTelegramChannel,
   vkCall,
-  tgCall,
 } from "./lib/telegram.js";
 import { fmtTime, escHtml } from "./lib/text.js";
 import { ekbNow, plural } from "./lib/config.js";
@@ -67,7 +66,6 @@ import {
   resetMgConfig,
   fetchMultiFeeds,
 } from "./lib/multigroup.js";
-import { handleVideoApi, createJob } from "./api_video.js";
 
 const VERSION = "3.1.0";
 
@@ -160,7 +158,6 @@ const COMMANDS = [
   { command: "cine", description: "Видео 9:16: cinematic-трейлер по теме / статье" },
   { command: "long", description: "Видео 16:9: длинный ролик для YouTube (1-40 мин)" },
   { command: "video", description: "Видео-дайджест: собрать свежие новости и сделать ролик" },
-  { command: "vstatus", description: "Статус Video Factory: /vstatus <jobId>" },
   { command: "ping", description: "Проверка связи" },
   { command: "history", description: "История публикаций" },
   { command: "dev", description: "Сообщение разработчику" },
@@ -2328,23 +2325,9 @@ async function handleCommand(env, state, chatId, text, msg) {
     }
 
     case "/video": {
-      // 🎬 Шорт-видео 9:16 через Video Factory: создаёт job в KV и
-      // запускает рендер в GitHub Actions. Аргумент = тема ролика;
-      // без аргумента — собираем дайджест из свежих новостей.
-      const topicArg = (args || "").trim();
+      // 🎬 Видео-дайджест одной кнопкой: Worker сам собирает 3-5 свежих новостей
+      // из RU+EN лент, читает их полностью и запускает длинный ролик (M23).
       try {
-        if (topicArg) {
-          // Пользователь задал тему: Video Factory сама напишет сценарий.
-          const job = await createJob(env, { topic: topicArg, preset: "trustnode_news", chat_id: String(chatId) }, false);
-          await sendMessage(env, chatId,
-            `🎬 <b>Видео запущено!</b>\n\n` +
-            `Тема: <b>${escHtml(topicArg.slice(0, 120))}</b>\n` +
-            `Job: <code>${job.jobId}</code>\n\n` +
-            `Сценарий → озвучка → монтаж в GitHub Actions (~5–10 мин).\n` +
-            `Пришлю сюда же MP4 + EDL. Прогресс: /vstatus ${job.jobId}`);
-          break;
-        }
-        // Без темы: собираем свежие новости (старый дайджест-режим).
         const [ru, en] = await Promise.all([
           fetchMultiFeeds("ru", { limit: 8 }),
           fetchMultiFeeds("en", { limit: 8 }),
@@ -2365,47 +2348,34 @@ async function handleCommand(env, state, chatId, text, msg) {
           if (items.length >= 5) break;
         }
         if (!items.length) {
-          await sendMessage(env, chatId, "😕 Свежих новостей в лентах не нашёл. Попробуй позже или /video <тема>", { parse_mode: "HTML" });
+          await sendMessage(env, chatId, "😕 Свежих новостей в лентах не нашёл. Попробуй позже или <code>/long &lt;тема&gt;</code>", { parse_mode: "HTML" });
           break;
         }
-        const autoTopic = items.map((it) => String(it.title || "").trim()).join("; ").slice(0, 200);
-        const job = await createJob(env, { topic: autoTopic, preset: "trustnode_news", chat_id: String(chatId) }, false);
-        await sendMessage(env, chatId,
-          `🎬 <b>Видео-дайджест запущен</b> по ${items.length} новостям\n\n` +
-          items.map((it, i) => `${i + 1}. <b>${escHtml(String(it.title).slice(0, 90))}</b>\n   ${escHtml(String(it.link || "").replace(/^https?:\/\/(www\.)?/, "").split("/")[0])}`).join("\n") +
-          `\n\nJob: <code>${job.jobId}</code>\n` +
-          `Монтаж в GitHub Actions (~5–10 мин).\n` +
-          `Прогресс: /vstatus ${job.jobId}`);
-      } catch (e) {
-        await sendMessage(env, chatId, `⚠️ Не смог запустить видео: ${escHtml(e.message)}`);
-      }
-      break;
-    }
-
-    case "/vstatus": {
-      // Статус Video Factory job: /vstatus <jobId>
-      const jobId = (args || "").trim().split(/\s+/)[0] || "";
-      if (!jobId) {
-        await sendMessage(env, chatId, "Использование: /vstatus <jobId> (например, /vstatus vj_xxx)");
-        break;
-      }
-      try {
-        const kv = env.BOT_KV;
-        const job = await kv.get("vf:job:" + jobId, "json");
-        if (!job) {
-          await sendMessage(env, chatId, `❓ Job <code>${escHtml(jobId)}</code> не найден в KV (возможно, истёк TTL 7 дней).`);
-          break;
+        // Читаем полные тексты статей (макс 3 за раз, чтобы уложиться в лимит webhook).
+        const texts = await Promise.all(
+          items.slice(0, 3).map((it) => fetchArticleExcerpt(it.link || "", 2200, 8000))
+        );
+        const topic = items.map((it) => String(it.title || "").trim()).join("; ").slice(0, 300);
+        const fromPost = items
+          .map((it, i) => `${i + 1}. ${it.title}\n${(texts[i] || "").slice(0, 2200)}`)
+          .join("\n\n")
+          .slice(0, 3500);
+        const r = await dispatchVideoLong(env, 15, "doc", topic, fromPost);
+        if (r.ok) {
+          await sendMessage(env, chatId,
+            `🎬 <b>Видео-дайджест запущен</b> по ${items.length} новостям\n\n` +
+            items.map((it, i) => `${i + 1}. <b>${escHtml(String(it.title).slice(0, 90))}</b>\n   ${escHtml(String(it.link || "").replace(/^https?:\/\/(www\.)?/, "").split("/")[0])}`).join("\n") +
+            `\n\nСобираю в GitHub Actions — это займёт ~15–30 мин.\n` +
+            `Пришлю сюда же MP4 + монтажный лист (EDL).`);
+        } else if (r.reason === "no github") {
+          await sendMessage(env, chatId,
+            `⚠️ Видео недоступно: в воркере нет GITHUB_TOKEN/OWNER/REPO. ` +
+            `Добавьте секреты и задеплойте воркер заново.`);
+        } else {
+          await sendMessage(env, chatId, `⚠️ Не смог запустить видео: ${escHtml(r.reason || "ошибка")}`);
         }
-        const emoji = job.status === "completed" ? "✅" : job.status === "failed" ? "❌" : job.status === "cancelled" ? "⏹" : "⏳";
-        let text = `${emoji} <b>Видео ${job.status === "completed" ? "готово" : job.status}</b>\n`;
-        text += `<b>Тема:</b> ${escHtml(String(job.topic || "").slice(0, 120))}\n`;
-        text += `<b>Прогресс:</b> ${job.progress}% (${escHtml(job.stage || "init")})\n`;
-        text += `<b>Job:</b> <code>${job.jobId}</code>\n`;
-        if (job.error) text += `<b>Ошибка:</b> ${escHtml(String(job.error.message || job.error.code || "").slice(0, 200))}\n`;
-        if (job.output && job.output.url) text += `<b>Файл:</b> ${escHtml(job.output.url.slice(0, 120))}\n`;
-        await sendMessage(env, chatId, text, { parse_mode: "HTML" });
       } catch (e) {
-        await sendMessage(env, chatId, `⚠️ Ошибка статуса: ${escHtml(e.message)}`);
+        await sendMessage(env, chatId, `⚠️ Не смог запустить видео-дайджест: ${escHtml(e.message)}`);
       }
       break;
     }
@@ -2692,11 +2662,6 @@ export default {
     const url = new URL(request.url);
     const api = await handleApi(env, request, url);
     if (api) return api;
-
-    // Video Factory API: job orchestration + protected callbacks.
-    // Must run BEFORE the webhook POST-only gate (has GET/POST endpoints).
-    const vf = await handleVideoApi(env, request, url);
-    if (vf) return vf;
 
     if (request.method !== "POST") {
       return new Response("Method Not Allowed", { status: 405 });
