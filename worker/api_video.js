@@ -319,17 +319,36 @@ async function deliverVideoToUser(env, job) {
   if (!out.url && !out.key) return;
   if (job.delivered) return;
 
-  // Fetch the MP4 from our own /files endpoint (R2 or KV fallback).
+  try {
+    await deliverVideoInner(env, job, token, chatId, out);
+    return;
+  } catch (e) {
+    job.delivery = { ok: false, error: String((e && e.message) || e).slice(0, 300), ts: Date.now() };
+    job.updatedAt = Date.now();
+    try { await kvSet(env, JOB_PREFIX + job.jobId, job); } catch {}
+    throw e;
+  }
+}
+
+async function deliverVideoInner(env, job, token, chatId, out) {
   const rawKey = out.key ? String(out.key) : String(out.url || "").split("/files/")[1] || "";
-  const fileKey = rawKey.replace(/^files\//, "");
-  if (!fileKey) return;
+  if (!rawKey) return;
   const base = env.BOT_PUBLIC_URL || "";
-  const auth = env.BOT_AUTH || env.WEBHOOK_SECRET || "";
-  const res = await fetch(`${base}/files/${fileKey}`, {
-    headers: { "X-Bot-Auth": auth },
-  });
-  if (!res.ok) throw new Error(`files fetch ${res.status}`);
-  const buf = await res.arrayBuffer();
+  // Читаем MP4 напрямую из хранилища (KV base64 или R2) — без self-fetch,
+  // который изнутри Worker на собственный URL получал 404.
+  let buf;
+  if (env.BOT_R2) {
+    const obj = await env.BOT_R2.get(rawKey);
+    if (!obj) throw new Error(`r2 file not found: ${rawKey}`);
+    buf = await obj.arrayBuffer();
+  } else if (env.BOT_KV) {
+    const b64 = await env.BOT_KV.get(rawKey);
+    if (b64 === null) throw new Error(`kv file not found: ${rawKey}`);
+    const bin = atob(b64);
+    buf = Uint8Array.from(bin, (c) => c.charCodeAt(0)).buffer;
+  } else {
+    throw new Error("no storage configured");
+  }
 
   // Telegram multipart upload via sendVideo
   const boundary = `vf${Date.now().toString(36)}`;
@@ -347,9 +366,11 @@ async function deliverVideoToUser(env, job) {
   parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}`);
   const videoName = `video_${job.jobId}.mp4`;
   parts.push(`--${boundary}\r\nContent-Disposition: form-data; name="video"; filename="${videoName}"\r\nContent-Type: video/mp4\r\n\r\n`);
-  const bodyParts = parts.map((p) => p + "\r\n");
-  const head = bodyParts.join("");
-  const tail = `--${boundary}--\r\n`;
+  // Текстовые поля получают завершающий CRLF, а после видео-заголовка —
+  // ровно один CRLFCRLF, без добавки: иначе лишний \r\n становится первыми
+  // байтами тела, и Telegram отклоняет файл (400).
+  const head = parts.slice(0, -1).map((p) => p + "\r\n").join("") + parts[parts.length - 1];
+  const tail = `\r\n--${boundary}--\r\n`;
   const body = new Uint8Array(head.length * 2 + buf.byteLength + tail.length * 2);
   const te = new TextEncoder();
   let off = 0;
@@ -373,6 +394,7 @@ async function deliverVideoToUser(env, job) {
     throw new Error(`telegram sendVideo ${tg.status}: ${t.slice(0, 200)}`);
   }
   job.delivered = true;
+  job.delivery = { ok: true, ts: Date.now() };
   job.updatedAt = Date.now();
   await kvSet(env, JOB_PREFIX + job.jobId, job);
 }
