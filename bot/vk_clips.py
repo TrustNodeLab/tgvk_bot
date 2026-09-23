@@ -98,6 +98,10 @@ def upload_video_as_wall_document(
         except Exception as e:  # noqa: BLE001 — пробуем следующий кандидат
             last_err = e
             uploaded = None
+            print(
+                f"VK: wall document upload type={doc_type or '<none>'} не удался: {e}",
+                file=sys.stderr,
+            )
     if not uploaded:
         raise RuntimeError(f"VK wall document upload failed: {last_err}")
 
