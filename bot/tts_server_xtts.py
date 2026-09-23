@@ -26,7 +26,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "scripts"))
 
 from tts_clone import load_xtts_model, synth_to_file  # noqa: E402
 
-DEFAULT_SPEED = 0.9   # как в Piper-режиме (S34h): чуть медленнее
+DEFAULT_SPEED = 1.08  # короткие: ×1.2 от прежнего 0.9; длинные воркфлоу передают --speed 0.9
 DEFAULT_PITCH = -2.0  # выбор пользователя: «ruslan p-2»
 DEFAULT_LANG = "ru"
 VOICE_NAME = "XTTS clone ruslan (p-2)"

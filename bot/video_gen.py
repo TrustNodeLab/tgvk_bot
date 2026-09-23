@@ -301,11 +301,31 @@ def parse_script(text):
     """Режет произвольный текст на секции [{heading, body, voice, caption}].
 
     Строка `# Заголовок` начинает новую секцию; без заголовков текст
-    чанкуется по ~600 символов. voice — то, что произносит диктор.
+    чанкуется по ~600 символов, а если это короткий сценарий без # —
+    режется на ≤4 предложения-секции (short 4-sentence). voice — то, что
+    произносит диктор.
     """
     text = (text or "").replace("\r\n", "\n").strip()
     if not text:
         raise ValueError("пустой сценарий")
+    # Short без #: 4 (или меньше) коротких предложения → ровно по одному
+    # предложению на секцию, максимум 4 секции.
+    if "#" not in text:
+        sents = [p.strip() for p in
+                 re.split(r"(?<=[.!?…])\s+", text) if p.strip()]
+        if 1 < len(sents) <= 4:
+            out = []
+            for i, sent in enumerate(sents, 1):
+                out.append({"heading": f"Часть {i}", "body": sent,
+                            "voice": sent, "caption": sent[:40]})
+            return out
+        if len(sents) > 4:
+            # больше 4 — берём первые 4 предложения (вся суть в 4)
+            out = []
+            for i, sent in enumerate(sents[:4], 1):
+                out.append({"heading": f"Часть {i}", "body": sent,
+                            "voice": sent, "caption": sent[:40]})
+            return out
     raw = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
     paras = []
     for p in raw:
@@ -446,7 +466,7 @@ async def _tts_many(items, voice, tmpdir):
         # M19: интонация по чанкам (rate/pitch/volume), по умолчанию ровно
         await Communicate(
             s["voice"], voice,
-            rate=s.get("rate", "+0%"), pitch=s.get("pitch", "+0Hz"),
+            rate=s.get("rate", "+20%"), pitch=s.get("pitch", "+0Hz"),
             volume=s.get("volume", "+0%")).save(out)
         return out
 
@@ -536,7 +556,8 @@ def _tts_voicestudio(items, voice, tmpdir):
                     f"{base}/audio/speech",
                     headers={"Content-Type": "application/json"},
                     json={"model": "tts-1", "voice": vid,
-                          "input": s["voice"], "response_format": "wav"},
+                          "input": s["voice"], "response_format": "wav",
+                          "speed": 1.08},
                     timeout=VOICESTUDIO_TIMEOUT)
                 r.raise_for_status()
                 with open(wav_path, "wb") as fh:

@@ -94,7 +94,7 @@ jobs:
           ls -la refs/
           # 5) Запускаем XTTS-сервер (клон ruslan, питч -2)
           echo "⏳ Запускаем tts_server_xtts.py..."
-          nohup python bot/tts_server_xtts.py --ref-audio refs/ruslan.wav --pitch -2 --port 3900 \
+          nohup python bot/tts_server_xtts.py --ref-audio refs/ruslan.wav --pitch -2 --speed 0.9 --port 3900 \
             > out_tts_server.log 2>&1 &
           echo "⏳ Ждём HTTP-сервер (XTTS грузится ~1 мин)..."
           for i in $(seq 1 90); do
@@ -213,6 +213,17 @@ jobs:
               -F document="@out/video_long.edl.json" \
               -F caption="🧩 Монтажный лист (EDL): правь текст/порядок и пересобирай через --edl-in"
           fi
+
+      # Автопубликация long → VK Видео (не валят рендер при ошибке).
+      - name: Publish long to VK Video
+        if: success()
+        continue-on-error: true
+        env:
+          VK_TOKEN: ${{ secrets.VK_TOKEN }}
+          VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
+        run: |
+          python -m bot.vk_video out/video_long.mp4 \
+            "${{ github.event.inputs.topic || 'long video' }}" || true
 
       - name: Stop VoiceStudio
         if: always()

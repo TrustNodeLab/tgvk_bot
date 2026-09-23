@@ -198,6 +198,19 @@ jobs:
               -F caption="📝 Субтитры (SRT)"
           fi
 
+      # Автопубликация short → VK Клипы + TikTok (continue-on-error:
+      # отсутствие TIKTOK_ACCESS_TOKEN / ошибки VK не валят рендер).
+      - name: Publish short to VK Clips + TikTok
+        if: success()
+        continue-on-error: true
+        env:
+          VK_TOKEN: ${{ secrets.VK_TOKEN }}
+          VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
+          TIKTOK_ACCESS_TOKEN: ${{ secrets.TIKTOK_ACCESS_TOKEN }}
+        run: |
+          python -m bot.publish_short out/video_test.mp4 \
+            "短视频 публикация ${GITHUB_RUN_ID}" || true
+
       - name: Stop VoiceStudio
         if: always()
         run: |
