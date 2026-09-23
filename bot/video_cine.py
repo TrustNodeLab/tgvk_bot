@@ -3848,9 +3848,10 @@ def generate_cinematic(topic=None, seconds=55, style="cybersecurity_cinematic",
                 tsecs.append({"voice": s["voice"], "caption": s["id"],
                               "rate": rate, "pitch": pitch, "volume": vol})
             _w = None
+            _meta = {}
             try:
-                vmp3, _w = vg.make_voiceover_sections(ffmpeg, tsecs, voice,
-                                                      tmpdir)
+                vmp3, _w, _meta = vg.make_voiceover_sections(ffmpeg, tsecs, voice,
+                                                             tmpdir, lead_in=0.0)
             except Exception as e:
                 print(f"[cine] TTS не удался ({type(e).__name__}) "
                       f"— оценка по символам")

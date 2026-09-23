@@ -661,17 +661,139 @@ def mp3_duration(ffmpeg, path):
     return int(m.group(1)) * 3600 + int(m.group(2)) * 60 + float(m.group(3))
 
 
+LEAD_IN = 1.0    # пауза перед первым словом диктора
+TAIL_OUT = 1.5   # пауза после последнего слова
+CHUNK_GAP = 0.5  # пауза между репликами-чанками
+
+
+def speech_bounds(ffmpeg, path, noise_db=-35.0, min_sil=0.12):
+    """Реальные границы речи в аудиофайле: (onset, speech_duration).
+
+    Через ffmpeg silencedetect: TTS-движки (edge-tts/VoiceStudio/xtts) добавляют
+    тишину в начале/конце чанка, из-за чего субтитры по «сырой» длительности
+    файла едут на 100-400 мс. Возвращает (0.0, duration), если детект не дал
+    результата (тогда берём весь файл — субтитры не пропадут).
+    """
+    dur = mp3_duration(ffmpeg, path)
+    try:
+        r = subprocess.run(
+            [ffmpeg, "-hide_banner", "-i", path,
+             "-af", f"silencedetect=noise={noise_db}dB:d={min_sil}",
+             "-f", "null", "-"],
+            capture_output=True, text=True,
+        )
+        err = r.stderr or ""
+    except Exception as e:  # noqa: BLE001
+        print(f"[video] silencedetect не удался ({e}) — беру длительность файла")
+        return 0.0, dur
+    starts = [float(x) for x in re.findall(r"silence_start: ([0-9.]+)", err)]
+    ends = [float(x) for x in re.findall(r"silence_end: ([0-9.]+)", err)]
+    if not starts:
+        return 0.0, dur
+    onset = starts[0]
+    last_sil_end = ends[-1] if ends else 0.0
+    offset = max(onset, min(dur, last_sil_end)) if last_sil_end > onset else dur
+    if offset - onset < 0.3:
+        return 0.0, dur
+    return round(onset, 3), round(offset - onset, 3)
+
+
+def _srt_ts(sec):
+    ms = int(round((sec - int(sec)) * 1000))
+    s = int(sec)
+    if ms >= 1000:
+        s += 1
+        ms -= 1000
+    return f"{s // 3600:02d}:{(s % 3600) // 60:02d}:{s % 60:02d},{ms:03d}"
+
+
+def split_cues(text, start, end, max_chars=42, max_lines=2, min_dur=1.0):
+    """Нарезает прозвучавший текст на субтитры по времени речи.
+
+    Текст делится по словам на куски ≤ max_chars*max_lines символов, время
+    делится пропорционально длине куска. Гарантии: без перекрытий, каждый
+    кусок ≥ min_dur (если позволяет окно), последний кусок заканчивается
+    ровно в `end`.
+    """
+    text = re.sub(r"\s+", " ", (text or "").strip())
+    if not text or end <= start:
+        return []
+    words = text.split()
+    groups, cur, n = [], [], 0
+    for w in words:
+        add = len(w) + (1 if cur else 0)
+        if cur and n + add > max_chars * max_lines:
+            groups.append(" ".join(cur))
+            cur, n = [w], len(w)
+        else:
+            cur.append(w)
+            n += add
+    if cur:
+        groups.append(" ".join(cur))
+    if not groups:
+        return []
+    total = sum(len(g) for g in groups) or 1
+    span = end - start
+    cues, t = [], start
+    for i, g in enumerate(groups):
+        dur = span * len(g) / total
+        if i == len(groups) - 1:
+            dur = end - t
+        elif dur < min_dur and span >= min_dur:
+            dur = min(min_dur, end - t)
+        cues.append({"start": round(t, 3), "end": round(t + dur, 3), "text": g})
+        t += dur
+    return cues
+
+
+def wrap_cue(text, max_chars=42, max_lines=2):
+    """Перенос одного субтитра на ≤2 строки (для отрисовки в кадре)."""
+    words = (text or "").split()
+    lines, cur = [], ""
+    for w in words:
+        cand = (cur + " " + w).strip()
+        if cur and len(cand) > max_chars:
+            lines.append(cur)
+            cur = w
+        else:
+            cur = cand
+    if cur:
+        lines.append(cur)
+    if len(lines) > max_lines:
+        # переносим «хвост» в последнюю строку, не выходя за max_chars*2
+        head = lines[: max_lines - 1]
+        tail = " ".join(lines[max_lines - 1:])
+        while len(tail) > max_chars * 2 and len(head) < max_lines - 1:
+            head.append(tail[:max_chars])
+            tail = tail[max_chars:].strip()
+        head.append(tail)
+        lines = head[:max_lines]
+    return lines
+
+
+def write_srt(cues, path):
+    """Субтитры в .srt (совместимо с Telegram/VK/TikTok)."""
+    with open(path, "w", encoding="utf-8") as fh:
+        for i, c in enumerate(cues, 1):
+            fh.write(f"{i}\n")
+            fh.write(f"{_srt_ts(c['start'])} --> {_srt_ts(c['end'])}\n")
+            fh.write(f"{c['text']}\n\n")
+    return path
+
+
 def _estimate_weights(sections):
     """Грубая оценка длительностей (русская речь ~12 симв/с), без сети."""
     return [max(1.5, len(s["voice"]) / 12.0) for s in sections]
 
 
-def make_voiceover_sections(ffmpeg, sections, voice, tmpdir):
-    """Озвучивает каждую секцию отдельно, склеивает с паузами 0.5с.
+def make_voiceover_sections(ffmpeg, sections, voice, tmpdir, lead_in=None):
+    """Озвучивает каждую секцию отдельно, склеивает с паузами.
 
-    Возвращает (voice_mp3 | None, weights) — weights[i] = время показа
-    секции = длительность её аудио + пауза. Скролл идёт ровно под голос,
-    поэтому рассинхрона и «лагов» нет.
+    Возвращает (voice_mp3 | None, weights, cues):
+    - weights[i] = время показа секции i (длительность её аудио + пауза);
+    - cues = [{start, end, text}] — таймлайн субтитров, СИНХРОННЫЙ с голосом:
+      пауза LEAD_IN перед первым словом, реальные границы речи каждого чанка
+      (silencedetect), пауза CHUNK_GAP между чанками.
     """
     try:
         tts_provider = os.environ.get("TTS_PROVIDER", "").lower()
@@ -697,29 +819,42 @@ def make_voiceover_sections(ffmpeg, sections, voice, tmpdir):
             files = asyncio.run(_tts_many(sections, voice, tmpdir))
     except ImportError:
         print("[video] edge-tts не установлен — видео будет без звука")
-        return None, _estimate_weights(sections)
+        return None, _estimate_weights(sections), {"cues": [], "section_bounds": []}
     except Exception as e:
         print(f"[video] TTS не удался ({type(e).__name__}: {e}) — видео будет без звука")
         traceback.print_exc()
-        return None, _estimate_weights(sections)
+        return None, _estimate_weights(sections), {"cues": [], "section_bounds": []}
     durs = []
     valid_files = []
-    for f, s in zip(files, sections):
+    valid_sections = []
+    for idx, (f, s) in enumerate(zip(files, sections)):
         if f is None or not os.path.exists(f):
             # S28: TTS не удался для этого чанка — пропускаем
-            print(f"[video] sec_{sections.index(s)}: нет аудио, пропуск")
+            print(f"[video] sec_{idx}: нет аудио, пропуск")
             durs.append(max(1.5, len(s["voice"]) / 12.0))
             continue
         dd = mp3_duration(ffmpeg, f)
         durs.append(dd if dd > 0.3 else max(1.5, len(s["voice"]) / 12.0))
         valid_files.append(f)
+        valid_sections.append(s)
     if not valid_files:
         print("[video] ни один чанк не озвучен — видео без звука")
-        return None, durs
+        return None, durs, {"cues": [], "section_bounds": []}
     sil = os.path.join(tmpdir, "sil.mp3")
     subprocess.run(
         [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
-         "-t", "0.5", "-c:a", "libmp3lame", sil],
+         "-t", str(CHUNK_GAP), "-c:a", "libmp3lame", sil],
+        capture_output=True)
+    lead = os.path.join(tmpdir, "lead.mp3")
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+         "-t", str(lead_s), "-c:a", "libmp3lame", lead],
+        capture_output=True)
+    lead_s = LEAD_IN if lead_in is None else float(lead_in)
+    tail = os.path.join(tmpdir, "tail.mp3")
+    subprocess.run(
+        [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+         "-t", str(TAIL_OUT), "-c:a", "libmp3lame", tail],
         capture_output=True)
     lst = os.path.join(tmpdir, "join.txt")
     with open(lst, "w", encoding="utf-8") as fh:
@@ -728,10 +863,13 @@ def make_voiceover_sections(ffmpeg, sections, voice, tmpdir):
         # меняем на прямой слэш (в кавычках escape мешают)
         def _jp(p):
             return os.path.abspath(p).replace("\\", "/")
+        # тишина перед первым словом — субтитры стартуют с LEAD_IN
+        fh.write("file '%s'\n" % _jp(lead))
         for i, f in enumerate(valid_files):
             fh.write("file '%s'\n" % _jp(f))
             if i < len(valid_files) - 1:
                 fh.write("file '%s'\n" % _jp(sil))
+        fh.write("file '%s'\n" % _jp(tail))
     out = os.path.join(tmpdir, "voice.mp3")
     r = subprocess.run(
         [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", out],
@@ -743,10 +881,25 @@ def make_voiceover_sections(ffmpeg, sections, voice, tmpdir):
             capture_output=True)
         if r.returncode != 0:
             print("[video] склейка аудио не удалась — видео будет без звука")
-            return None, [d + 0.5 for d in durs]
-    weights = [d + (0.5 if i < len(durs) - 1 else 0.0) for i, d in enumerate(durs)]
-    print(f"[video] озвучка готова: {out} ({sum(weights):.1f} c голоса)")
-    return out, weights
+            return None, [d + CHUNK_GAP for d in durs], {"cues": [], "section_bounds": []}
+    weights = [d + (CHUNK_GAP if i < len(durs) - 1 else 0.0)
+               for i, d in enumerate(durs)]
+    # --- таймлайн субтитров по фактическим границам речи ---
+    cues, cursor = [], lead_s
+    section_bounds = [lead_s]
+    for f, s in zip(valid_files, valid_sections):
+        onset, sp_dur = speech_bounds(ffmpeg, f)
+        c_start = cursor + onset
+        c_end = c_start + max(0.3, sp_dur)
+        cues.extend(split_cues(s.get("voice") or s.get("body") or "",
+                               c_start, c_end))
+        cursor += mp3_duration(ffmpeg, f) + CHUNK_GAP
+        section_bounds.append(cursor - CHUNK_GAP if len(valid_files) > 1 else cursor)
+    if len(valid_files) > 1:
+        section_bounds[-1] = cursor - CHUNK_GAP
+    print(f"[video] озвучка готова: {out} ({sum(weights):.1f} c голоса), "
+          f"субтитров: {len(cues)}")
+    return out, weights, {"cues": cues, "section_bounds": section_bounds}
 
 
 # ---------- скролл и кадры ----------
@@ -756,29 +909,78 @@ def smoothstep(t):
     return t * t * (3 - 2 * t)
 
 
-def scroll_plan(site_h, seconds, anchors, weights=None):
+def cue_at(cues, t):
+    """Активный субтитр на момент t (границы по фактической речи)."""
+    if not cues:
+        return None
+    lo, hi = 0, len(cues) - 1
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        c = cues[mid]
+        if t < c["start"]:
+            hi = mid - 1
+        elif t > c["end"]:
+            lo = mid + 1
+        else:
+            return c
+    return None
+
+
+def _draw_cue(ov, cue, W, H, f_sub, f_sub_small=None):
+    """Отрисовка субтитра: до 2 строк, тёмная подложка + белый текст с обводкой."""
+    lines = wrap_cue(cue["text"], 42, 2)
+    if not lines:
+        return
+    font = f_sub
+    sizes, widths, heights = [], [], []
+    for ln in lines:
+        w, h = _ts(ov, ln, font)
+        widths.append(w)
+        heights.append(h)
+        sizes.append(h)
+    pad_x, pad_y, line_gap = 26, 16, 10
+    box_w = max(widths) + pad_x * 2
+    box_h = sum(sizes) + line_gap * (len(lines) - 1) + pad_y * 2
+    x0 = (W - box_w) // 2
+    y0 = H - box_h - 56
+    ov.rounded_rectangle([x0, y0, x0 + box_w, y0 + box_h], radius=16,
+                         fill=(6, 10, 20))
+    ov.rounded_rectangle([x0, y0, x0 + box_w, y0 + box_h], radius=16,
+                         outline=(40, 58, 92), width=2)
+    y = y0 + pad_y
+    for ln, w, h in zip(lines, widths, heights):
+        ov.text((x0 + (box_w - w) // 2, y), ln, font=font, fill=(255, 255, 255),
+                stroke_width=3, stroke_fill=(0, 0, 0))
+        y += h + line_gap
+
+
+def scroll_plan(site_h, seconds, anchors, weights=None, bounds=None):
     """Позиция верхнего края вьюпорта для каждого момента времени.
 
-    1с — стоим на начале, 1.5с — стоим на конце, между — плавный скролл
-    через якоря секций. weights[i] — время показа секции i (в идеале =
-    длительность её озвучки: тогда кадр всегда соответствует голосу).
+    1с — стоим на начале, 1.5с — стоим в конце, между — плавный скролл
+    через якоря секций. Если передан точный `bounds` (таймлайн озвучки) —
+    используется он: секция меняется ровно тогда, когда диктор её договорил.
+    Иначе weights[i] распределяются пропорционально (legacy-режим).
     """
     max_off = max(0, site_h - H)
-    weights = list(weights) if weights else [max(1, len(s["voice"])) for s in SECTIONS]
-    total_w = sum(weights) or 1.0
-    bounds = [1.0]  # время конца стояния на старте и конца каждого сегмента
-    span = seconds - 1.0 - 1.5
-    acc = 1.0
-    for w_ in weights:
-        acc += span * w_ / total_w
-        bounds.append(acc)
+    if bounds:
+        bounds = [float(b) for b in bounds]
+    else:
+        weights = list(weights) if weights else [max(1, len(s["voice"])) for s in SECTIONS]
+        total_w = sum(weights) or 1.0
+        bounds = [1.0]  # время конца стояния на старте и конца каждого сегмента
+        span = seconds - 1.0 - 1.5
+        acc = 1.0
+        for w_ in weights:
+            acc += span * w_ / total_w
+            bounds.append(acc)
     # якорь секции -> смещение: секция видна целиком сверху, clamp к max_off
     offs = [min(a["y_top"], max_off) for a in anchors]
 
     def pos(t):
         if t <= bounds[0]:
             return 0
-        for i in range(len(weights)):
+        for i in range(len(bounds) - 1):
             if t <= bounds[i + 1]:
                 frac = smoothstep((t - bounds[i]) / max(1e-6, bounds[i + 1] - bounds[i]))
                 return offs[i] + (offs[i + 1] - offs[i]) * frac if i + 1 < len(offs) else offs[i]
@@ -811,15 +1013,17 @@ def find_ffmpeg():
 
 
 def render_video(site, anchors, seconds, fps, out_silent, caption_on=True,
-                 weights=None, sections=None):
+                 weights=None, sections=None, cues=None, bounds=None):
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         raise RuntimeError("нет ffmpeg: pip install imageio-ffmpeg")
-    pos, bounds = scroll_plan(site.height, seconds, anchors, weights)
+    pos, _bounds = scroll_plan(site.height, seconds, anchors, weights, bounds=bounds)
     sections = sections if sections is not None else SECTIONS
+    cues = cues or []
     n = int(seconds * fps)
     f_cap = _font(JURA, 30, 700)
     f_url = _font(JURA, 28, 700)
+    f_sub = _font(JURA, 30, 700) if cues else None
     cmd = [
         ffmpeg, "-y",
         "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}",
@@ -848,9 +1052,15 @@ def render_video(site, anchors, seconds, fps, out_silent, caption_on=True,
         # прогресс скролла
         frac = off / max(1, site.height - H)
         ov.rectangle([0, 96, W * frac, 104], fill=ACCENT)
-        # подпись текущей секции
-        if caption_on:
-            cap = section_at(t, bounds, sections)
+        # субтитры: рисуем по точному таймлайну речи (Lead_Out снимаем,
+        # иначе картинка «висит» лишние 1.5с)
+        if cues:
+            cue = cue_at(cues, t)
+            if cue:
+                _draw_cue(ov, cue, W, H, f_sub)
+        elif caption_on:
+            # legacy-режим без таймлайна: подпись текущей секции
+            cap = section_at(t, _bounds, sections)
             cw, ch = _ts(ov, cap, f_cap)
             px0 = (W - cw) // 2 - 28
             ov.rounded_rectangle([px0, H - 120, px0 + cw + 56, H - 120 + ch + 36],
@@ -889,7 +1099,7 @@ def mux_audio(ffmpeg, silent_mp4, voice_mp3, out_mp4, seconds):
 
 def generate(seconds=30, out="out/video_test.mp4", fps=FPS_DEFAULT,
               voice=VOICE_DEFAULT, no_audio=False, tmpdir="out/tmp_video",
-              script_text=None):
+              script_text=None, srt_out=None):
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     os.makedirs(tmpdir, exist_ok=True)
     ffmpeg = find_ffmpeg()
@@ -908,17 +1118,24 @@ def generate(seconds=30, out="out/video_test.mp4", fps=FPS_DEFAULT,
         site, anchors = build_site()
         print(f"[video] сайт {site.width}x{site.height}, секций: {len(anchors)}")
         sections = SECTIONS
+    cues, section_bounds = [], []
     if no_audio:
         voice_mp3, weights = None, _estimate_weights(sections)
     else:
-        voice_mp3, weights = make_voiceover_sections(ffmpeg, sections, voice, tmpdir)
+        voice_mp3, weights, meta = make_voiceover_sections(
+            ffmpeg, sections, voice, tmpdir)
+        cues = (meta or {}).get("cues") or []
+        section_bounds = (meta or {}).get("section_bounds") or []
     if script_text or voice_mp3:
-        # длина по реальной озвучке: голос + стоянки 1с + 1.5с
-        seconds = round(sum(weights) + 1.0 + 1.5, 1)
+        # длина по реальной озвучке: голос + lead-in 1с + tail 1.5с
+        seconds = round(sum(weights) + LEAD_IN + TAIL_OUT, 1)
         print(f"[video] длина видео по озвучке: {seconds} c")
     silent = os.path.join(tmpdir, "silent.mp4")
     render_video(site, anchors, seconds, fps, silent, weights=weights,
-                 sections=sections)
+                 sections=sections, cues=cues, bounds=section_bounds or None)
+    if srt_out and cues:
+        write_srt(cues, srt_out)
+        print(f"[video] SRT: {srt_out} ({len(cues)} реплик)")
     if voice_mp3:
         mux_audio(ffmpeg, silent, voice_mp3, out, seconds)
     else:
@@ -991,7 +1208,8 @@ def main():
         a.seconds, a.fps = 6, 10
         a.out = "out/video_smoke.mp4"
     generate(seconds=a.seconds, out=a.out, fps=a.fps,
-             voice=a.voice, no_audio=a.no_audio, script_text=script or None)
+             voice=a.voice, no_audio=a.no_audio, script_text=script or None,
+             srt_out=a.srt_out or None)
 
 
 if __name__ == "__main__":

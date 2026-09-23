@@ -161,7 +161,8 @@ jobs:
               --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4 \
               --edl-out out/video_test.edl.json --srt-out out/video_test.srt $EXTRA
           else
-            python bot/video_gen.py --seconds ${{ github.event.inputs.seconds }} --out out/video_test.mp4 $EXTRA
+            python bot/video_gen.py --seconds ${{ github.event.inputs.seconds }} \
+              --out out/video_test.mp4 --srt-out out/video_test.srt $EXTRA
           fi
 
       - name: Upload video
@@ -174,6 +175,15 @@ jobs:
             out/video_test.srt
           retention-days: 7
 
+      # Субтитры должны идти ВИЗУАЛЬНО по голосу: сверяем таймкоды SRT
+      # с реальными границами речи в собранном видео.
+      - name: Verify subtitles sync
+        if: success()
+        continue-on-error: true
+        run: |
+          cat out/video_test.srt 2>/dev/null || echo "(SRT нет)"
+          python bot/verify_subs.py out/video_test.mp4 out/video_test.srt
+
       # Готовое видео — админу прямо в Telegram (тест «в самом боте»:
       # команду /videotest отдают в чате, MP4 возвращается в тот же чат).
       - name: Send video to Telegram
@@ -185,6 +195,12 @@ jobs:
             -F supports_streaming=true \
              -F caption="🎬 Видео готово (${{ github.event.inputs.seconds }} сек, run ${{ github.run_id }})${{ github.event.inputs.style != 'default' && ' — cinematic' || '' }}${{ github.event.inputs.script != '' && ' — по статье' || '' }}${{ github.event.inputs.from_post != '' && ' — по посту' || '' }}"
           # EDL/SRT — только для cinematic (9:16 шортсы)
+          if [ -f "out/video_test.srt" ]; then
+            curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
+              -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \
+              -F document="@out/video_test.srt" \
+              -F caption="💬 Субтитры (SRT, синхрон с голосом)"
+          fi
           if [ -f "out/video_test.edl.json" ]; then
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendDocument" \
               -F chat_id="${TELEGRAM_ADMIN_CHAT_ID}" \

@@ -800,9 +800,10 @@ def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
                 tsecs.append({"voice": s["voice"], "caption": s["id"],
                               "rate": rate, "pitch": pitch, "volume": vol})
             _w = None
+            _meta = {}
             try:
-                vmp3, _w = vg.make_voiceover_sections(ffmpeg, tsecs, voice,
-                                                      tmpdir)
+                vmp3, _w, _meta = vg.make_voiceover_sections(ffmpeg, tsecs, voice,
+                                                             tmpdir, lead_in=0.0)
             except Exception as e:
                 print(f"[long] TTS не удался ({type(e).__name__}) "
                       f"— оценка по символам")
