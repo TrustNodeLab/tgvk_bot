@@ -723,7 +723,8 @@ def load_edl(path):
 def generate_long(topic=None, minutes=6, format="doc", out="out/video_long.mp4",
                   fps=FPS_LONG, tmpdir="out/tmp_long", voice=vg.VOICE_DEFAULT,
                   no_audio=False, voice_over=True, edl_out=None,
-                  edl_in=None, script_text=None, provider=None, seed=7):
+                  edl_in=None, script_text=None, provider=None, seed=7,
+                  srt_out=None):
     """Тема -> длинный ролик 16:9 + EDL/SRT."""
     import shutil as _sh
     minutes = max(1, min(40, int(minutes)))
@@ -914,6 +915,27 @@ def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
     base, _ = os.path.splitext(out)
     epath = edl_out or (base + ".edl.json")
     dump_edl(epath, topic, format, minutes, fps, shots, bounds)
+    # --- SRT: таймкоды = реальные спаны голоса на таймлайне ролика
+    spath = srt_out or (base + ".srt")
+    try:
+        cues = []
+        idx_of = {id(s): i for i, s in enumerate(shots)}
+        for sp in (voice_spans or []):
+            i0 = idx_of.get(id(sp["refs"][0]))
+            if i0 is None or i0 >= len(bounds):
+                continue
+            j = int(sp.get("sec", 0))
+            txt = ""
+            if 0 <= j < len(tsecs):
+                txt = tsecs[j].get("voice") or tsecs[j].get("caption") or ""
+            st = float(bounds[i0])
+            en = float(bounds[i0 + 1]) if i0 + 1 < len(bounds) else st + 3.0
+            cues.extend(vg.split_cues(txt, st, max(st + 0.3, en - 0.05)))
+        if cues:
+            vg.write_srt(cues, spath)
+            print(f"[long] SRT: {spath} ({len(cues)} реплик)")
+    except Exception as e:  # noqa: BLE001 — субтитры не должны ломать рендер
+        print(f"[long] SRT не построен ({type(e).__name__}: {e})")
     size = os.path.getsize(out)
     print(f"[long] ГОТОВО: {out} ({size / 1048576:.1f} MB, {real_dur:.1f} c, "
           f"{format}, 16:9) + EDL ({len(shots)} шотов)")
@@ -940,6 +962,8 @@ def main(argv=None):
                          "умолчанию) перепишет его в длинный сценарий; при "
                          "сбое используется исходный текст как есть")
     ap.add_argument("--provider", default=None)
+    ap.add_argument("--srt-out", default="",
+                    help="путь для SRT субтитров (по спанам голоса)")
     ap.add_argument("--seed", type=int, default=7)
     a = ap.parse_args(argv)
     fmt = {"top": "top10", "razbor": "breakdown"}.get(a.format, a.format)
@@ -965,7 +989,8 @@ def main(argv=None):
                   fps=a.fps, tmpdir=a.tmpdir, voice=a.voice,
                   no_audio=a.no_audio, edl_out=a.edl_out or None,
                   edl_in=a.edl_in or None, script_text=script_text,
-                  provider=a.provider, seed=a.seed)
+                  provider=a.provider, seed=a.seed,
+                  srt_out=a.srt_out or None)
 
 
 if __name__ == "__main__":

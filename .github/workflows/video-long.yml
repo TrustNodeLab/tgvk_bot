@@ -145,16 +145,25 @@ jobs:
             --minutes "${{ github.event.inputs.minutes }}" \
             --format "${{ github.event.inputs.format }}" \
             --out out/video_long.mp4 \
-            --edl-out out/video_long.edl.json $EXTRA
+            --edl-out out/video_long.edl.json \
+            --srt-out out/video_long.srt $EXTRA
 
-      - name: Upload video + EDL
+      - name: Upload video + EDL + SRT
         uses: actions/upload-artifact@v4
         with:
           name: video-long
           path: |
             out/video_long.mp4
             out/video_long.edl.json
+            out/video_long.srt
           retention-days: 14
+
+      - name: Verify subtitles sync
+        if: success()
+        continue-on-error: true
+        run: |
+          head -40 out/video_long.srt 2>/dev/null || echo "(SRT нет)"
+          python bot/verify_subs.py out/video_long.mp4 out/video_long.srt
 
       - name: Send video to Telegram
         if: success()
