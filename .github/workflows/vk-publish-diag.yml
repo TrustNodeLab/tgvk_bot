@@ -1,0 +1,56 @@
+name: VK publish diag
+
+# Быстрая проверка публикации видео в VK без повторного рендера:
+# скачивает MP4 из артефакта уже завершённого video-test/video-long run
+# и прогоняет bot.publish_short / bot.vk_video.
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "ID прошлого video-test/video-long run (артефакт video-test/video-long)"
+        required: true
+      artifact:
+        description: "Имя артефакта: video-test или video-long"
+        required: false
+        default: "video-test"
+      mode:
+        description: "short (publish_short) или long (vk_video)"
+        required: false
+        default: "short"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.event.inputs.artifact }}
+          path: out
+          run-id: ${{ github.event.inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List files
+        run: ls -la out
+
+      - name: Publish
+        env:
+          VK_TOKEN: ${{ secrets.VK_TOKEN }}
+          VK_VIDEO_TOKEN: ${{ secrets.VK_VIDEO_TOKEN }}
+          VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
+          TIKTOK_ACCESS_TOKEN: ${{ secrets.TIKTOK_ACCESS_TOKEN }}
+        run: |
+          if [ "${{ github.event.inputs.mode }}" = "long" ]; then
+            python -m bot.vk_video out/video_long.mp4 "VK publish diag ${GITHUB_RUN_ID}" || true
+          else
+            python -m bot.publish_short out/video_test.mp4 "VK publish diag ${GITHUB_RUN_ID}" || true
+          fi

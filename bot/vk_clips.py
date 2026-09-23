@@ -58,30 +58,46 @@ def upload_video_as_wall_document(
     if not os.path.isfile(file_path):
         raise FileNotFoundError(file_path)
     session = requests.Session()
-    upload_info = _call(
-        session,
-        "docs.getWallUploadServer",
-        token,
-        group_id=group_id,
-        type="video",
-    )
-    upload_url = upload_info.get("upload_url")
-    if not upload_url:
-        raise RuntimeError(f"VK docs.getWallUploadServer without upload_url: {upload_info}")
 
-    with open(file_path, "rb") as fh:
-        r = session.post(
-            upload_url,
-            files={"file": (os.path.basename(file_path), fh, "video/mp4")},
-            timeout=600,
-        )
-    r.raise_for_status()
-    ur = r.json()
-    if ur.get("error"):
-        raise RuntimeError(f"VK docs upload error: {ur['error']}")
-    uploaded = ur.get("file")
+    # docs.getWallUploadServer принимает не все type для community-токена:
+    # type=video → error 100 "invalid type" (проверено live run 35903790383),
+    # рабочий вариант — type=doc (файл приходит как видео-документ).
+    candidates = [("video", "video_file"), ("doc", "file")]
+    last_err: Exception | None = None
+    uploaded: str | None = None
+    for doc_type, field in candidates:
+        try:
+            upload_info = _call(
+                session,
+                "docs.getWallUploadServer",
+                token,
+                group_id=group_id,
+                type=doc_type,
+            )
+            upload_url = upload_info.get("upload_url")
+            if not upload_url:
+                raise RuntimeError(
+                    f"VK docs.getWallUploadServer without upload_url: {upload_info}"
+                )
+            with open(file_path, "rb") as fh:
+                r = session.post(
+                    upload_url,
+                    files={field: (os.path.basename(file_path), fh, "video/mp4")},
+                    timeout=600,
+                )
+            r.raise_for_status()
+            ur = r.json()
+            if ur.get("error"):
+                raise RuntimeError(f"VK docs upload error: {ur['error']}")
+            uploaded = ur.get("file")
+            if not uploaded:
+                raise RuntimeError(f"VK docs upload returned empty file: {ur}")
+            break
+        except Exception as e:  # noqa: BLE001 — пробуем следующий кандидат
+            last_err = e
+            uploaded = None
     if not uploaded:
-        raise RuntimeError(f"VK docs upload returned empty file: {ur}")
+        raise RuntimeError(f"VK wall document upload failed: {last_err}")
 
     doc_title = (title or caption or os.path.basename(file_path)).strip()[:200]
     try:
