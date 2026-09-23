@@ -845,12 +845,12 @@ def make_voiceover_sections(ffmpeg, sections, voice, tmpdir, lead_in=None):
         [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
          "-t", str(CHUNK_GAP), "-c:a", "libmp3lame", sil],
         capture_output=True)
+    lead_s = LEAD_IN if lead_in is None else float(lead_in)
     lead = os.path.join(tmpdir, "lead.mp3")
     subprocess.run(
         [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
          "-t", str(lead_s), "-c:a", "libmp3lame", lead],
         capture_output=True)
-    lead_s = LEAD_IN if lead_in is None else float(lead_in)
     tail = os.path.join(tmpdir, "tail.mp3")
     subprocess.run(
         [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
