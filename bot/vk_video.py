@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
-"""Загрузка длинного видео (16:9) в VK Видео (не клип).
+"""Публикация длинного видео (16:9) в VK.
 
-video.save → multipart video_file → wall.post attachment video{owner}_{id}.
-Если доступен bot.vk_clips — использует его upload (общий path),
-иначе собственный video.save fallback.
+Основной путь (нативное VK Видео): video.save → multipart video_file →
+video.get → wall.post attachment video{owner_id}_{id}. Требует USER access token.
 
-ВАЖНО про токены: video.save требует USER access token → VK_VIDEO_TOKEN;
-wall.post из группы — групповой VK_TOKEN (см. bot/vk_clips.py).
+Fallback (групповой токен, всегда доступен): docs.getWallUploadServer(type=video)
+→ upload → docs.save → wall.post attachment doc{owner_id}_{id} — видео-документ
+на стене сообщества.
 
-Env: VK_VIDEO_TOKEN (user), VK_TOKEN (group), VK_GROUP_ID.
+Env: VK_VIDEO_TOKEN (user, опционально), VK_TOKEN (group, для wall.post/fallback),
+VK_GROUP_ID.
 CLI: python bot/vk_video.py <mp4> [title]
 """
 from __future__ import annotations
@@ -39,21 +40,22 @@ def publish_long_to_vk_video(
     group_id: int | None = None,
     title: str = "",
 ) -> str:
-    """Загрузить mp4 → VK Видео, вернуть attachment `video{owner}_{id}`.
+    """Опубликовать mp4 в VK, вернуть attachment.
 
-    Сначала пробует bot.vk_clips.upload_short_to_vk (если есть) — общий path.
-    Fallback: собственный video.save + upload + wall.post.
+    `video{owner}_{id}` — нативное VK Видео (нужен user-токен),
+    `doc{owner}_{id}` — fallback видео-документ на стене (групповой токен).
+
+    Делегирует bot.vk_clips.upload_short_to_vk (нативный путь + fallback);
+    при ImportError — собственный video.save, затем fallback на документ.
     """
     if not os.path.isfile(file_path):
         raise FileNotFoundError(file_path)
-    # video.save принимает только user token; VK_VIDEO_TOKEN — приоритет
-    token = (
+    video_token = (
         token or os.environ.get("VK_VIDEO_TOKEN") or os.environ.get("VK_TOKEN") or ""
     ).strip()
-    if not token:
+    if not video_token:
         raise ValueError(
-            "VK_VIDEO_TOKEN not set — video.save требует USER access token "
-            "(групповой VK_TOKEN даёт error 5 'invalid token type')"
+            "Не задан ни VK_VIDEO_TOKEN, ни VK_TOKEN — VK-публикация невозможна"
         )
     group_id = int(
         group_id
@@ -64,23 +66,40 @@ def publish_long_to_vk_video(
     if not group_id:
         raise ValueError("VK_GROUP_ID not set")
 
-    # Предпочитаем общий модуль, если он уже есть
+    # Общий модуль: нативный video.save (user) либо fallback на документ (group)
     try:
-        from bot.vk_clips import upload_short_to_vk  # noqa: F401
+        from bot.vk_clips import upload_short_to_vk
 
         return upload_short_to_vk(
-            file_path, token=token, group_id=group_id, caption=title or "🎬"
+            file_path, token=token, group_id=group_id, caption=title or "Видео"
         )
     except ImportError:
         pass
 
-    # Fallback: собственный путь
-    size = os.path.getsize(file_path)
     session = requests.Session()
+
+    # Fallback при отказе video.save (например, групповой токен)
+    def _doc_fallback() -> str:
+        from bot.vk_clips import upload_video_as_wall_document
+
+        wall_token = (os.environ.get("VK_TOKEN") or "").strip() or video_token
+        att = upload_video_as_wall_document(
+            file_path, wall_token, group_id, caption=title or "", title=title or ""
+        )
+        print(
+            f"VK: video.save недоступен (нужен USER access token) — "
+            f"использован fallback: {att}",
+            file=sys.stderr,
+        )
+        return att
+
+    if not (token or os.environ.get("VK_VIDEO_TOKEN")):
+        return _doc_fallback()
+
     save = _call(
         session,
         "video.save",
-        token,
+        video_token,
         group_id=group_id,
         name=title or os.path.basename(file_path),
         wallpost=1,
@@ -104,7 +123,7 @@ def publish_long_to_vk_video(
     lst = _call(
         session,
         "video.get",
-        token,
+        video_token,
         owner_id=-group_id,
         count=1,
     )
@@ -113,7 +132,7 @@ def publish_long_to_vk_video(
         lst = _call(
             session,
             "video.get",
-            token,
+            video_token,
             owner_id=-group_id,
             count=5,
         )
@@ -126,13 +145,15 @@ def publish_long_to_vk_video(
     video_id = vid.get("id")
     attachment = f"video{owner}_{video_id}"
 
-    msg = title or "🎬"
+    msg = title or "Видео"
+    wall_token = (os.environ.get("VK_TOKEN") or "").strip() or video_token
+    from_group = 1 if os.environ.get("VK_TOKEN") else 0
     _call(
         session,
         "wall.post",
-        token,
+        wall_token,
         owner_id=-group_id,
-        from_group=1,
+        from_group=from_group,
         message=msg,
         attachments=attachment,
     )

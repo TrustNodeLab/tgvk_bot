@@ -1,16 +1,23 @@
 #!/usr/bin/env python3
-"""Загрузка короткого (вертикального) видео в VK Клипы / на стену как clip.
+"""Публикация короткого (вертикального) видео в VK.
 
-video.save (group) → multipart upload video_file → wall.post attachment
-video{owner_id}_{id} (или clip-режим, если API поддерживает).
+Два пути (основной → fallback):
+1. НАТИВНЫЙ КЛИП/ВИДЕО: video.save → multipart video_file → video.get →
+   wall.post attachment video{owner_id}_{id}. Требует USER access token.
+2. FALLBACK (групповой токен, всегда доступен): docs.getWallUploadServer(type=video)
+   → multipart file → docs.save → wall.post attachment doc{owner_id}_{id}.
+   Видео попадает на стену сообщества как видео-документ (проигрывается в посте).
 
-ВАЖНО про токены (диагностика 2026-09-23, run 35902369680):
+ВАЖНО про токены (диагностика 2026-09-23, live run 35902369680):
 - video.save ОТВЕРГАЕТ групповой токен (error 5 "invalid token type") —
   нужен USER access token (администратора сообщества) → env VK_VIDEO_TOKEN.
-- wall.post (из группы, from_group=1) работает с групповым VK_TOKEN.
+- wall.post (из группы, from_group=1) и docs.getWallUploadServer работают
+  с групповым VK_TOKEN.
+- Если VK_VIDEO_TOKEN не задан или video.save отверг токен — автоматически
+  используется fallback через документ (пайплайн не падает).
 
-Env: VK_VIDEO_TOKEN (user, для video.save), VK_TOKEN (group, для wall.post),
-VK_GROUP_ID.
+Env: VK_VIDEO_TOKEN (user, опционально — для нативного video.save),
+VK_TOKEN (group, для wall.post и fallback), VK_GROUP_ID.
 CLI: python bot/vk_clips.py <mp4> [caption]
 """
 from __future__ import annotations
@@ -35,21 +42,97 @@ def _call(session: requests.Session, method: str, token: str, **params):
     return data["response"]
 
 
+def upload_video_as_wall_document(
+    file_path: str,
+    token: str,
+    group_id: int,
+    caption: str = "",
+    title: str = "",
+) -> str:
+    """Fallback: загрузить mp4 на стену сообщества как видео-документ.
+
+    Работает с ГРУППОВЫМ токеном (в отличие от video.save):
+    docs.getWallUploadServer(type=video) → upload file → docs.save → wall.post.
+    Возвращает attachment `doc{owner_id}_{id}`.
+    """
+    if not os.path.isfile(file_path):
+        raise FileNotFoundError(file_path)
+    session = requests.Session()
+    upload_info = _call(
+        session,
+        "docs.getWallUploadServer",
+        token,
+        group_id=group_id,
+        type="video",
+    )
+    upload_url = upload_info.get("upload_url")
+    if not upload_url:
+        raise RuntimeError(f"VK docs.getWallUploadServer without upload_url: {upload_info}")
+
+    with open(file_path, "rb") as fh:
+        r = session.post(
+            upload_url,
+            files={"file": (os.path.basename(file_path), fh, "video/mp4")},
+            timeout=600,
+        )
+    r.raise_for_status()
+    ur = r.json()
+    if ur.get("error"):
+        raise RuntimeError(f"VK docs upload error: {ur['error']}")
+    uploaded = ur.get("file")
+    if not uploaded:
+        raise RuntimeError(f"VK docs upload returned empty file: {ur}")
+
+    doc_title = (title or caption or os.path.basename(file_path)).strip()[:200]
+    try:
+        saved = _call(
+            session,
+            "docs.save",
+            token,
+            file=uploaded,
+            group_id=group_id,
+            title=doc_title,
+        )
+    except RuntimeError as e:
+        # error 15 «group messages are disabled» — docs.save без group_id.
+        if "error_code': 15" not in str(e) and "error_code': 15 " not in str(e):
+            raise
+        saved = _call(session, "docs.save", token, file=uploaded, title=doc_title)
+
+    saved = saved[0] if isinstance(saved, list) else saved
+    doc = (saved or {}).get("doc") or saved or {}
+    if not doc.get("id"):
+        raise RuntimeError(f"VK docs.save returned no doc: {saved}")
+
+    attachment = f"doc{doc['owner_id']}_{doc['id']}"
+    _call(
+        session,
+        "wall.post",
+        token,
+        owner_id=-group_id,
+        from_group=1,
+        message=caption or "",
+        attachments=attachment,
+    )
+    return attachment
+
+
 def upload_short_to_vk(
     file_path: str,
     token: str | None = None,
     group_id: int | None = None,
     caption: str = "",
 ) -> str:
-    """Загрузить mp4 → VK, вернуть attachment `video{owner}_{id}`.
+    """Опубликовать mp4 в VK, вернуть attachment.
 
-    Для клипса wall.post с attachment=video... рендерится как клип/превью
-    на стене сообщества. Если group_id не задан — берётся env VK_GROUP_ID.
+    Возвращает `video{owner}_{id}` при нативной загрузке (нужен user-токен)
+    или `doc{owner}_{id}` при fallback через групповой токен.
 
     Token resolution:
-    - video.save/video.get: VK_VIDEO_TOKEN (USER access token — обязателен,
-      групповой токен даёт error 5 "invalid token type").
-    - wall.post: VK_TOKEN (групповой, работает с from_group=1); если его нет —
+    - native video.save/video.get: VK_VIDEO_TOKEN (USER access token) —
+      групповой токен даёт error 5 "invalid token type", тогда срабатывает
+      автоматический fallback upload_video_as_wall_document (работает на VK_TOKEN).
+    - wall.post: VK_TOKEN (групповой, from_group=1); если его нет —
       используется VK_VIDEO_TOKEN без from_group.
     """
     if not os.path.isfile(file_path):
@@ -59,8 +142,7 @@ def upload_short_to_vk(
     ).strip()
     if not video_token:
         raise ValueError(
-            "VK_VIDEO_TOKEN not set — video.save требует USER access token "
-            "(групповой VK_TOKEN даёт error 5 'invalid token type')"
+            "Не задан ни VK_VIDEO_TOKEN, ни VK_TOKEN — VK-публикация невозможна"
         )
     wall_token = (os.environ.get("VK_TOKEN") or "").strip() or video_token
     from_group = 1 if os.environ.get("VK_TOKEN") else 0
@@ -73,8 +155,15 @@ def upload_short_to_vk(
     if not group_id:
         raise ValueError("VK_GROUP_ID not set")
 
-    size = os.path.getsize(file_path)
     session = requests.Session()
+
+    # 0) Нет user-токена → сразу fallback на групповой (video.save заведомо
+    #    отвергнет групповой токен, не тратим вызов).
+    if not (token or os.environ.get("VK_VIDEO_TOKEN")):
+        return upload_video_as_wall_document(
+            file_path, wall_token, group_id, caption=caption, title=os.path.basename(file_path)
+        )
+
     # 1) video.save — получаем upload_url
     try:
         save = _call(
@@ -90,11 +179,20 @@ def upload_short_to_vk(
         )
     except RuntimeError as e:
         if "invalid token type" in str(e):
-            raise RuntimeError(
-                f"{e} — video.save принимает только USER access token. "
-                "Создайте user-токен и задайте GH secret VK_VIDEO_TOKEN "
-                "(см. инструкцию в отчёте)."
-            ) from e
+            # user-токен фактически групповой → fallback на документ
+            att = upload_video_as_wall_document(
+                file_path,
+                wall_token,
+                group_id,
+                caption=caption,
+                title=os.path.basename(file_path),
+            )
+            print(
+                f"VK: video.save отверг токен (нужен USER access token) — "
+                f"использован fallback: {att}",
+                file=sys.stderr,
+            )
+            return att
         raise
     upload_url = save.get("upload_url")
     if not upload_url:
