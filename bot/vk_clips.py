@@ -59,20 +59,22 @@ def upload_video_as_wall_document(
         raise FileNotFoundError(file_path)
     session = requests.Session()
 
-    # docs.getWallUploadServer принимает не все type для community-токена:
-    # type=video → error 100 "invalid type" (проверено live run 35903790383),
-    # рабочий вариант — type=doc (файл приходит как видео-документ).
-    candidates = [("video", "video_file"), ("doc", "file")]
+    # docs.getWallUploadServer: community-токен принимает ТОЛЬКО вызов без
+    # параметра type (проверено live: run 35904550148 — type=video и type=doc
+    # дают error 100 "invalid type"; рабочий путь — без type, как в bot/vk_api.py).
+    candidates = [("", "file"), ("doc", "file"), ("video", "video_file")]
     last_err: Exception | None = None
     uploaded: str | None = None
     for doc_type, field in candidates:
         try:
+            params = {"group_id": group_id}
+            if doc_type:
+                params["type"] = doc_type
             upload_info = _call(
                 session,
                 "docs.getWallUploadServer",
                 token,
-                group_id=group_id,
-                type=doc_type,
+                **params,
             )
             upload_url = upload_info.get("upload_url")
             if not upload_url:
