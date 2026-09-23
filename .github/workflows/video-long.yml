@@ -220,6 +220,7 @@ jobs:
         continue-on-error: true
         env:
           VK_TOKEN: ${{ secrets.VK_TOKEN }}
+          VK_VIDEO_TOKEN: ${{ secrets.VK_VIDEO_TOKEN }}
           VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
         run: |
           python -m bot.vk_video out/video_long.mp4 \

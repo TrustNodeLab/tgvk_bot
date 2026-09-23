@@ -4,7 +4,13 @@
 video.save (group) → multipart upload video_file → wall.post attachment
 video{owner_id}_{id} (или clip-режим, если API поддерживает).
 
-Env: VK_TOKEN, VK_GROUP_ID.
+ВАЖНО про токены (диагностика 2026-09-23, run 35902369680):
+- video.save ОТВЕРГАЕТ групповой токен (error 5 "invalid token type") —
+  нужен USER access token (администратора сообщества) → env VK_VIDEO_TOKEN.
+- wall.post (из группы, from_group=1) работает с групповым VK_TOKEN.
+
+Env: VK_VIDEO_TOKEN (user, для video.save), VK_TOKEN (group, для wall.post),
+VK_GROUP_ID.
 CLI: python bot/vk_clips.py <mp4> [caption]
 """
 from __future__ import annotations
@@ -39,12 +45,25 @@ def upload_short_to_vk(
 
     Для клипса wall.post с attachment=video... рендерится как клип/превью
     на стене сообщества. Если group_id не задан — берётся env VK_GROUP_ID.
+
+    Token resolution:
+    - video.save/video.get: VK_VIDEO_TOKEN (USER access token — обязателен,
+      групповой токен даёт error 5 "invalid token type").
+    - wall.post: VK_TOKEN (групповой, работает с from_group=1); если его нет —
+      используется VK_VIDEO_TOKEN без from_group.
     """
     if not os.path.isfile(file_path):
         raise FileNotFoundError(file_path)
-    token = (token or os.environ.get("VK_TOKEN") or "").strip()
-    if not token:
-        raise ValueError("VK_TOKEN not set")
+    video_token = (
+        token or os.environ.get("VK_VIDEO_TOKEN") or os.environ.get("VK_TOKEN") or ""
+    ).strip()
+    if not video_token:
+        raise ValueError(
+            "VK_VIDEO_TOKEN not set — video.save требует USER access token "
+            "(групповой VK_TOKEN даёт error 5 'invalid token type')"
+        )
+    wall_token = (os.environ.get("VK_TOKEN") or "").strip() or video_token
+    from_group = 1 if os.environ.get("VK_TOKEN") else 0
     group_id = int(
         group_id
         or os.environ.get("VK_GROUP_ID")
@@ -57,17 +76,26 @@ def upload_short_to_vk(
     size = os.path.getsize(file_path)
     session = requests.Session()
     # 1) video.save — получаем upload_url
-    save = _call(
-        session,
-        "video.save",
-        token,
-        group_id=group_id,
-        name=os.path.basename(file_path),
-        wallpost=1,
-        is_private=0,
-        privacy_view="all",
-        privacy_edit="all",
-    )
+    try:
+        save = _call(
+            session,
+            "video.save",
+            video_token,
+            group_id=group_id,
+            name=os.path.basename(file_path),
+            wallpost=1,
+            is_private=0,
+            privacy_view="all",
+            privacy_edit="all",
+        )
+    except RuntimeError as e:
+        if "invalid token type" in str(e):
+            raise RuntimeError(
+                f"{e} — video.save принимает только USER access token. "
+                "Создайте user-токен и задайте GH secret VK_VIDEO_TOKEN "
+                "(см. инструкцию в отчёте)."
+            ) from e
+        raise
     upload_url = save.get("upload_url")
     if not upload_url:
         raise RuntimeError(f"VK video.save without upload_url: {save}")
@@ -90,7 +118,7 @@ def upload_short_to_vk(
     lst = _call(
         session,
         "video.get",
-        token,
+        video_token,
         owner_id=-group_id,
         count=1,
     )
@@ -100,7 +128,7 @@ def upload_short_to_vk(
         lst = _call(
             session,
             "video.get",
-            token,
+            video_token,
             owner_id=-group_id,
             count=5,
         )
@@ -118,9 +146,9 @@ def upload_short_to_vk(
     _call(
         session,
         "wall.post",
-        token,
+        wall_token,
         owner_id=-group_id,
-        from_group=1,
+        from_group=from_group,
         message=msg,
         attachments=attachment,
     )

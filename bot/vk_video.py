@@ -5,7 +5,10 @@ video.save → multipart video_file → wall.post attachment video{owner}_{id}.
 Если доступен bot.vk_clips — использует его upload (общий path),
 иначе собственный video.save fallback.
 
-Env: VK_TOKEN, VK_GROUP_ID.
+ВАЖНО про токены: video.save требует USER access token → VK_VIDEO_TOKEN;
+wall.post из группы — групповой VK_TOKEN (см. bot/vk_clips.py).
+
+Env: VK_VIDEO_TOKEN (user), VK_TOKEN (group), VK_GROUP_ID.
 CLI: python bot/vk_video.py <mp4> [title]
 """
 from __future__ import annotations
@@ -43,9 +46,15 @@ def publish_long_to_vk_video(
     """
     if not os.path.isfile(file_path):
         raise FileNotFoundError(file_path)
-    token = (token or os.environ.get("VK_TOKEN") or "").strip()
+    # video.save принимает только user token; VK_VIDEO_TOKEN — приоритет
+    token = (
+        token or os.environ.get("VK_VIDEO_TOKEN") or os.environ.get("VK_TOKEN") or ""
+    ).strip()
     if not token:
-        raise ValueError("VK_TOKEN not set")
+        raise ValueError(
+            "VK_VIDEO_TOKEN not set — video.save требует USER access token "
+            "(групповой VK_TOKEN даёт error 5 'invalid token type')"
+        )
     group_id = int(
         group_id
         or os.environ.get("VK_GROUP_ID")
