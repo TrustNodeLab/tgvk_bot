@@ -1,0 +1,84 @@
+name: VK token diagnostic
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Probe VK token type + video.save variants
+        env:
+          VK_TOKEN: ${{ secrets.VK_TOKEN }}
+          VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
+        run: |
+          python <<'PY'
+          import json, os, urllib.request, urllib.parse
+
+          TOKEN = os.environ["VK_TOKEN"]
+          GID = os.environ.get("VK_GROUP_ID", "")
+          BASE = "https://api.vk.com/method/"
+
+          def call(method, **params):
+              params.setdefault("access_token", TOKEN)
+              params.setdefault("v", "5.199")
+              data = urllib.parse.urlencode(params).encode()
+              req = urllib.request.Request(BASE + method, data=data, method="POST")
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      return json.loads(r.read().decode())
+              except Exception as e:
+                  return {"transport_error": str(e)}
+
+          results = {}
+          # 1) token identity
+          results["users.get"] = call("users.get")
+          results["groups.getById"] = call("groups.getById", group_id=GID)
+          # 2) video.save variants
+          results["video.save+gid+privacy"] = call(
+              "video.save", group_id=GID, name="diag.mp4",
+              wallpost=1, is_private=0,
+              privacy_view="all", privacy_edit="all",
+          )
+          results["video.save+gid"] = call(
+              "video.save", group_id=GID, name="diag.mp4", wallpost=1
+          )
+          results["video.save-no-gid"] = call(
+              "video.save", name="diag.mp4", wallpost=1
+          )
+          # 3) known-working method
+          results["wall.post-ping"] = call(
+              "wall.post", owner_id=f"-{GID}", from_group=1, message="vk-diag ping"
+          )
+
+          def brief(obj):
+              if not isinstance(obj, dict):
+                  return obj
+              if "error" in obj:
+                  e = obj["error"]
+                  return {
+                      "error_code": e.get("error_code"),
+                      "error_msg": (e.get("error_msg") or "")[:120],
+                      "descr": e.get("descr"),
+                  }
+              if "response" in obj:
+                  resp = obj["response"]
+                  if isinstance(resp, list) and resp and isinstance(resp[0], dict):
+                      keys = sorted(resp[0].keys())
+                      return {"ok": True, "type_hint": keys[:8]}
+                  if isinstance(resp, dict):
+                      return {"ok": True, "keys": sorted(resp.keys())[:10],
+                              "upload_url": bool(resp.get("upload_url")),
+                              "post_id": resp.get("post_id")}
+                  return {"ok": True, "short": str(resp)[:80]}
+              if "transport_error" in obj:
+                  return obj
+              return {"raw_keys": sorted(obj.keys())}
+
+          print("VK_GROUP_ID=", GID)
+          for k, v in results.items():
+              print(f"{k}: {json.dumps(brief(v), ensure_ascii=False)}")
+          PY
