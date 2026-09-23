@@ -107,10 +107,21 @@ def main(argv=None) -> int:
         print("verify_subs: речь не обнаружена в аудио — пропуск")
         return 0
 
+    # пауза ВНУТРИ фразы (0.15-0.7с) — не разрыв речи: склеиваем такие
+    # участки, иначе одна реплика «перепрыгивает» паузу и считается
+    # рассинхроном (на живом прогоне 4 реплики давали 6 участков)
+    merged = [list(spans[0])]
+    for s, e in spans[1:]:
+        if s - merged[-1][1] < 0.7:
+            merged[-1][1] = e
+        else:
+            merged.append([s, e])
+    spans = [(s, e) for s, e in merged]
+
     first_speech, last_speech = spans[0][0], spans[-1][1]
     d_start = cues[0][0] - first_speech
     d_end = last_speech - cues[-1][1]
-    # каждая реплика должна попадать в одну из речевых пауз
+    # каждая реплика должна попадать в речевой участок (с допуском)
     uncovered = []
     for start, end, _t in cues:
         if not any(start >= s - a.tolerance and end <= e + a.tolerance

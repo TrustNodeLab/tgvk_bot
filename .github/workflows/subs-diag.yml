@@ -1,0 +1,57 @@
+name: Subs diag
+
+# Быстрая проверка синхрона субтитров и голоса без повторного рендера:
+# скачивает MP4 + SRT из артефакта прошлого video-test/video-long run
+# и гоняет bot/verify_subs.py (silencedetect по готовому видео).
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "ID прошлого video-test/video-long run"
+        required: true
+      artifact:
+        description: "Имя артефакта: video-test или video-long"
+        required: false
+        default: "video-test"
+      tolerance:
+        description: "Допуск расхождения, сек"
+        required: false
+        default: "0.25"
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: pip install imageio-ffmpeg
+
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ github.event.inputs.artifact }}
+          path: out
+          run-id: ${{ github.event.inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List files
+        run: ls -la out
+
+      - name: Show SRT
+        run: cat out/*.srt
+
+      - name: Verify sync
+        run: |
+          set -e
+          if [ "${{ github.event.inputs.artifact }}" = "video-long" ]; then
+            python bot/verify_subs.py out/video_long.mp4 out/video_long.srt \
+              --tolerance ${{ github.event.inputs.tolerance }}
+          else
+            python bot/verify_subs.py out/video_test.mp4 out/video_test.srt \
+              --tolerance ${{ github.event.inputs.tolerance }}
+          fi
