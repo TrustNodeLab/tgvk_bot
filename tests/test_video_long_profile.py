@@ -311,6 +311,56 @@ class LongVideoProfileTests(unittest.TestCase):
         self.assertIn("cold_open", anchors)
         self.assertIn("close", anchors)
 
+    def test_casebook_keeps_every_mechanism_section_under_unreachable_budget(self):
+        """Regression: v1 render voiced only 5/8 sections because every
+        ``mechanism`` section was unprotected and the budget trimmer deleted
+        the longest unprotected voiced shot until the target was unreachable.
+        Each source section must keep its own voiced shot."""
+        sections = []
+        for index, contract in enumerate(
+            target.profiles.blueprint("trustnode_casebook", 7, "doc")
+        ):
+            sections.append(
+                {
+                    **contract,
+                    "heading": f"Section {index + 1}",
+                    "body": "A long source-grounded sentence. " * 20,
+                    "query": "documentary evidence",
+                }
+            )
+        mechanism_sections = {
+            section["index"]
+            for section in sections
+            if section.get("profile_role") == "mechanism"
+        }
+        self.assertGreaterEqual(
+            len(mechanism_sections), 3, "test must reproduce the v1 shape"
+        )
+
+        shots = target.build_long_shots(
+            sections,
+            "case",
+            profile="trustnode_casebook",
+            target_sec=1,
+        )
+
+        voiced_mechanism = {
+            shot.get("sec")
+            for shot in shots
+            if shot.get("profile_role") == "mechanism" and shot.get("voice")
+        }
+        self.assertEqual(
+            mechanism_sections,
+            voiced_mechanism,
+            "every mechanism section must keep its own voiced shot",
+        )
+        self.assertIn(
+            "mechanism",
+            target.profiles.get_profile("trustnode_casebook")[0]["shot_policy"][
+                "protected_roles"
+            ],
+        )
+
     def test_classic_shot_list_keeps_legacy_ids_and_voice_fields(self):
         sections = [
             {

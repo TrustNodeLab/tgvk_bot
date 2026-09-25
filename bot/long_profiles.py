@@ -69,6 +69,7 @@ _PROFILE_POLICIES = {
         "protected_roles": [
             "cold_open",
             "evidence",
+            "mechanism",
             "action",
             "counterpoint",
             "close",
