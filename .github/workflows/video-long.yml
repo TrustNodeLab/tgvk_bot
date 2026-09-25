@@ -11,6 +11,10 @@ on:
         description: "Формат: doc / breakdown / top10"
         required: false
         default: "doc"
+      profile:
+        description: "Редакционный профиль: classic / trustnode_casebook"
+        required: false
+        default: "classic"
       topic:
         description: "Тема ролика (пусто = по умолчанию)"
         required: false
@@ -31,8 +35,18 @@ jobs:
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_ADMIN_CHAT_ID: ${{ secrets.TELEGRAM_ADMIN_CHAT_ID }}
+      VIDEO_PROFILE: ${{ github.event.inputs.profile }}
+      LONG_SCRIPT_INPUT: ${{ github.event.inputs.script }}
+      LONG_POST_INPUT: ${{ github.event.inputs.from_post }}
     steps:
       - uses: actions/checkout@v5
+
+      - name: Validate source inputs
+        run: |
+          if [ -n "${LONG_SCRIPT_INPUT:-}" ] && [ -n "${LONG_POST_INPUT:-}" ]; then
+            echo "::error::script and from_post are mutually exclusive; provide only one source"
+            exit 2
+          fi
 
       - uses: actions/setup-python@v6
         with:
@@ -40,6 +54,21 @@ jobs:
 
       - name: Install dependencies
         run: pip install -r requirements.txt imageio-ffmpeg edge-tts numpy silero
+
+      - name: Validate profile and run offline checks
+        id: profile
+        run: |
+          canonical_profile="$(python - <<'PY'
+          import os
+          from bot.long_profiles import get_profile
+          _, canonical = get_profile(os.environ.get("VIDEO_PROFILE", "classic"))
+          print(canonical)
+          PY
+          )"
+          printf 'canonical=%s\n' "$canonical_profile" >> "$GITHUB_OUTPUT"
+          python -m unittest tests.test_long_profiles
+          python -m unittest tests.test_video_long_profile
+          python -m unittest tests.test_digest_video_dispatch
 
       - name: Start VoiceStudio (XTTS clone ruslan p-2)
         run: |
@@ -119,6 +148,10 @@ jobs:
       - name: Generate long video
         env:
           SCRIPT_TEXT: ${{ github.event.inputs.script }}
+          VIDEO_TOPIC: ${{ github.event.inputs.topic }}
+          VIDEO_MINUTES: ${{ github.event.inputs.minutes }}
+          VIDEO_FORMAT: ${{ github.event.inputs.format }}
+          VIDEO_PROFILE: ${{ steps.profile.outputs.canonical }}
           POST_TEXT: ${{ github.event.inputs.from_post }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
@@ -132,21 +165,34 @@ jobs:
           VOICESTUDIO_VOICE: alloy
           VOICESTUDIO_TIMEOUT: "900"
         run: |
-          EXTRA=""
+          if [ -n "${SCRIPT_TEXT:-}" ] && [ -n "${POST_TEXT:-}" ]; then
+            echo "::error::script and from_post are mutually exclusive; provide only one source"
+            exit 2
+          fi
+          SCRIPT_ARGS=()
           if [ -n "$SCRIPT_TEXT" ]; then
             printf '%s' "$SCRIPT_TEXT" > script.txt
-            EXTRA="--script-file script.txt"
+            SCRIPT_ARGS+=(--script-file "script.txt")
           fi
           if [ -n "$POST_TEXT" ]; then
             printf '%s' "$POST_TEXT" > post.txt
-            EXTRA="--from-post post.txt"
+            SCRIPT_ARGS+=(--from-post "post.txt")
           fi
-          python bot/video_long.py --topic "${{ github.event.inputs.topic }}" \
-            --minutes "${{ github.event.inputs.minutes }}" \
-            --format "${{ github.event.inputs.format }}" \
+          python bot/video_long.py --topic "$VIDEO_TOPIC" \
+            --minutes "$VIDEO_MINUTES" \
+            --format "$VIDEO_FORMAT" \
+            --profile "$VIDEO_PROFILE" \
             --out out/video_long.mp4 \
             --edl-out out/video_long.edl.json \
-            --srt-out out/video_long.srt $EXTRA
+            --srt-out out/video_long.srt "${SCRIPT_ARGS[@]}"
+
+      - name: Require non-empty SRT
+        if: success()
+        run: |
+          if [ ! -s "out/video_long.srt" ]; then
+            echo "::error::Required long SRT is missing or empty: out/video_long.srt"
+            exit 1
+          fi
 
       - name: Upload video + EDL + SRT
         uses: actions/upload-artifact@v4
@@ -157,18 +203,43 @@ jobs:
             out/video_long.edl.json
             out/video_long.srt
           retention-days: 14
+          if-no-files-found: error
 
       - name: Verify subtitles sync
         if: success()
-        continue-on-error: true
         run: |
-          head -40 out/video_long.srt 2>/dev/null || echo "(SRT нет)"
-          python bot/verify_subs.py out/video_long.mp4 out/video_long.srt
+          if VERIFY_OUTPUT="$(python bot/verify_subs.py out/video_long.mp4 out/video_long.srt 2>&1)"; then
+            printf '%s\n' "$VERIFY_OUTPUT"
+          else
+            status=$?
+            printf '%s\n' "$VERIFY_OUTPUT"
+            echo "::error::Long subtitle verification failed (exit $status)"
+            exit "$status"
+          fi
+          case "$VERIFY_OUTPUT" in
+            *"verify_subs: OK"*) ;;
+            *)
+              echo "::error::Long subtitle verification skipped or produced no OK result"
+              exit 1
+              ;;
+          esac
 
       - name: Send video to Telegram
         if: success()
+        env:
+          VIDEO_MINUTES: ${{ github.event.inputs.minutes }}
+          VIDEO_FORMAT: ${{ github.event.inputs.format }}
+          SCRIPT_TEXT: ${{ github.event.inputs.script }}
+          POST_TEXT: ${{ github.event.inputs.from_post }}
+          RUN_ID: ${{ github.run_id }}
         run: |
-          CAPTION="🎬 Длинное видео готово (${{ github.event.inputs.minutes }} мин, ${{ github.event.inputs.format }}, run ${{ github.run_id }})${{ github.event.inputs.script != '' && ' — по статье' || '' }}${{ github.event.inputs.from_post != '' && ' — по посту' || '' }}"
+          CAPTION="🎬 Длинное видео готово ("$VIDEO_MINUTES" мин, "$VIDEO_FORMAT", run "$RUN_ID")"
+          if [ -n "$SCRIPT_TEXT" ]; then
+            CAPTION+=" — по статье"
+          fi
+          if [ -n "$POST_TEXT" ]; then
+            CAPTION+=" — по посту"
+          fi
           # Telegram Bot API: лимит 50MB — сжимаем полный 1080p до <50MB (720p, цикл CRF)
           python - <<'EOF'
           import subprocess, os, sys, shutil
@@ -231,9 +302,10 @@ jobs:
           VK_TOKEN: ${{ secrets.VK_TOKEN }}
           VK_VIDEO_TOKEN: ${{ secrets.VK_VIDEO_TOKEN }}
           VK_GROUP_ID: ${{ secrets.VK_GROUP_ID }}
+          VIDEO_TOPIC: ${{ github.event.inputs.topic || 'long video' }}
         run: |
           python -m bot.vk_video out/video_long.mp4 \
-            "${{ github.event.inputs.topic || 'long video' }}" || true
+            "$VIDEO_TOPIC" || true
 
       - name: Stop VoiceStudio
         if: always()
@@ -244,7 +316,9 @@ jobs:
 
       - name: Notify failure to Telegram
         if: failure()
+        env:
+          RUN_ID: ${{ github.run_id }}
         run: |
           curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -H "Content-Type: application/json" \
-            -d "{\"chat_id\":\"${TELEGRAM_ADMIN_CHAT_ID}\",\"text\":\"❌ Длинное видео не собралось (run ${{ github.run_id }}). Смотри лог в Actions → Video long.\"}"
+            -d "{\"chat_id\":\"${TELEGRAM_ADMIN_CHAT_ID}\",\"text\":\"❌ Длинное видео не собралось (run ${RUN_ID}). Смотри лог в Actions → Video long.\"}"

@@ -69,6 +69,65 @@ import {
 
 const VERSION = "3.1.0";
 
+// Профиль редакции для длинного видео. Значение намеренно разбирается только
+// как явный suffix-флаг команды, чтобы обычные слова темы не меняли смысл.
+const DEFAULT_LONG_VIDEO_PROFILE = "classic";
+const LONG_VIDEO_PROFILES = new Set(["classic", "trustnode_casebook"]);
+
+function parseLongProfileSuffix(rawArgs) {
+  const source = String(rawArgs || "").trim();
+  const tokens = source ? source.split(/\s+/) : [];
+  let explicit = false;
+  let restTokens = tokens;
+  let rawProfile = null;
+
+  const last = tokens[tokens.length - 1] || "";
+  const previous = tokens[tokens.length - 2] || "";
+  let profileForm = null;
+  if (/^--profile=/i.test(last)) {
+    explicit = true;
+    profileForm = "equals";
+    rawProfile = last.slice(last.indexOf("=") + 1);
+    restTokens = tokens.slice(0, -1);
+  } else if (/^--profile$/i.test(previous)) {
+    explicit = true;
+    profileForm = "bare";
+    rawProfile = last;
+    restTokens = tokens.slice(0, -2);
+  } else if (/^--profile$/i.test(last)) {
+    explicit = true;
+    profileForm = "missing";
+    rawProfile = "";
+    restTokens = tokens.slice(0, -1);
+  }
+
+  if (!explicit) {
+    return { rest: source, profile: DEFAULT_LONG_VIDEO_PROFILE, error: null, rawProfile: null };
+  }
+
+  const profile = String(rawProfile || "").trim().toLowerCase();
+  if (!profile) {
+    // An explicitly empty value follows the same compatibility rule as an
+    // omitted value.  A bare flag with no following token is malformed.
+    if (profileForm === "equals") {
+      return { rest: restTokens.join(" "), profile: DEFAULT_LONG_VIDEO_PROFILE, error: null, rawProfile: "" };
+    }
+    return { rest: restTokens.join(" "), profile: DEFAULT_LONG_VIDEO_PROFILE, error: "missing", rawProfile: "" };
+  }
+  if (!LONG_VIDEO_PROFILES.has(profile)) {
+    return { rest: restTokens.join(" "), profile: DEFAULT_LONG_VIDEO_PROFILE, error: "unknown", rawProfile };
+  }
+  return { rest: restTokens.join(" "), profile, error: null, rawProfile: profile };
+}
+
+function longProfileErrorText(parsed) {
+  if (parsed.error === "missing") {
+    return "⚠️ Для --profile укажите профиль: classic или trustnode_casebook.";
+  }
+  const safeProfile = escHtml(String(parsed.rawProfile || "").slice(0, 80));
+  return `⚠️ Неизвестный профиль: ${safeProfile}. Доступны: classic, trustnode_casebook.`;
+}
+
 // ---------- тексты ----------
 
 const WELCOME_TEXT =
@@ -106,8 +165,8 @@ const HELP_TEXT =
   "<b>Видео:</b>\n" +
   "/videotest [сек] — демо-видео 9:16 или ответом на текст (сценарий)\n" +
   "/cine &lt;тема&gt; — cinematic-трейлер 9:16 (~55 сек); ответом на статью — видео ПО ТЕКСТУ\n" +
-  "/long [минут] [формат] &lt;тема&gt; — длинное видео 16:9 для YouTube (1-40 мин, doc/breakdown/top10)\n" +
-  "/video — видео-дайджест одной кнопкой: сам соберу 3–5 свежих новостей и запущу ролик\n" +
+  "/long [минут] [формат] &lt;тема&gt; [--profile classic|trustnode_casebook] — длинное видео 16:9 для YouTube (1-40 мин, doc/breakdown/top10)\n" +
+  "/video [--profile classic|trustnode_casebook] — видео-дайджест одной кнопкой: сам соберу 3–5 свежих новостей и запущу ролик\n" +
   "<b>Служебное:</b>\n" +
   "/ping — проверка связи, /history — история публикаций\n" +
   "/dev &lt;текст&gt; — передать сообщение разработчику\n" +
@@ -2190,11 +2249,17 @@ async function handleCommand(env, state, chatId, text, msg) {
     }
 
     case "/long": {
-      // /long [минут] [формат] <тема> — длинное YouTube-видео 16:9 (M21).
+      // /long [минут] [формат] <тема> [--profile <key>] — длинное YouTube-видео 16:9 (M21).
       // Ответом на статью — ролик ПО СТАТЬЕ; иначе сценарий пишет LLM.
       // Форматы: doc (документалка), breakdown (разбор), top10 (топ).
-      const parts = String(args || "").trim().split(/\s+/).filter(Boolean);
-      let minutes = 6, format = "doc", rest = String(args || "").trim();
+      const profileArgs = parseLongProfileSuffix(args);
+      if (profileArgs.error) {
+        await sendMessage(env, chatId, longProfileErrorText(profileArgs), { parse_mode: "HTML" });
+        break;
+      }
+      const profile = profileArgs.profile;
+      const parts = profileArgs.rest.split(/\s+/).filter(Boolean);
+      let minutes = 6, format = "doc", rest = profileArgs.rest;
       let consumed = 0;
       const maybeMin = parseInt(parts[0], 10);
       if (Number.isFinite(maybeMin) && maybeMin >= 1 && maybeMin <= 40) {
@@ -2223,11 +2288,12 @@ async function handleCommand(env, state, chatId, text, msg) {
         await sendMessage(env, chatId,
           `🎬 Использование: <code>/long 6 doc Как вас взламывают через фишинг</code>\n` +
           `Минут 1–40, форматы: doc / breakdown / top10.\n` +
+          `Опционально: --profile classic|trustnode_casebook (по умолчанию classic).\n` +
           `Со статьёй: текст после команды или ответом на статью — соберу ролик ПО ТЕКСТУ (~15–30 мин, пришлю MP4 + монтажный лист).`);
         break;
       }
       try {
-        const r = await dispatchVideoLong(env, minutes, format, topic, script);
+        const r = await dispatchVideoLong(env, minutes, format, topic, script, profile);
         if (r.ok) {
           await sendMessage(env, chatId,
             `🎬 <b>Длинное видео запущено</b> («${escHtml(topic.slice(0, 80))}», ${r.minutes} мин, ${r.format})` +
@@ -2327,6 +2393,12 @@ async function handleCommand(env, state, chatId, text, msg) {
     case "/video": {
       // 🎬 Видео-дайджест одной кнопкой: Worker сам собирает 3-5 свежих новостей
       // из RU+EN лент, читает их полностью и запускает длинный ролик (M23).
+      const profileArgs = parseLongProfileSuffix(args);
+      if (profileArgs.error) {
+        await sendMessage(env, chatId, longProfileErrorText(profileArgs), { parse_mode: "HTML" });
+        break;
+      }
+      const profile = profileArgs.profile;
       try {
         const [ru, en] = await Promise.all([
           fetchMultiFeeds("ru", { limit: 8 }),
@@ -2360,7 +2432,7 @@ async function handleCommand(env, state, chatId, text, msg) {
           .map((it, i) => `${i + 1}. ${it.title}\n${(texts[i] || "").slice(0, 2200)}`)
           .join("\n\n")
           .slice(0, 3500);
-        const r = await dispatchVideoLong(env, 15, "doc", topic, fromPost);
+        const r = await dispatchVideoLong(env, 15, "doc", topic, fromPost, profile);
         if (r.ok) {
           await sendMessage(env, chatId,
             `🎬 <b>Видео-дайджест запущен</b> по ${items.length} новостям\n\n` +

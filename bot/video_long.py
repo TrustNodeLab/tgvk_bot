@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import video_gen as vg  # noqa: E402 (ffmpeg/mux/tts-утилиты)
 import video_cine as cine  # noqa: E402 (движок, M19-хелперы)
+import long_profiles as profiles  # noqa: E402 (profile contract)
 
 try:
     import llm  # noqa: E402 (сценарии)
@@ -125,30 +126,50 @@ def _target_chars(minutes):
     return int(minutes * 60 * CHARS_PER_SEC)
 
 
-def _blueprint(topic, minutes, format):
-    """Скелет секций формата: [(роль, доля_хронометража)]."""
-    if format == "top10":
-        n = max(3, min(10, int(round(minutes))))
-        shares = [0.06] + [0.84 / n] * n + [0.10]
-        roles = (["hook"] + ["item"] * n + ["outro"])
-        return list(zip(roles, shares))
-    if format == "breakdown":
-        n = max(2, min(6, int(round(minutes / 1.2))))
-        shares = [0.05, 0.10] + [(0.75 / n)] * n + [0.10]
-        roles = ["hook", "thesis"] + ["argument"] * n + ["verdict"]
-        return list(zip(roles, shares))
-    # doc
-    n = max(2, min(12, int(round(minutes))))
-    shares = [0.08] + [(0.80 / n)] * n + [0.12]
-    roles = ["hook"] + ["chapter"] * n + ["finale"]
-    return list(zip(roles, shares))
+def _profile_is_explicit(profile):
+    """Return whether a caller supplied a profile override.
+
+    ``None`` and blank strings intentionally mean "use the compatibility
+    default".  This distinction matters for ``--edl-in``: an omitted CLI/API
+    profile follows the profile stored in the EDL, while an explicit
+    ``--profile classic`` is an intentional override.
+    """
+    if profile is None:
+        return False
+    if isinstance(profile, str):
+        return bool(profile.strip())
+    return True
 
 
-def _fallback_script(topic, minutes, format):
+def _canonical_profile(profile=None):
+    """Validate and return a canonical profile key.
+
+    Kept as a small adapter so all long-path entry points use the same
+    registry policy and unknown explicit values fail before side effects.
+    """
+    return profiles.get_profile(profile)[1]
+
+
+def _blueprint(topic, minutes, format, profile=None):
+    """Return the structural section skeleton for a format/profile pair.
+
+    The profile module owns the deterministic shares.  The returned tuples
+    preserve the historical private-helper shape used by older callers.
+    """
+    plan = profiles.blueprint(profile, minutes, format)
+    return [(item["role"], item["share"]) for item in plan]
+
+
+def _fallback_script(topic, minutes, format, profile=None):
     """Шаблон без LLM (честная заглушка: структура формата, текст generic)."""
+    profile_key = _canonical_profile(profile)
+    plan = profiles.blueprint(profile_key, minutes, format)
     total = _target_chars(minutes)
     out = []
-    for i, (role, share) in enumerate(_blueprint(topic, minutes, format)):
+    for i, contract in enumerate(plan):
+        role = contract["role"]
+        share = contract["share"]
+        profile_role = contract.get("profile_role", role)
         budget = max(200, int(total * share))
         if role == "hook":
             head = f"{topic}: с чего всё началось"
@@ -173,8 +194,18 @@ def _fallback_script(topic, minutes, format):
             head, body = f"{topic}", f"Про «{topic}». " * 20
         # Гарантируем EN-запрос для Pexels
         query_en = _ru_to_en_query(f"{topic} {head}", topic)
-        out.append({"heading": head[:80], "body": body[:budget + 400],
-                    "query": query_en, "role": role, "method": "template"})
+        out.append({
+            "heading": head[:80],
+            "body": body[:budget + 400],
+            "query": query_en,
+            "role": role,
+            "profile": profile_key,
+            "profile_role": profile_role,
+            "visual_mode": contract.get("visual_mode"),
+            "protected": bool(contract.get("protected")),
+            "anchor": contract.get("anchor"),
+            "method": "template",
+        })
     return out
 
 
@@ -281,19 +312,31 @@ def _stock_query_from_body(body, topic=""):
     return random.choice(doc_fallbacks)
 
 
-def write_script(topic, minutes, format, provider=None):
+def write_script(topic, minutes, format, provider=None, profile=None,
+                 source_context=None):
     """Сценарий секциями [{heading, body, query, role}] — по секции через LLM.
 
-    Каждая секция генерируется ОТДЕЛЬНЫМ LLM-вызовом с minimum chars.
-    Это решает проблему GigaChat, который при одном вызове даёт мало текста.
+    ``profile`` is orthogonal to the structural ``format``.  ``source_context``
+    is the bounded source/article body supplied by the caller; it is included
+    in every final section prompt so a heading-only parse cannot discard the
+    factual material used by the video.
     """
+    profile_key = _canonical_profile(profile)
+    fmt = profiles.normalize_format(format)
     total = _target_chars(minutes)
-    plan = _blueprint(topic, minutes, format)
+    plan = profiles.blueprint(profile_key, minutes, fmt)
     per_section_min = max(300, int(total / len(plan) * 0.6))
     secs = []
+    source_context = "" if source_context is None else str(source_context)
 
     if llm is not None:
-        for i, (role, share) in enumerate(plan):
+        for i, contract in enumerate(plan):
+            role = contract["role"]
+            share = contract["share"]
+            profile_role = contract.get("profile_role", role)
+            visual_mode = contract.get("visual_mode")
+            protected = bool(contract.get("protected"))
+            anchor = contract.get("anchor")
             budget = max(300, int(total * share))
             # Инициализируем переменные ДО цикла retry (на случай HTTPError)
             body = ""
@@ -307,19 +350,27 @@ def write_script(topic, minutes, format, provider=None):
                          "verdict": "вердикт",
                          "finale": "финал/выводы",
                          "outro": "завершение"}.get(role, role)
+            rules = profiles.script_rules(
+                profile_key,
+                role=profile_role,
+                index=i,
+                total=len(plan),
+                source_context=source_context,
+            )
             prompt = (
                 f"Ты — сценарист YouTube-канала о кибербезопасности и технологиях. "
                 f"Напиши ЧАСТЬ {i+1} из {len(plan)} ({role_name}) сценария "
-                f"на тему «{topic}» (формат {format}).\n"
+                f"на тему «{topic}» (формат {fmt}).\n"
                 f"Это {role_name} ролика на {minutes} минут.\n"
                 f"Требуется МИНИМУМ {per_section_min} символов дикторского текста "
                 f"(цель ~{budget} символов).\n"
                 f"Правила:\n"
-                f"- body — живой дикторский текст: факты, детали, примеры, цифры, "
-                f"имена, даты. Без воды и приветствий.\n"
+                f"- body — живой дикторский текст: только факты и детали из "
+                f"контекста источника, без воды и приветствий.\n"
                 f"- heading — короткое название (до 6 слов)\n"
                 f"- query — 2-3 слова на АНГЛИЙСКОМ для поиска сток-видео "
                 f"(УНИКАЛЬНЫЕ для этой секции, НЕ повторяй query из предыдущих частей)\n"
+                f"Профильный контракт и контекст источника:\n{rules}\n"
                 f"Уже написаны секции:\n"
                 + "\n".join(f"  {j+1}. [{prev['role']}] query: {prev['query']}"
                             for j, prev in enumerate(secs) if prev.get("query"))
@@ -349,7 +400,7 @@ def write_script(topic, minutes, format, provider=None):
                     continue
             else:
                 # LLM не справился — используем шаблон для этой секции
-                fb = _fallback_script(topic, minutes, format)
+                fb = _fallback_script(topic, minutes, fmt, profile_key)
                 if i < len(fb):
                     body = fb[i].get("body", "")
                     heading = fb[i].get("heading", heading)
@@ -364,6 +415,11 @@ def write_script(topic, minutes, format, provider=None):
                 "body": body,
                 "query": query_en,
                 "role": role,
+                "profile": profile_key,
+                "profile_role": profile_role,
+                "visual_mode": visual_mode,
+                "protected": protected,
+                "anchor": anchor,
                 "method": "llm" if body and "template" not in str(body) else "template"})
 
         total_chars = sum(len(s['body']) for s in secs)
@@ -373,14 +429,14 @@ def write_script(topic, minutes, format, provider=None):
             return secs
         print(f"[long] LLM дал {total_chars} символов — дополняем fallback")
         # Дополняем короткие секции шаблонным текстом
-        fb = _fallback_script(topic, minutes, format)
-        for j, s in enumerate(secs):
-            if len(s["body"]) < per_section_min and j < len(fb):
-                s["body"] = s["body"] + " " + fb[j].get("body", "")
-                s["method"] = "llm+template"
+        fb = _fallback_script(topic, minutes, fmt, profile_key)
+        for j, section in enumerate(secs):
+            if len(section["body"]) < per_section_min and j < len(fb):
+                section["body"] = section["body"] + " " + fb[j].get("body", "")
+                section["method"] = "llm+template"
         return secs
 
-    return _fallback_script(topic, minutes, format)
+    return _fallback_script(topic, minutes, fmt, profile_key)
 
 
 # ---------- секции -> чанки -> шоты ----------
@@ -437,23 +493,37 @@ _VISUALS = ["phone_message", "login_screen", "keyboard", "qr_scan",
 _PEAK_POOL = ["attack_grid", "face_glow", "server_corridor", "eye",
               "consequence", "police_raid", "federal_building",
               "money_counting", "hacker_screen", "drone_aerial"]
+_CASEBOOK_VISUALS = ["news_article", "data_center", "keyboard",
+                     "server_rack", "phone_message", "courtroom",
+                     "evidence_table", "city_skyline", "drone_aerial",
+                     "federal_building", "bokeh"]
 _CAMERAS = ["push_in", "drift", "push_out", "tilt", "whip_pan", "snap"]
 _TRANS = ["hard_cut", "whip", "zoom", "match", "hard_cut", "dip"]
 
 
 def _mkshot(sid, act, dur, visual, camera, texts, trans_out, sfx="none",
             speed=(1.0, 1.0), accent="accent", fx="", typ=None,
-            voice="", sub="", sec=0):
+            voice="", sub="", sec=0, profile=None, profile_role=None,
+            visual_mode=None, protected=False, anchor=None):
     if typ is None:
         typ = "cinematic"
-    # S38c: YouTube 16:9 — НЕТ субтитров. Субтитры только для TikTok 9:16.
-    # Визуальные шоты должны рассказывать историю сами (как у Мамая).
+    # YouTube 16:9 uses a separate voice/SRT artifact; these shots do not
+    # inject decorative subtitles into the renderer timeline.
     subs = []
-    return {"id": sid, "sec": sec, "act": act, "dur": dur, "visual": visual,
+    shot = {"id": sid, "sec": sec, "act": act, "dur": dur, "visual": visual,
             "camera": camera, "texts": texts, "subs": subs,
             "sub": "", "voice": voice[:CHUNK_MAX],
             "trans_out": trans_out, "sfx": sfx, "speed": speed,
             "accent": accent, "fx": fx, "type": typ}
+    if profile is not None:
+        shot.update({
+            "profile": profile,
+            "profile_role": profile_role,
+            "visual_mode": visual_mode,
+            "protected": bool(protected),
+            "anchor": anchor,
+        })
+    return shot
 
 
 def _tx(*lines, mode="pop"):
@@ -480,8 +550,9 @@ def _pixel_cats_for(text, heading=""):
     return ["emotions", "funny1", "funny2"]
 
 
-def _pixel_interstitial(rnd, si, sec, n):
-    """Пиксель-арт вставка 2.5с: 1-3 спрайта на неоновом фоне (S40)."""
+def _pixel_interstitial(rnd, si, sec, n, profile=None, profile_role=None,
+                        visual_mode=None, protected=False, anchor=None):
+    """Optional pixel-art transition for the classic compatibility profile."""
     text = sec.get("body", "")
     heading = sec.get("heading", "")
     cats = _pixel_cats_for(text, heading)
@@ -504,24 +575,51 @@ def _pixel_interstitial(rnd, si, sec, n):
         f"L{si:02d}_px", "accel", 2.5,
         {"type": "pixel_scene", "sprites": paths[:3]}, "push_in",
         [], "hard_cut", "click", (1.2, 1.2), "accent", "", "graphic",
-        sec=si)
+        sec=si, profile=profile, profile_role=profile_role,
+        visual_mode=visual_mode, protected=protected, anchor=anchor)
     shot["seed"] = rnd.randint(1, 10 ** 6)
     return shot
 
 
-def build_long_shots(sections, topic, seed=7, target_sec=None):
+def build_long_shots(sections, topic, seed=7, target_sec=None, profile=None):
     """Секции -> shot list без лимита длины (longform).
 
-    target_sec: поджать середину под целевой хронометраж (оценка 14 симв/с
-    + 0.6с на чанк) — жертвуем средними чанками, hook/финал не трогаем.
+    ``profile`` controls editorial metadata and shot policy while ``format``
+    remains represented by the section's structural ``role``.  Trimming may
+    remove ordinary middle voice shots, but never a protected profile anchor;
+    existing shot dictionaries (and therefore voice identity) are retained.
     """
-    rnd = random.Random(seed + abs(hash(topic)) % 10 ** 6)
+    profile_key = _canonical_profile(profile)
+    policy = profiles.shot_policy(profile_key)
+    protected_roles = set(policy.get("protected_roles") or ())
+    visual_modes = dict(policy.get("visual_modes") or {})
+    allow_interstitial = bool(policy.get("allow_interstitial", True))
+    max_interstitials = policy.get("max_interstitials")
+    if max_interstitials is not None:
+        max_interstitials = max(0, int(max_interstitials))
+    interstitial_count = 0
+    visual_pool = list(_CASEBOOK_VISUALS if profile_key == "trustnode_casebook"
+                       else _VISUALS)
+    transition_pool = (["hard_cut", "match", "dip"]
+                       if profile_key == "trustnode_casebook" else list(_TRANS))
     peak_pool = list(_PEAK_POOL)
+    rnd = random.Random(seed + abs(hash(topic)) % 10 ** 6)
     rnd.shuffle(peak_pool)
     off = abs(hash(topic)) % 997
-    shots, vi = [], off % len(_VISUALS)
-    for si, sec in enumerate(sections):
+    shots, vi = [], off % len(visual_pool)
+
+    def metadata(sec):
         role = sec.get("role", "chapter")
+        profile_role = sec.get("profile_role") or role
+        protected = bool(sec.get("protected",
+                                 profile_role in protected_roles))
+        anchor = sec.get("anchor") or (profile_role if protected else None)
+        visual_mode = sec.get("visual_mode") or visual_modes.get(
+            profile_role, "cinematic_evidence")
+        return role, profile_role, visual_mode, protected, anchor
+
+    for si, sec in enumerate(sections):
+        role, profile_role, visual_mode, protected, anchor = metadata(sec)
         chunks = []
         for sent in _sentences(sec.get("body", "")):
             chunks.extend(_hard_split(sent))
@@ -531,25 +629,43 @@ def build_long_shots(sections, topic, seed=7, target_sec=None):
             act = _ROLE_ACT.get(role, "problem")
             if k == len(chunks) - 1 and role in ("verdict", "finale"):
                 act = "peak"
+            if profile_role == "cold_open":
+                act = "hook"
+            elif profile_role in ("evidence", "mechanism"):
+                act = "problem" if k == 0 else "escalation"
+            elif profile_role == "action":
+                act = "peak" if k == len(chunks) - 1 else "problem"
+            elif profile_role in ("counterpoint", "close"):
+                act = "climax"
             if act == "peak":
                 vis, accent = peak_pool[(k + off) % len(peak_pool)], "accent2"
             else:
-                vis, accent = _VISUALS[vi % len(_VISUALS)], "accent"
+                vis, accent = visual_pool[vi % len(visual_pool)], "accent"
                 vi += 1
-            sfx = ("impact" if act == "peak"
-                   else ("bass" if act == "hook" else "none"))
+            if not policy.get("sfx", True):
+                sfx = "none"
+            else:
+                sfx = ("impact" if act == "peak"
+                       else ("bass" if act == "hook" else "none"))
             dur = max(1.0, len(chunk) / 12.0 + 0.6)
             shots.append(_mkshot(
                 f"L{si:02d}_{k:02d}", act, dur, vis,
                 _CAMERAS[(len(shots) + off) % len(_CAMERAS)], [],
-                _TRANS[(len(shots) * 3 + off) % len(_TRANS)], sfx,
+                transition_pool[(len(shots) * 3 + off) % len(transition_pool)],
+                sfx,
                 (1.2, 1.2), accent, "", None, chunk, _smart_sub(chunk),
-                sec=si))
-            for fld in ("seed",):
-                shots[-1][fld] = rnd.randint(1, 10 ** 6)
-        # глава-докард между секциями (документальный ритм)
+                sec=si, profile=profile_key, profile_role=profile_role,
+                visual_mode=visual_mode, protected=protected, anchor=anchor))
+            shots[-1]["seed"] = rnd.randint(1, 10 ** 6)
+
+        # A restrained profile uses fewer chapter cards, while classic keeps
+        # its established cadence.
         head = (sec.get("heading") or "").upper().strip().split()
-        if head and si < len(sections) - 1:
+        sparse_cards = policy.get("chapter_card") == "sparse"
+        show_card = not sparse_cards or profile_role in {
+            "evidence", "action", "counterpoint"
+        } or si % 2 == 0
+        if head and si < len(sections) - 1 and show_card:
             words = [w.strip("«»\"'.,!?—–-") for w in head if w][:3]
             lines = []
             cur = ""
@@ -566,44 +682,76 @@ def build_long_shots(sections, topic, seed=7, target_sec=None):
                     f"L{si:02d}_t", "accel", 1.6,
                     "flash" if si % 2 else "question", "snap",
                     _tx(*lines[:2]), "hard_cut", "click", (1.4, 1.4),
-                    "accent", "", "typography", sec=si))
+                    "accent", "", "typography", sec=si, profile=profile_key,
+                    profile_role=profile_role, visual_mode=visual_mode,
+                    protected=protected, anchor=anchor))
                 shots[-1]["seed"] = rnd.randint(1, 10 ** 6)
-            # S40: пиксель-арт вставка между секциями (как в исходнике Мамая)
-            px = _pixel_interstitial(rnd, si, sec, len(shots))
+
+        if (allow_interstitial
+                and (max_interstitials is None
+                     or interstitial_count < max_interstitials)):
+            px = _pixel_interstitial(
+                rnd, si, sec, len(shots), profile=profile_key,
+                profile_role=profile_role, visual_mode=visual_mode,
+                protected=protected, anchor=anchor)
             if px:
                 shots.append(px)
-        # пауза посередине ролика
+                interstitial_count += 1
+
         if si + 1 == max(1, len(sections) // 2) and len(sections) > 1:
             shots.append(_mkshot(
                 f"L{si:02d}_p", "twist", 1.8, "pause_black", "static",
                 [], "dip", "silence", (0.4, 0.4), "accent", "",
-                "cinematic", sec=si))
+                "cinematic", sec=si, profile=profile_key,
+                profile_role=profile_role, visual_mode=visual_mode,
+                protected=False, anchor=None))
             shots[-1]["seed"] = rnd.randint(1, 10 ** 6)
+
     if target_sec:
         def _est():
             return sum(len(s["voice"]) / 14.0 + 0.6 for s in shots
                        if s["voice"])
+
+        def _protected(shot):
+            return bool(shot.get("protected") or shot.get("anchor"))
+
         for _ in range(512):
             if _est() <= target_sec or len(shots) <= 6:
                 break
             mid = [s for s in shots
-                   if s["voice"] and not s["id"].startswith("L00")
+                   if s["voice"] and not _protected(s)
+                   and not s["id"].startswith("L00")
                    and not s["id"].startswith("L_fin")]
             if not mid:
                 break
             victim = max(mid, key=lambda s: len(s["voice"]))
             shots.remove(victim)
-    # финал: шёпот + бренд
+
+    # The final cards are protected anchors for casebook and compatibility
+    # callers alike; the profile decides their metadata and sound treatment.
     last_head = (sections[-1].get("heading") if sections else topic) or topic
-    shots.append(_mkshot("L_fin_q", "climax", 2.4, "final_q", "static",
-                         _tx(last_head, mode="whisper"), "dip", "bass",
-                         (0.6, 0.8), "accent", "", "typography"))
+    final_profile_role = "close" if profile_key == "trustnode_casebook" else "finale"
+    final_visual_mode = visual_modes.get(final_profile_role, "cinematic_close")
+    final_sfx_q = "bass" if policy.get("sfx", True) else "none"
+    final_sfx_b = "impact" if policy.get("sfx", True) else "none"
+    final_anchor = final_profile_role if final_profile_role in protected_roles else None
+    shots.append(_mkshot(
+        "L_fin_q", "climax", 2.4, "final_q", "static",
+        _tx(last_head, mode="whisper"), "dip", final_sfx_q,
+        (0.6, 0.8), "accent", "", "typography", sec=max(0, len(sections) - 1),
+        profile=profile_key, profile_role=final_profile_role,
+        visual_mode=final_visual_mode, protected=bool(final_anchor),
+        anchor=final_anchor))
     shots[-1]["seed"] = rnd.randint(1, 10 ** 6)
-    shots.append(_mkshot("L_fin_b", "climax", 3.6, "final_brand", "push_out",
-                         [], "hard_cut", "impact", (0.7, 1.0), "accent",
-                         "", "graphic"))
+    shots.append(_mkshot(
+        "L_fin_b", "climax", 3.6, "final_brand", "push_out",
+        [], "hard_cut", final_sfx_b, (0.7, 1.0), "accent",
+        "", "graphic", sec=max(0, len(sections) - 1), profile=profile_key,
+        profile_role=final_profile_role, visual_mode=final_visual_mode,
+        protected=bool(final_anchor), anchor=final_anchor))
+
     shots[-1]["seed"] = rnd.randint(1, 10 ** 6)
-    print(f"[long] shot list: {len(shots)} шотов, "
+    print(f"[long] shot list: {len(shots)} шотов, профиль {profile_key}, "
           f"голоса ~{sum(len(s['voice']) / 12.0 for s in shots if s['voice']):.0f}с")
     return shots
 
@@ -689,7 +837,8 @@ def assign_section_stock(shots, frames):
 
 # ---------- EDL (монтажный лист) ----------
 
-def dump_edl(path, topic, format, minutes, fps, shots, bounds):
+def dump_edl(path, topic, format, minutes, fps, shots, bounds, profile=None):
+    profile_key = _canonical_profile(profile)
     edl_shots = []
     for i, s in enumerate(shots):
         e = dict(s)
@@ -699,7 +848,7 @@ def dump_edl(path, topic, format, minutes, fps, shots, bounds):
         edl_shots.append(e)
     edl = {"app": "tgvk-longform", "version": 1, "topic": topic,
            "format": format, "minutes": minutes, "fps": fps,
-           "aspect": "16:9", "shots": edl_shots}
+           "profile": profile_key, "aspect": "16:9", "shots": edl_shots}
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(edl, fh, ensure_ascii=False, indent=1)
     return path
@@ -714,19 +863,186 @@ def load_edl(path):
         s.pop("start", None)
         s.pop("end", None)
         shots.append(s)
-    meta = {k: edl.get(k) for k in ("topic", "format", "minutes", "fps")}
+    meta = {k: edl.get(k) for k in (
+        "topic", "format", "minutes", "fps", "profile"
+    )}
     return shots, meta
 
 
 # ---------- генерация ----------
 
+def _write_long_srt(path, cues, required=False):
+    """Write a long SRT and enforce the requested-artifact contract.
+
+    A normal no-audio/optional export may have no cues.  Once a caller asks
+    for a specific SRT path, however, an absent or empty file is an error that
+    must reach the workflow instead of being reported as a successful render.
+    """
+    path = os.fspath(path) if path else ""
+    cue_list = list(cues or [])
+    if not path or not cue_list:
+        if required:
+            target = path or "<empty path>"
+            raise RuntimeError(f"[long] запрошенный SRT не создан: {target}")
+        return False
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        vg.write_srt(cue_list, path)
+        if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            raise OSError("SRT файл пуст")
+    except Exception as exc:  # noqa: BLE001 - contract is explicit for required output
+        if required:
+            raise RuntimeError(f"[long] SRT не записан: {path} ({exc})") from exc
+        print(f"[long] SRT не построен ({type(exc).__name__}: {exc})")
+        return False
+    return True
+
+
+def _map_long_voice_cues(voice_cues, voice_spans, sec_durs, shots, bounds,
+                         real_dur, chunk_bounds=None):
+    """Map assembled TTS word cues onto the rendered long timeline.
+
+    ``chunk_bounds`` is the identity-preserving contract returned by
+    :func:`video_gen.make_voiceover_sections`.  It is preferred over positional
+    ``sec_durs``: a skipped section 0 must not make section 1 inherit section
+    0's shot boundary.  The positional fallback keeps compatibility with older
+    callers that only provide ``voice_spans``/``sec_durs``.
+    """
+    source_cues = list(voice_cues or [])
+    if not source_cues:
+        return []
+    if not voice_spans or not shots or not bounds:
+        raise ValueError("voice cue timeline is missing span metadata")
+    try:
+        video_duration = max(0.0, float(real_dur))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("voice cue timeline has invalid video duration") from exc
+    if not math.isfinite(video_duration) or video_duration <= 0.0:
+        raise ValueError("voice cue timeline has no positive video duration")
+
+    idx_of = {id(shot): i for i, shot in enumerate(shots)}
+    span_by_sec = {}
+    for span in voice_spans:
+        if not isinstance(span, dict) or not span.get("refs"):
+            continue
+        try:
+            sec = int(span.get("sec", -1))
+        except (TypeError, ValueError):
+            continue
+        if sec >= 0:
+            span_by_sec[sec] = span
+    if not span_by_sec:
+        raise ValueError("voice cue timeline has no usable spans")
+
+    ranges = []
+    if chunk_bounds:
+        for chunk in chunk_bounds:
+            if not isinstance(chunk, dict):
+                raise ValueError("voice chunk metadata is malformed")
+            try:
+                sec = int(chunk.get("sec", chunk.get("section", -1)))
+                start = float(chunk["start"])
+                end = float(chunk.get("end", start + float(chunk.get("duration", 0.0))))
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("voice chunk metadata is malformed") from exc
+            if not (math.isfinite(start) and math.isfinite(end) and end > start):
+                raise ValueError("voice chunk has invalid audio bounds")
+            span = span_by_sec.get(sec)
+            if span is None:
+                raise ValueError(f"voice section {sec} has no rendered span")
+            ranges.append((start, end, sec, span))
+    else:
+        sec_durs = list(sec_durs or [])
+        cursor = 0.0
+        for sec in sorted(span_by_sec):
+            if sec < len(sec_durs):
+                raw_duration = max(0.0, float(sec_durs[sec]))
+            else:
+                raw_duration = max(0.0, float(span_by_sec[sec].get(
+                    "voice_duration", 0.0)))
+            if not math.isfinite(raw_duration) or raw_duration <= 0.0:
+                raise ValueError("voice section has invalid audio duration")
+            ranges.append((cursor, cursor + raw_duration, sec,
+                           span_by_sec[sec]))
+            cursor += raw_duration + vg.CHUNK_GAP
+    if not ranges:
+        raise ValueError("voice cue timeline has no usable audio ranges")
+
+    mapped = []
+    for cue in source_cues:
+        try:
+            cue_start = float(cue["start"])
+            cue_end = float(cue["end"])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("voice cue has invalid bounds") from exc
+        if not (math.isfinite(cue_start) and math.isfinite(cue_end)
+                and cue_end > cue_start):
+            raise ValueError("voice cue has no positive finite duration")
+
+        cue_sec = cue.get("section")
+        if cue_sec is None:
+            match = next(
+                (item for item in ranges
+                 if cue_start < item[1] - 1e-9
+                 and cue_end > item[0] + 1e-9),
+                None,
+            )
+        else:
+            try:
+                cue_sec = int(cue_sec)
+            except (TypeError, ValueError) as exc:
+                raise ValueError("voice cue has invalid section identity") from exc
+            match = next((item for item in ranges if item[2] == cue_sec), None)
+        if match is None:
+            raise ValueError(
+                f"voice cue {cue_start:.3f}..{cue_end:.3f} has no chunk span"
+            )
+        local_start, local_end, sec, span = match
+        if cue_start < local_start - 1e-6 or cue_end > local_end + 1e-6:
+            raise ValueError(
+                f"voice cue {cue_start:.3f}..{cue_end:.3f} lies outside "
+                f"section {sec} audio chunk"
+            )
+        refs = span.get("refs") or []
+        first_index = idx_of.get(id(refs[0]))
+        if first_index is None or first_index >= len(bounds):
+            raise ValueError("voice span has no rendered shot boundary")
+        video_start = float(bounds[first_index]) + cue_start - local_start
+        video_end = float(bounds[first_index]) + cue_end - local_start
+        video_start = max(0.0, min(video_duration, video_start))
+        video_end = max(0.0, min(video_duration, video_end))
+        if video_end <= video_start:
+            raise ValueError("mapped voice cue has no positive duration")
+        mapped.append({"start": video_start, "end": video_end,
+                       "text": cue.get("text", ""), "section": sec})
+    return mapped
+
+
 def generate_long(topic=None, minutes=6, format="doc", out="out/video_long.mp4",
                   fps=FPS_LONG, tmpdir="out/tmp_long", voice=vg.VOICE_DEFAULT,
                   no_audio=False, voice_over=True, edl_out=None,
                   edl_in=None, script_text=None, provider=None, seed=7,
-                  srt_out=None):
-    """Тема -> длинный ролик 16:9 + EDL/SRT."""
-    import shutil as _sh
+                  srt_out=None, profile=None, source_context=None):
+    """Тема -> длинный ролик 16:9 + EDL/SRT.
+
+    ``profile`` and ``source_context`` are appended so all historical
+    positional callers retain their meaning.  An omitted profile follows the
+    profile stored in ``edl_in`` when present and otherwise uses ``classic``.
+    Explicit profile values are validated before output directories or TTS.
+    """
+    profile_override = _profile_is_explicit(profile)
+    if profile_override:
+        profile_key = _canonical_profile(profile)
+    elif edl_in:
+        # Read only the small metadata contract before creating directories so
+        # an invalid stored profile cannot start an expensive render.
+        _, edl_meta = load_edl(edl_in)
+        profile_key = _canonical_profile(edl_meta.get("profile"))
+    else:
+        profile_key = _canonical_profile(None)
+
     minutes = max(1, min(40, int(minutes)))
     if format not in FORMATS:
         format = "doc"
@@ -734,53 +1050,95 @@ def generate_long(topic=None, minutes=6, format="doc", out="out/video_long.mp4",
     os.makedirs(tmpdir, exist_ok=True)
     cine.set_aspect("16:9")
     try:
-        return _generate_long_inner(
+        inner_args = (
             topic, minutes, format, out, fps, tmpdir, voice, no_audio,
-            voice_over, edl_out, edl_in, script_text, provider, seed)
+            voice_over, edl_out, edl_in, script_text, provider, seed, srt_out,
+        )
+        # Keep the historical positional call shape for untouched classic
+        # callers; pass the appended contract only when a caller selected it.
+        if profile_override or profile_key != "classic" or source_context is not None:
+            return _generate_long_inner(
+                *inner_args, profile=profile_key, source_context=source_context
+            )
+        return _generate_long_inner(*inner_args)
     finally:
         cine.set_aspect("9:16")
 
 
 def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
                          no_audio, voice_over, edl_out, edl_in,
-                         script_text, provider, seed):
+                         script_text, provider, seed, srt_out=None,
+                         profile=None, source_context=None):
+    # The silent render is copied directly when audio/TTS is disabled.  Keep
+    # the import local to this legacy path so the short-video modules do not
+    # acquire an unnecessary global dependency.
     import shutil as _sh
-    topic = (topic or "Как вас взламывают через фишинг").strip()
-    st, key = cine.get_style("cybersecurity_cinematic")
+
+    if srt_out and no_audio:
+        raise RuntimeError(
+            "[long] запрошенный SRT невозможен без аудио; "
+            "используйте отдельный no-SRT режим")
+
+    profile_override = _profile_is_explicit(profile)
+    profile_key = _canonical_profile(profile) if profile_override else None
+    if edl_in:
+        shots, meta = load_edl(edl_in)
+        if not profile_override:
+            profile_key = _canonical_profile(meta.get("profile"))
+        # Old EDLs have no per-shot profile; annotate them for the selected
+        # contract without changing their voice, timing, or visual fields.
+        for shot in shots:
+            shot["profile"] = profile_key
+        topic = (topic or "Как вас взламывают через фишинг").strip()
+        topic = meta.get("topic") or topic
+        print(f"[long] EDL {edl_in}: {len(shots)} шотов на пересборку")
+        sections = []
+    else:
+        meta = {}
+        shots = None
+        topic = (topic or "Как вас взламывают через фишинг").strip()
+
+    if profile_key is None:
+        profile_key = _canonical_profile(None)
+    profile_definition, profile_key = profiles.get_profile(profile_key)
+    st, _style_key = cine.get_style(profile_definition["style"])
     P = st["palette"]
     bpm = st.get("bpm", 100)
     ffmpeg = vg.find_ffmpeg()
     if not ffmpeg:
         raise RuntimeError("нет ffmpeg: pip install imageio-ffmpeg")
-    if edl_in:
-        shots, meta = load_edl(edl_in)
-        topic = meta.get("topic") or topic
-        print(f"[long] EDL {edl_in}: {len(shots)} шотов на пересборку")
-        sections = []
-    elif script_text and str(script_text).strip():
-        # S38c: НЕ парсим статью в sections — вместо этого генерируем
-        # ПОЛНЫЙ сценарий через per-section LLM, используя статью как контекст.
-        # parse_script() даёт мало секций и русские query → 22с видео.
-        # write_script() делает per-section LLM → 15мин + EN queries → Pexels.
+
+    source_text = ("" if source_context is None else str(source_context))
+    if source_context is None and script_text is not None:
+        source_text = str(script_text)
+    script_for_heading = str(script_text or source_text)
+    if not edl_in and script_for_heading.strip():
+        # S38c: keep the complete source as prompt context; parsing is only
+        # used to improve the topic label and never to replace the source.
         print(f"[long] from_post: переключаемся на per-section LLM "
-              f"(article {len(script_text)} chars → {minutes} мин сценарий)")
-        # Передаём topic из статьи + topic из аргумента
+              f"(article {len(source_text)} chars → {minutes} мин сценарий)")
         combined_topic = topic
         try:
-            parsed_article = vg.parse_script(str(script_text))
+            parsed_article = vg.parse_script(script_for_heading)
             if parsed_article:
-                # Берём заголовок из статьи как тему
                 article_head = parsed_article[0].get("heading", "")
                 if article_head and len(article_head) > 5:
                     combined_topic = f"{topic}: {article_head}"
         except Exception:
             pass
-        sections = write_script(combined_topic, minutes, format, provider)
-    else:
-        sections = write_script(topic, minutes, format, provider)
+        sections = write_script(
+            combined_topic, minutes, format, provider, profile=profile_key,
+            source_context=source_text,
+        )
+    elif not edl_in:
+        sections = write_script(
+            topic, minutes, format, provider, profile=profile_key,
+            source_context=source_text,
+        )
     if not edl_in:
-        shots = build_long_shots(sections, topic, seed,
-                                 target_sec=minutes * 60)
+        shots = build_long_shots(
+            sections, topic, seed, target_sec=minutes * 60, profile=profile_key
+        )
     shots = cine.enforce_balance(shots)
     total_est = sum(float(s["dur"]) for s in shots)
     print(f"[long] план: {len(shots)} шотов, ~{total_est:.0f}с, "
@@ -790,7 +1148,10 @@ def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
               "для черновика добавь --fps 12")
 
     # --- M19: голос ведёт таймлайн (статья/длинный формат: все реплики)
-    vmp3, voice_spans = None, []
+    vmp3, voice_spans, tsecs = None, [], []
+    sec_durs, voice_cues = [], []
+    voice_meta, chunk_bounds = {}, []
+    voice_aligned = False
     if voice_over and not no_audio:
         vmap = [(i, s) for i, s in enumerate(shots)
                 if (s.get("voice") or "").strip()]
@@ -803,20 +1164,47 @@ def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
             _w = None
             _meta = {}
             try:
-                vmp3, _w, _meta = vg.make_voiceover_sections(ffmpeg, tsecs, voice,
-                                                             tmpdir, lead_in=0.0)
+                vmp3, _w, _meta = vg.make_voiceover_sections(
+                    ffmpeg, tsecs, voice, tmpdir, lead_in=0.0)
+                voice_meta = dict(_meta or {})
+                voice_cues = list(voice_meta.get("cues") or [])
+                chunk_bounds = list(voice_meta.get("chunk_bounds") or [])
             except Exception as e:
                 print(f"[long] TTS не удался ({type(e).__name__}) "
                       f"— оценка по символам")
-                vmp3, _w = None, None
-            if _w and len(_w) == len(vmap):
-                sec_durs = [float(w) - (0.5 if j < len(vmap) - 1 else 0.0)
-                            for j, w in enumerate(_w)]
+                vmp3, _w, voice_cues, chunk_bounds = None, None, [], []
+                voice_meta = {}
+
+            active_by_sec = {}
+            for chunk in chunk_bounds:
+                try:
+                    sec = int(chunk.get("sec", chunk.get("section", -1)))
+                    duration = float(chunk.get(
+                        "duration", float(chunk["end"]) - float(chunk["start"])))
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    continue
+                if sec >= 0 and math.isfinite(duration) and duration > 0.0:
+                    active_by_sec[sec] = duration
+            if active_by_sec:
+                sec_durs = [
+                    active_by_sec.get(j, max(1.5, len(s["voice"]) / 14.0))
+                    for j, (_, s) in enumerate(vmap)
+                ]
+            elif _w and len(_w) == len(vmap):
+                sec_durs = [
+                    float(w) - (vg.CHUNK_GAP if j < len(vmap) - 1 else 0.0)
+                    for j, w in enumerate(_w)
+                ]
             else:
                 sec_durs = [max(1.5, len(s["voice"]) / 14.0)
                             for _, s in vmap]
-                vmp3 = None
+                vmp3, voice_cues, chunk_bounds = None, [], []
             voice_spans = cine._layout_voice_spans(shots, vmap, sec_durs)
+            if active_by_sec:
+                voice_spans = [
+                    span for span in voice_spans
+                    if int(span.get("sec", -1)) in active_by_sec
+                ]
             voiced_ids = {id(s) for sp in voice_spans for s in sp["refs"]}
             cine._fit_fillers(shots, voiced_ids, total_est, True)
             total_est = sum(float(s["dur"]) for s in shots)
@@ -859,17 +1247,28 @@ def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
             idx_of = {id(s): i for i, s in enumerate(shots)}
             items = []
             for sp in voice_spans:
+                if not sp.get("refs"):
+                    continue
                 i0 = idx_of.get(id(sp["refs"][0]))
                 if i0 is None or i0 >= len(bounds):
                     continue
-                items.append((os.path.join(tmpdir, f"sec_{sp['sec']}.mp3"),
-                              float(bounds[i0])))
-            total_v = sum(float(s["dur"]) for s in shots)
-            vmix = cine._assemble_voice(ffmpeg, tmpdir, items, total_v,
-                                        cine.SR)
-            if vmix:
-                vmp3 = vmix
-                print(f"[long] голос собран на таймлайн: {len(items)} чанков")
+                sec = int(sp.get("sec", -1))
+                path = os.path.join(tmpdir, f"sec_{sec}.mp3")
+                if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+                    continue
+                items.append((path, float(bounds[i0])))
+            if items:
+                total_v = max(0.0, float(real_dur))
+                vmix = cine._assemble_voice(ffmpeg, tmpdir, items, total_v,
+                                            cine.SR)
+                if vmix and os.path.isfile(vmix) and os.path.getsize(vmix) > 0:
+                    vmp3 = vmix
+                    voice_aligned = True
+                    print(f"[long] голос собран на таймлайн: {len(items)} чанков")
+                else:
+                    print("[long] сборка голоса не дала непустой файл")
+            else:
+                print("[long] нет подтверждённых TTS-чанков для сборки")
         except Exception as e:
             print(f"[long] сборка голоса не удалась ({type(e).__name__}) "
                   f"— монолит с начала")
@@ -914,28 +1313,33 @@ def _generate_long_inner(topic, minutes, format, out, fps, tmpdir, voice,
     # --- EDL рядом с роликом
     base, _ = os.path.splitext(out)
     epath = edl_out or (base + ".edl.json")
-    dump_edl(epath, topic, format, minutes, fps, shots, bounds)
+    dump_edl(epath, topic, format, minutes, fps, shots, bounds,
+             profile=profile_key)
     # --- SRT: таймкоды = реальные спаны голоса на таймлайне ролика
     spath = srt_out or (base + ".srt")
-    try:
+    srt_required = bool(srt_out)
+    if no_audio:
+        # ``--no-audio`` is a supported render mode only when no SRT was
+        # requested; the incompatible explicit request was rejected above.
+        print("[long] SRT: пропущен (no_audio)")
+    else:
         cues = []
-        idx_of = {id(s): i for i, s in enumerate(shots)}
-        for sp in (voice_spans or []):
-            i0 = idx_of.get(id(sp["refs"][0]))
-            if i0 is None or i0 >= len(bounds):
-                continue
-            j = int(sp.get("sec", 0))
-            txt = ""
-            if 0 <= j < len(tsecs):
-                txt = tsecs[j].get("voice") or tsecs[j].get("caption") or ""
-            st = float(bounds[i0])
-            en = float(bounds[i0 + 1]) if i0 + 1 < len(bounds) else st + 3.0
-            cues.extend(vg.split_cues(txt, st, max(st + 0.3, en - 0.05)))
-        if cues:
-            vg.write_srt(cues, spath)
-            print(f"[long] SRT: {spath} ({len(cues)} реплик)")
-    except Exception as e:  # noqa: BLE001 — субтитры не должны ломать рендер
-        print(f"[long] SRT не построен ({type(e).__name__}: {e})")
+        try:
+            if srt_required and not voice_aligned:
+                raise ValueError("voice track was not assembled to shot boundaries")
+            if voice_aligned and voice_cues and cine.np is not None:
+                cues = _map_long_voice_cues(
+                    voice_cues, voice_spans, sec_durs, shots, bounds, real_dur,
+                    chunk_bounds=chunk_bounds or None)
+            elif srt_required and voice_cues:
+                raise ValueError("voice cues exist without a rendered voice track")
+        except Exception as exc:  # noqa: BLE001 - required output must fail loudly
+            if srt_required:
+                raise RuntimeError(f"[long] SRT не построен: {spath} ({exc})") from exc
+            print(f"[long] SRT не построен ({type(exc).__name__}: {exc})")
+        else:
+            if _write_long_srt(spath, cues, required=srt_required):
+                print(f"[long] SRT: {spath} ({len(cues)} слов)")
     size = os.path.getsize(out)
     print(f"[long] ГОТОВО: {out} ({size / 1048576:.1f} MB, {real_dur:.1f} c, "
           f"{format}, 16:9) + EDL ({len(shots)} шотов)")
@@ -962,22 +1366,40 @@ def main(argv=None):
                          "умолчанию) перепишет его в длинный сценарий; при "
                          "сбое используется исходный текст как есть")
     ap.add_argument("--provider", default=None)
+    ap.add_argument("--profile", default=None,
+                    help="редакционный профиль: classic / trustnode_casebook")
     ap.add_argument("--srt-out", default="",
                     help="путь для SRT субтитров (по спанам голоса)")
     ap.add_argument("--seed", type=int, default=7)
     a = ap.parse_args(argv)
+    if a.script_file and a.from_post:
+        ap.error(
+            "--script-file and --from-post are mutually exclusive; "
+            "provide only one source"
+        )
     fmt = {"top": "top10", "razbor": "breakdown"}.get(a.format, a.format)
+    profile = (_canonical_profile(a.profile)
+               if _profile_is_explicit(a.profile)
+               else (None if a.edl_in else "classic"))
     script_text = ""
+    source_context = None
     if a.script_file:
         with open(a.script_file, encoding="utf-8") as fh:
             script_text = fh.read()
+        source_context = script_text
     if a.from_post:
         # S27: пост -> LLM рерайт в длинный сценарий (GigaChat по умолчанию).
         with open(a.from_post, encoding="utf-8") as fh:
             post_text = fh.read()
         import llm
-        rewritten = llm.rewrite_post_to_script(post_text, "long",
-                                               a.provider)
+        rewritten = llm.rewrite_post_to_script(
+            post_text,
+            "long",
+            a.provider,
+            profile=profile,
+            minutes=a.minutes,
+            source_context=post_text,
+        )
         if rewritten:
             print("[long] длинный сценарий сгенерирован LLM из поста "
                   f"({len(rewritten)} симв.)")
@@ -985,12 +1407,15 @@ def main(argv=None):
         else:
             print("[long] LLM-рерайт недоступен — исходный пост как сценарий")
             script_text = post_text
+        # Keep the original post as source context even when the rewrite wins.
+        source_context = post_text
     generate_long(topic=a.topic, minutes=a.minutes, format=fmt, out=a.out,
                   fps=a.fps, tmpdir=a.tmpdir, voice=a.voice,
                   no_audio=a.no_audio, edl_out=a.edl_out or None,
                   edl_in=a.edl_in or None, script_text=script_text,
                   provider=a.provider, seed=a.seed,
-                  srt_out=a.srt_out or None)
+                  srt_out=a.srt_out or None, profile=profile,
+                  source_context=source_context)
 
 
 if __name__ == "__main__":

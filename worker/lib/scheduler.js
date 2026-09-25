@@ -251,13 +251,35 @@ export async function dispatchVideoTest(env, seconds, script, style, topic) {
 // ---------- длинное видео: VidRush-аналог 16:9 (M21) ----------
 // /long только ставит задачу: workflow_dispatch video-long.yml,
 // готовый MP4+EDL+SRT workflow сам присылает админу в Telegram.
-export async function dispatchVideoLong(env, minutes, format, topic, script) {
+const DEFAULT_LONG_VIDEO_PROFILE = "classic";
+const LONG_VIDEO_PROFILES = new Set(["classic", "trustnode_casebook"]);
+const MAX_LONG_VIDEO_SOURCE_CONTEXT_CHARS = 3500;
+
+function normalizeLongVideoProfile(profile) {
+  if (profile === undefined || profile === null) return DEFAULT_LONG_VIDEO_PROFILE;
+  if (typeof profile !== "string") return null;
+  const key = profile.trim().toLowerCase() || DEFAULT_LONG_VIDEO_PROFILE;
+  return LONG_VIDEO_PROFILES.has(key) ? key : null;
+}
+
+export async function dispatchVideoLong(env, minutes, format, topic, script, profile = DEFAULT_LONG_VIDEO_PROFILE) {
+  const profileKey = normalizeLongVideoProfile(profile);
+  if (!profileKey) {
+    return {
+      ok: false,
+      reason: `unknown profile: ${String(profile).slice(0, 80)}; choose classic or trustnode_casebook`,
+    };
+  }
   const { GITHUB_TOKEN, OWNER, REPO } = env;
-  if (!GITHUB_TOKEN || !OWNER || !REPO) return { ok: false, reason: "no github" };
+  if (!GITHUB_TOKEN || !OWNER || !REPO) {
+    return { ok: false, reason: "no github", profile: profileKey };
+  }
   const mins = Math.max(1, Math.min(40, Math.round(Number(minutes) || 6)));
   const fmt = ["doc", "breakdown", "top10"].includes(format) ? format : "doc";
   const tp = String(topic || "").slice(0, 300);
-  const scr = String(script || "").slice(0, 3500);
+  // Keep the historical `script` key: it is the bounded source_context
+  // transport consumed by the long-video workflow.
+  const sourceContext = String(script || "").slice(0, MAX_LONG_VIDEO_SOURCE_CONTEXT_CHARS);
   const res = await fetch(
     `https://api.github.com/repos/${OWNER}/${REPO}/actions/workflows/video-long.yml/dispatches`,
     {
@@ -268,11 +290,27 @@ export async function dispatchVideoLong(env, minutes, format, topic, script) {
         "Content-Type": "application/json",
         "User-Agent": "tgvk-bot-webhook",
       },
-      body: JSON.stringify({ ref: "main", inputs: { minutes: String(mins), format: fmt, topic: tp, script: scr } }),
+      body: JSON.stringify({
+        ref: "main",
+        inputs: {
+          minutes: String(mins),
+          format: fmt,
+          topic: tp,
+          script: sourceContext,
+          profile: profileKey,
+        },
+      }),
     }
   );
-  if (!res.ok) return { ok: false, reason: `github ${res.status}`, minutes: mins };
-  return { ok: true, minutes: mins, format: fmt, topic: tp, custom: scr.length > 0 };
+  if (!res.ok) return { ok: false, reason: `github ${res.status}`, minutes: mins, profile: profileKey };
+  return {
+    ok: true,
+    minutes: mins,
+    format: fmt,
+    topic: tp,
+    custom: sourceContext.length > 0,
+    profile: profileKey,
+  };
 }
 
 // ---------- публикация ----------

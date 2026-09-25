@@ -1,12 +1,14 @@
 """
 Дайджест-контур: полные тексты статей + рерайт через LLM + запуск видео-s workflow.
 
-Используется двумя местами:
-  1. main.py — кнопка «🎬 Видео из новостей»: 3-5 свежих новостей -> полные
-     тексты -> GigaChat рерайт в дайджест (topic + from_post) -> запуск
-     GitHub Actions workflow video-long.yml (workflow_dispatch).
-  2. multigroups.py — полный текст новости -> GigaChat рерайт -> длинный
-     читаемый пост в VK (вместо короткой RSS-выжимки).
+Модуль предоставляет API для сборки дайджеста и диспетчеризации
+GitHub Actions workflow video-long.yml. В текущей версии bot/main.py нет
+вызова dispatch_video_workflow() и Telegram-маршрута для запуска видео;
+этот модуль намеренно не добавляет такой call site.
+
+Дайджест и переписывание новостей также используются multigroups.py:
+полный текст новости -> GigaChat рерайт -> длинный читаемый пост в VK
+(вместо короткой RSS-выжимки).
 
 REST-вызовы к GitHub требуют GH_PAT (PAT с scope workflow) в env.
 """
@@ -19,6 +21,7 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 
 from llm import _complete
+from long_profiles import DEFAULT_PROFILE, get_profile
 
 REQUEST_HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; TrustNodeBot/1.1)",
@@ -190,11 +193,23 @@ def rewrite_news_full(text: str, title: str = "") -> str:
 # ---------- запуск видео-воркфлоу ----------
 
 def dispatch_video_workflow(topic: str = "", from_post: str = "", minutes: str = "15",
-                            format: str = "doc", script: str = "") -> dict:
-    """workflow_dispatch video-long.yml через GitHub REST. Возвращает True при
-    204/201 (что означает «принято»). Бросает RuntimeError при ошибке/без токена.
+                            format: str = "doc", script: str = "",
+                            profile: str = DEFAULT_PROFILE) -> bool:
+    """Dispatch ``video-long.yml`` through the GitHub REST API.
 
-    Токен: env GH_PAT (PAT со scope workflow, например gh auth token)."""
+    Returns ``True`` when GitHub accepts the dispatch (HTTP 200, 201, or 204).
+    A missing token or a dispatch/HTTP/network failure raises ``RuntimeError``.
+
+    ``profile`` is an optional editorial profile.  A blank or omitted value uses
+    the compatible ``classic`` profile; an unknown explicit value is rejected
+    before token lookup or any network request.  This is a dormant API: the
+    current ``bot/main.py`` has no Telegram call site for this function.
+
+    Token: ``GH_PAT`` in the environment (a PAT with the ``workflow`` scope).
+    """
+    # Validate explicit profile selection before touching credentials or the
+    # network.  ``get_profile`` also supplies the canonical wire value.
+    _, profile_key = get_profile(profile)
     pat = os.environ.get("GH_PAT", "").strip()
     if not pat:
         raise RuntimeError("GH_PAT не задан — не могу запустить сборку видео")
@@ -206,6 +221,7 @@ def dispatch_video_workflow(topic: str = "", from_post: str = "", minutes: str =
             "topic": topic or "",
             "script": script or "",
             "from_post": from_post or "",
+            "profile": profile_key,
         },
     }
     url = f"https://api.github.com/repos/{GITHUB_REPO}/actions/workflows/{VIDEO_WORKFLOW}/dispatches"
