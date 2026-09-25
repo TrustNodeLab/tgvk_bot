@@ -29,12 +29,14 @@ ffmpeg-бинарник берётся из imageio-ffmpeg, иначе сист�
 
 import argparse
 import asyncio
+import math
 import os
 import re
 import shutil
 import subprocess
 import sys
 import traceback
+from fractions import Fraction
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -564,9 +566,13 @@ def _tts_voicestudio(items, voice, tmpdir):
                     fh.write(r.content)
                 if not r.content:
                     raise RuntimeError("пустой ответ сервера")
-                # wav -> mp3 (единый формат для склейки в make_voiceover_sections)
+                # wav -> mp3 (единый формат для склейки в make_voiceover_sections).
+                # -ar/-ac обязательны: сервер отдаёт wav с произвольной частотой,
+                # а sil/lead/tail и concat-склейка считают 24 кГц моно.  Без
+                # нормализации чанки несопоставимы по параметрам и склейка падает.
                 r2 = subprocess.run(
-                    [ffmpeg, "-y", "-i", wav_path, "-c:a", "libmp3lame", path],
+                    [ffmpeg, "-y", "-i", wav_path, "-c:a", "libmp3lame",
+                     "-ar", "24000", "-ac", "1", path],
                     capture_output=True)
                 if r2.returncode != 0 or not os.path.exists(path) or os.path.getsize(path) < 100:
                     err_tail = (r2.stderr or b"").decode("utf-8", "replace")[-400:]
@@ -664,38 +670,258 @@ def mp3_duration(ffmpeg, path):
 LEAD_IN = 1.0    # пауза перед первым словом диктора
 TAIL_OUT = 1.5   # пауза после последнего слова
 CHUNK_GAP = 0.5  # пауза между репликами-чанками
+WORD_CUE_MIN_DUR = 0.04  # минимальное видимое окно одного слова
+# MP3 probe headers can include one or more encoder frames beyond the decoded
+# stream.  Keep the correction bounded so a genuine short tail is not removed.
+MP3_EOF_TOLERANCE = 0.12
+
+
+def _finite_float(value):
+    """Return a finite float, or ``None`` for malformed detector values."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _duration_from_ffmpeg_log(text):
+    """Read a positive ``Duration: HH:MM:SS.ss`` value from ffmpeg output."""
+    match = re.search(
+        r"Duration:\s*(\d+):([0-9]{2}):([0-9]+(?:\.[0-9]+)?)",
+        str(text or ""),
+    )
+    if not match:
+        return None
+    value = _finite_float(
+        int(match.group(1)) * 3600
+        + int(match.group(2)) * 60
+        + float(match.group(3))
+    )
+    return value if value is not None and value > 0.0 else None
+
+
+def _stream_time_from_ffmpeg_log(text):
+    """Return the last finite decoded-stream timestamp reported by ffmpeg.
+
+    The ``Duration:`` header describes the container (and can include MP3
+    encoder padding), while the final ``time=`` value describes decoded output.
+    Keeping both lets callers prefer the latter when it is available.
+    """
+    value = None
+    for match in re.finditer(
+            r"(?<![\w])time=\s*(\d+):([0-9]{2}):([0-9]+(?:\.[0-9]+)?)",
+            str(text or ""), re.I):
+        candidate = _finite_float(
+            int(match.group(1)) * 3600
+            + int(match.group(2)) * 60
+            + float(match.group(3)))
+        if candidate is not None and candidate >= 0.0:
+            value = candidate
+    return value
+
+
+def _silence_events(text):
+    """Parse a strict, chronological subset of ffmpeg silence markers.
+
+    The return value is ``(events, marker_present, malformed)``.  Each event
+    is ``("start"|"end", timestamp)``; a negative EOF sentinel is represented by
+    positive infinity.  A marker line with a non-numeric value is not partially
+    matched against its numeric prefix, because doing so can manufacture a
+    speech range from detector corruption.
+    """
+    text = str(text or "")
+    marker = bool(re.search(r"silence_(?:start|end)\b", text, re.I))
+    events = []
+    malformed = False
+    line_pattern = re.compile(r"silence_(start|end)\s*:\s*(.*)$", re.I)
+    number_pattern = re.compile(
+        r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\Z")
+    for line in text.splitlines():
+        match = line_pattern.search(line)
+        if not match:
+            if re.search(r"silence_(?:start|end)\b", line, re.I):
+                malformed = True
+            continue
+        kind = match.group(1).lower()
+        raw = match.group(2).split("|", 1)[0].strip()
+        if not number_pattern.fullmatch(raw):
+            malformed = True
+            continue
+        value = _finite_float(raw)
+        if value is None:
+            malformed = True
+            continue
+        if kind == "end" and value < 0.0:
+            if value != -1.0:
+                malformed = True
+                continue
+            value = math.inf
+        elif kind == "start" and value < 0.0:
+            malformed = True
+            continue
+        events.append((kind, value))
+    return events, marker, malformed
+
+
+def _validated_silence_intervals(events):
+    """Return silence intervals, or ``None`` for an invalid event grammar."""
+    intervals = []
+    open_start = None
+    previous = -math.inf
+    for kind, timestamp in events:
+        if math.isinf(timestamp):
+            if kind != "end" or open_start is None:
+                return None
+            intervals.append((open_start, math.inf))
+            open_start = None
+            previous = math.inf
+            continue
+        if timestamp < previous - 1e-9:
+            return None
+        if kind == "start":
+            # A second start without an end is not a recoverable interval.
+            if open_start is not None:
+                return None
+            open_start = timestamp
+        else:
+            if open_start is None or timestamp <= open_start + 1e-9:
+                return None
+            intervals.append((open_start, timestamp))
+            open_start = None
+        previous = timestamp
+    # A final unmatched start is the valid ffmpeg representation of silence
+    # continuing to EOF.  It is completed after the decoded duration is known.
+    if open_start is not None:
+        intervals.append((open_start, math.inf))
+    return intervals
+
+
+def _looks_like_successful_detector_log(text):
+    """Whether stderr contains ffmpeg metadata proving a successful run."""
+    return bool(re.search(
+        r"(?:Input\s*#|Output\s*#|Stream\s*#|ffmpeg version|Duration:)",
+        str(text or ""), re.I,
+    ))
 
 
 def speech_bounds(ffmpeg, path, noise_db=-35.0, min_sil=0.12):
-    """Реальные границы речи в аудиофайле: (onset, speech_duration).
+    """Return the detected speech range as ``(onset, speech_duration)``.
 
-    Через ffmpeg silencedetect: TTS-движки (edge-tts/VoiceStudio/xtts) добавляют
-    тишину в начале/конце чанка, из-за чего субтитры по «сырой» длительности
-    файла едут на 100-400 мс. Возвращает (0.0, duration), если детект не дал
-    результата (тогда берём весь файл — субтитры не пропадут).
+    ``silencedetect`` reports a silence start at its beginning and a silence end
+    at its end.  Leading silence therefore ends the onset boundary, while an
+    unmatched final start marks the trailing boundary.  Internal pauses are
+    ignored.  A failed detector, malformed/empty output, or unknown duration
+    returns no speech range instead of fabricating one.  A successful detector
+    with metadata and no silence events means continuous speech for the whole
+    known decoded stream.
+
+    ``mp3_duration``/the ffmpeg ``Duration:`` header may include an MP3 frame
+    or container padding value.  The decoded ``time=`` value and a trailing
+    silence event are used to identify the actual EOF, with a deliberately
+    bounded tolerance (:data:`MP3_EOF_TOLERANCE`) for probe/decoder rounding.
     """
-    dur = mp3_duration(ffmpeg, path)
     try:
-        r = subprocess.run(
+        probed_duration = _finite_float(mp3_duration(ffmpeg, path))
+    except Exception:  # noqa: BLE001 - detector failure is a no-speech result
+        probed_duration = None
+    if probed_duration is None or probed_duration <= 0.0:
+        probed_duration = None
+
+    try:
+        result = subprocess.run(
             [ffmpeg, "-hide_banner", "-i", path,
              "-af", f"silencedetect=noise={noise_db}dB:d={min_sil}",
              "-f", "null", "-"],
             capture_output=True, text=True,
         )
-        err = r.stderr or ""
-    except Exception as e:  # noqa: BLE001
-        print(f"[video] silencedetect не удался ({e}) — беру длительность файла")
-        return 0.0, dur
-    starts = [float(x) for x in re.findall(r"silence_start: ([0-9.]+)", err)]
-    ends = [float(x) for x in re.findall(r"silence_end: ([0-9.]+)", err)]
-    if not starts:
-        return 0.0, dur
-    onset = starts[0]
-    last_sil_end = ends[-1] if ends else 0.0
-    offset = max(onset, min(dur, last_sil_end)) if last_sil_end > onset else dur
-    if offset - onset < 0.3:
-        return 0.0, dur
-    return round(onset, 3), round(offset - onset, 3)
+    except Exception as exc:  # noqa: BLE001 - do not invent a speech span
+        print(f"[video] silencedetect не удался ({exc}) — речь не определена")
+        return 0.0, 0.0
+
+    if getattr(result, "returncode", 0) not in (0, None):
+        print("[video] silencedetect завершился с ошибкой — речь не определена")
+        return 0.0, 0.0
+
+    err = getattr(result, "stderr", "") or ""
+    if isinstance(err, bytes):
+        err = err.decode("utf-8", errors="replace")
+    err = str(err)
+    log_duration = _duration_from_ffmpeg_log(err)
+    stream_duration = _stream_time_from_ffmpeg_log(err)
+    # A duration-looking line in detector text is not enough to turn an
+    # unknown/zero-duration input into a speech span.
+    if probed_duration is None or not math.isfinite(probed_duration) or probed_duration <= 0.0:
+        return 0.0, 0.0
+    duration_candidates = [probed_duration]
+    if log_duration is not None:
+        duration_candidates.append(log_duration)
+    if stream_duration is not None and stream_duration > 0.0:
+        duration_candidates.append(stream_duration)
+    duration = min(duration_candidates)
+    if not math.isfinite(duration) or duration <= 0.0:
+        return 0.0, 0.0
+
+    events, marker_present, malformed = _silence_events(err)
+    if malformed:
+        return 0.0, 0.0
+    if not events:
+        # No events plus a valid ffmpeg metadata header is the only positive
+        # evidence of continuous speech.  Empty/malformed detector output is
+        # deliberately not treated as speech.
+        if marker_present or not _looks_like_successful_detector_log(err):
+            return 0.0, 0.0
+        return 0.0, float(duration)
+
+    intervals = _validated_silence_intervals(events)
+    if intervals is None:
+        return 0.0, 0.0
+
+    # Prefer the decoded EOF when ffmpeg reports one.  If a final silence end is
+    # within the bounded padding tolerance of the probe duration, it is the
+    # same boundary; this is what prevents a 0.5s MP3 tail from extending the
+    # last subtitle word into encoder padding.
+    decoded_eof = duration
+    if stream_duration is not None and stream_duration > 0.0:
+        decoded_eof = min(decoded_eof, stream_duration)
+    last_kind, last_timestamp = events[-1]
+    if (last_kind == "end" and math.isfinite(last_timestamp)
+            and probed_duration - last_timestamp <= MP3_EOF_TOLERANCE):
+        decoded_eof = min(decoded_eof, max(0.0, last_timestamp))
+    decoded_eof = max(0.0, min(decoded_eof, duration))
+    if decoded_eof <= 0.0:
+        return 0.0, 0.0
+
+    intervals = [
+        (max(0.0, min(decoded_eof, start)),
+         max(0.0, min(decoded_eof, end)))
+        for start, end in intervals
+    ]
+    intervals = [(start, end) for start, end in intervals
+                 if end > start and end > 0.0]
+    if not intervals:
+        return 0.0, 0.0
+
+    # A leading interval consumes the initial silence.  If it reaches EOF, the
+    # file is positively all-silent and no speech may be returned.
+    onset = 0.0
+    if intervals[0][0] <= 1e-3:
+        leading_end = intervals[0][1]
+        if leading_end <= 1e-3 or leading_end >= decoded_eof - 1e-3:
+            return 0.0, 0.0
+        onset = min(decoded_eof, max(0.0, leading_end))
+
+    # Only the final interval can be trailing silence.  Internal pauses do not
+    # move the speech boundary.
+    trailing_start = None
+    start, end = intervals[-1]
+    if start > onset + 1e-3 and end >= decoded_eof - 1e-3:
+        trailing_start = start
+    offset = min(decoded_eof, max(0.0, trailing_start)) \
+        if trailing_start is not None else decoded_eof
+    if offset <= onset:
+        return 0.0, 0.0
+    return float(onset), float(offset - onset)
 
 
 def _srt_ts(sec):
@@ -746,28 +972,212 @@ def split_cues(text, start, end, max_chars=42, max_lines=2, min_dur=1.0):
     return cues
 
 
-def wrap_cue(text, max_chars=42, max_lines=2):
-    """Перенос одного субтитра на ≤2 строки (для отрисовки в кадре)."""
-    words = (text or "").split()
-    lines, cur = [], ""
-    for w in words:
-        cand = (cur + " " + w).strip()
-        if cur and len(cand) > max_chars:
-            lines.append(cur)
-            cur = w
+def word_cues(text, start, end, min_dur=WORD_CUE_MIN_DUR):
+    """Строит один SRT-таймкод на каждое слово внутри речевого спана.
+
+    Полноценный ASR здесь намеренно не нужен: TTS уже даёт нам реальный
+    диапазон речи через :func:`speech_bounds`, а внутри этого диапазона
+    длительности распределяются пропорционально длине слов.  Такой
+    fallback не требует тяжёлой модели, детерминирован и не теряет
+    пунктуацию — исходный токен возвращается в ``text`` без очистки.
+
+    ``min_dur`` — желаемая нижняя граница одного cue.  Если слов больше, чем
+    помещается в интервал при этой границе, она пропорционально уменьшается,
+    но остаётся положительной.  Границы вычисляются точной дробной
+    арифметикой и лишь затем приводятся к float, поэтому округление не
+    создаёт нулевых или перекрывающихся cues.
+    """
+    normalized = re.sub(r"\s+", " ", str(text or "").strip())
+    if not normalized:
+        return []
+    try:
+        start = float(start)
+        end = float(end)
+    except (TypeError, ValueError):
+        return []
+    if not (math.isfinite(start) and math.isfinite(end) and end > start):
+        return []
+
+    # Обычный TTS не оставляет отдельные токены для знаков препинания.
+    # Если вход всё же содержит ``слово ,``, присоединяем знак к слову,
+    # чтобы не создавать «голос» из символа, но не потерять punctuation.
+    words, pending = [], ""
+    for token in normalized.split(" "):
+        if any(ch.isalnum() for ch in token):
+            words.append(pending + token)
+            pending = ""
+        elif words:
+            words[-1] += token
         else:
-            cur = cand
-    if cur:
-        lines.append(cur)
+            pending += token
+    if pending:
+        if words:
+            words[-1] += pending
+        else:
+            return []
+    if not words:
+        return []
+
+    try:
+        min_dur = float(min_dur)
+    except (TypeError, ValueError):
+        min_dur = 0.0
+    if not math.isfinite(min_dur) or min_dur < 0.0:
+        min_dur = 0.0
+
+    # Fraction не теряет короткий интервал при округлении до миллисекунд.
+    # from_float() также сохраняет именно те границы, которые видит вызывающий
+    # код, поэтому итоговые cue всегда заканчиваются его точным ``end``.
+    start_exact = Fraction.from_float(start)
+    end_exact = Fraction.from_float(end)
+    span = end_exact - start_exact
+    count = len(words)
+    minimum = min(Fraction.from_float(min_dur), span / count)
+    remaining = span - minimum * count
+    weights = [max(1, len(word)) for word in words]
+    total_weight = sum(weights)
+    durations = [
+        minimum + remaining * weight / total_weight
+        for weight in weights
+    ]
+
+    exact_boundaries = [start_exact]
+    cursor_exact = start_exact
+    for duration in durations[:-1]:
+        cursor_exact += duration
+        exact_boundaries.append(cursor_exact)
+    exact_boundaries.append(end_exact)
+
+    # Сначала пробуем обычный float API.  Если границы слишком близки для
+    # float (например, искусственный span в 1 ULP), возвращаем точные
+    # Fraction-границы вместо нулевых или перекрывающихся cues.
+    float_boundaries = []
+    for i, boundary in enumerate(exact_boundaries):
+        if i == 0:
+            float_boundaries.append(start)
+            continue
+        if i == len(exact_boundaries) - 1:
+            float_boundaries.append(end)
+            continue
+        try:
+            candidate = float(boundary)
+        except (OverflowError, ValueError):
+            candidate = math.inf
+        float_boundaries.append(candidate)
+    boundaries_are_float = (
+        all(math.isfinite(value) for value in float_boundaries)
+        and float_boundaries[0] == start
+        and float_boundaries[-1] == end
+        and all(left < right
+                for left, right in zip(float_boundaries, float_boundaries[1:]))
+    )
+    boundaries = float_boundaries if boundaries_are_float else exact_boundaries
+
+    cues = []
+    for i, (word, cue_end) in enumerate(zip(words, boundaries[1:])):
+        cue_start = boundaries[i]
+        if i == 0:
+            cue_start = start
+        if i == count - 1:
+            cue_end = end
+        cues.append({"start": cue_start, "end": cue_end, "text": word})
+    return cues
+
+
+def split_word_cues(text, start, end, min_dur=0.08):
+    """Совместимое имя для callers, которые предпочитают ``split_*``."""
+    return word_cues(text, start, end, min_dur=min_dur)
+
+
+def speech_word_cues(ffmpeg, path, text, start, max_end=None):
+    """Пословные cues из фактического речевого диапазона TTS-файла.
+
+    ``start`` — начало размещения чанка на общей видеодорожке.  Функция
+    сначала снимает внешнюю тишину через :func:`speech_bounds`, затем
+    ограничивает результат длиной файла/концом ролика.  Если ffmpeg или
+    файл недоступны, остаётся безопасный пустой результат — рендер не
+    ломается из-за отсутствующего аудио.
+    """
+    try:
+        start = float(start)
+    except (TypeError, ValueError):
+        return []
+    try:
+        file_dur = max(0.0, float(mp3_duration(ffmpeg, path)))
+    except Exception:  # noqa: BLE001 — optional timing source
+        file_dur = 0.0
+    try:
+        onset, speech_dur = speech_bounds(ffmpeg, path)
+    except Exception:  # noqa: BLE001 — detector failure is not speech evidence
+        return []
+    onset = _finite_float(onset)
+    speech_dur = _finite_float(speech_dur)
+    if onset is None or speech_dur is None:
+        return []
+    onset = max(0.0, onset)
+    speech_dur = max(0.0, speech_dur)
+    speech_start = max(0.0, start + max(0.0, float(onset)))
+    if file_dur > 0.0:
+        speech_end = min(start + file_dur,
+                         speech_start + max(0.0, float(speech_dur)))
+    else:
+        speech_end = speech_start + max(0.0, float(speech_dur))
+    if max_end is not None:
+        try:
+            speech_end = min(speech_end, float(max_end))
+        except (TypeError, ValueError):
+            pass
+    if speech_end <= speech_start:
+        return []
+    return word_cues(text, speech_start, speech_end)
+
+
+def wrap_cue(text, max_chars=42, max_lines=2):
+    """Wrap cue text within a hard width and line-count contract.
+
+    A token longer than one line is split at a character boundary without
+    inserting a space, so URLs, hashes, and other long spoken tokens retain
+    their exact text.  If the complete text cannot fit in ``max_lines`` lines
+    without truncation, :class:`ValueError` is raised explicitly; returning a
+    third overlong line or dropping the tail would violate the renderer contract.
+    """
+    try:
+        max_chars = int(max_chars)
+        max_lines = int(max_lines)
+    except (OverflowError, TypeError, ValueError):
+        return []
+    if max_chars < 1 or max_lines < 1:
+        return []
+
+    normalized = re.sub(r"\s+", " ", str(text or "").strip())
+    if not normalized:
+        return []
+
+    lines, current = [], ""
+    for word in normalized.split(" "):
+        # A chunk after the first is a continuation and must not gain a space.
+        chunks = [word[i:i + max_chars]
+                  for i in range(0, len(word), max_chars)] or [word]
+        for index, chunk in enumerate(chunks):
+            continuation = index > 0
+            separator = "" if continuation or not current else " "
+            candidate = current + separator + chunk
+            if current and len(candidate) > max_chars:
+                lines.append(current)
+                current = chunk
+            else:
+                current = candidate
+            if len(current) == max_chars:
+                lines.append(current)
+                current = ""
+    if current:
+        lines.append(current)
+    lines = [line for line in lines if line]
     if len(lines) > max_lines:
-        # переносим «хвост» в последнюю строку, не выходя за max_chars*2
-        head = lines[: max_lines - 1]
-        tail = " ".join(lines[max_lines - 1:])
-        while len(tail) > max_chars * 2 and len(head) < max_lines - 1:
-            head.append(tail[:max_chars])
-            tail = tail[max_chars:].strip()
-        head.append(tail)
-        lines = head[:max_lines]
+        raise ValueError(
+            f"cue needs {len(lines)} lines at {max_chars} characters; "
+            f"max_lines={max_lines} (text preserved, cannot truncate)"
+        )
     return lines
 
 
@@ -781,125 +1191,320 @@ def write_srt(cues, path):
     return path
 
 
+def _write_requested_srt(path, cues, required=False):
+    """Write an optional SRT, failing visibly when an explicit path is empty."""
+    path = os.fspath(path) if path else ""
+    cue_list = list(cues or [])
+    if not path or not cue_list:
+        if required:
+            target = path or "<empty path>"
+            raise RuntimeError(f"[video] запрошенный SRT не создан: {target}")
+        return False
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        write_srt(cue_list, path)
+        if not os.path.isfile(path) or os.path.getsize(path) <= 0:
+            raise OSError("SRT файл пуст")
+    except Exception as exc:  # noqa: BLE001 - required output is a hard contract
+        if required:
+            raise RuntimeError(f"[video] SRT не записан: {path} ({exc})") from exc
+        print(f"[video] SRT не построен ({type(exc).__name__}: {exc})")
+        return False
+    return True
+
+
 def _estimate_weights(sections):
     """Грубая оценка длительностей (русская речь ~12 симв/с), без сети."""
     return [max(1.5, len(s["voice"]) / 12.0) for s in sections]
 
 
 def make_voiceover_sections(ffmpeg, sections, voice, tmpdir, lead_in=None):
-    """Озвучивает каждую секцию отдельно, склеивает с паузами.
+    """Озвучивает секции, склеивает их и строит пословный timeline.
 
-    Возвращает (voice_mp3 | None, weights, cues):
-    - weights[i] = время показа секции i (длительность её аудио + пауза);
-    - cues = [{start, end, text}] — таймлайн субтитров, СИНХРОННЫЙ с голосом:
-      пауза LEAD_IN перед первым словом, реальные границы речи каждого чанка
-      (silencedetect), пауза CHUNK_GAP между чанками.
+    Возвращает ``(voice_mp3 | None, weights, meta)``.  ``meta`` всегда имеет
+    явное состояние ``audio_state``: ``no_audio`` (TTS/склейка не дали файл),
+    ``no_speech`` (файл есть, но подтверждённой речи нет) или ``speech``.
+    ``cues`` строятся только из подтверждённого :func:`speech_bounds` диапазона;
+    ``chunk_bounds`` сохраняет фактические границы каждого валидного TTS-чанка
+    для long-рендера, включая случаи пропущенных чанков.
     """
+    section_list = list(sections or [])
+    if not section_list:
+        return None, [], {"cues": [], "section_bounds": [], "chunk_bounds": [],
+                          "audio_bounds": [], "section_weights": [],
+                          "audio_state": "no_audio"}
+    try:
+        lead_s = LEAD_IN if lead_in is None else float(lead_in)
+    except (TypeError, ValueError, OverflowError):
+        lead_s = LEAD_IN
+    lead_s = max(0.0, lead_s if math.isfinite(lead_s) else 0.0)
+
+    def no_audio(weights=None, state="no_audio"):
+        return None, list(weights or []), {
+            "cues": [], "section_bounds": [], "chunk_bounds": [],
+            "audio_bounds": [], "section_weights": list(weights or []),
+            "audio_state": state,
+        }
+
     try:
         tts_provider = os.environ.get("TTS_PROVIDER", "").lower()
         if tts_provider == "silero":
-            # S31: Silero — только если явно TTS_PROVIDER=silero
-            print(f"[video] озвучка {len(sections)} секций "
+            print(f"[video] озвучка {len(section_list)} секций "
                   f"(silero, speaker={voice or SILERO_VOICE})...")
-            files = _tts_silero(sections, voice, tmpdir)
+            files = _tts_silero(section_list, voice, tmpdir)
         elif tts_provider == "voicestudio":
-            # S34: VoiceStudio (OmniVoice) — локальный Docker-сервер
-            print(f"[video] озвучка {len(sections)} секций "
+            print(f"[video] озвучка {len(section_list)} секций "
                   f"(voicestudio {voice or VOICESTUDIO_VOICE}, {VOICESTUDIO_URL})...")
-            files = _tts_voicestudio(sections, voice, tmpdir)
+            files = _tts_voicestudio(section_list, voice, tmpdir)
         elif os.environ.get("ELEVENLABS_API_KEY"):
-            # ElevenLabs — премиум (если есть ключ)
-            print(f"[video] озвучка {len(sections)} секций "
+            print(f"[video] озвучка {len(section_list)} секций "
                   f"(elevenlabs {voice or ELEVENLABS_VOICE})...")
-            files = _tts_elevenlabs(sections, voice, tmpdir)
+            files = _tts_elevenlabs(section_list, voice, tmpdir)
         else:
-            # edge-tts — дефолт (DmitryNeural, бесплатный, быстрый)
             import edge_tts  # noqa: F401
-            print(f"[video] озвучка {len(sections)} секций ({voice})...")
-            files = asyncio.run(_tts_many(sections, voice, tmpdir))
+            print(f"[video] озвучка {len(section_list)} секций ({voice})...")
+            files = asyncio.run(_tts_many(section_list, voice, tmpdir))
     except ImportError:
         print("[video] edge-tts не установлен — видео будет без звука")
-        return None, _estimate_weights(sections), {"cues": [], "section_bounds": []}
-    except Exception as e:
-        print(f"[video] TTS не удался ({type(e).__name__}: {e}) — видео будет без звука")
+        return no_audio(_estimate_weights(section_list))
+    except Exception as exc:  # noqa: BLE001 - optional TTS has explicit state
+        print(f"[video] TTS не удался ({type(exc).__name__}: {exc}) — "
+              "видео будет без звука")
         traceback.print_exc()
-        return None, _estimate_weights(sections), {"cues": [], "section_bounds": []}
-    durs = []
-    valid_files = []
-    valid_sections = []
-    for idx, (f, s) in enumerate(zip(files, sections)):
-        if f is None or not os.path.exists(f):
-            # S28: TTS не удался для этого чанка — пропускаем
+        return no_audio(_estimate_weights(section_list))
+
+    files = list(files or [])
+    section_durs = []
+    valid_entries = []
+    for idx, section in enumerate(section_list):
+        text = str(section.get("voice") or section.get("body") or "")
+        estimate = max(1.5, len(text) / 12.0)
+        file_path = files[idx] if idx < len(files) else None
+        if not file_path or not os.path.isfile(file_path):
             print(f"[video] sec_{idx}: нет аудио, пропуск")
-            durs.append(max(1.5, len(s["voice"]) / 12.0))
+            section_durs.append(estimate)
             continue
-        dd = mp3_duration(ffmpeg, f)
-        durs.append(dd if dd > 0.3 else max(1.5, len(s["voice"]) / 12.0))
-        valid_files.append(f)
-        valid_sections.append(s)
-    if not valid_files:
+        try:
+            file_dur = _finite_float(mp3_duration(ffmpeg, file_path))
+        except Exception:  # noqa: BLE001 - bad probe means no usable chunk
+            file_dur = None
+        if file_dur is None or file_dur <= 0.3:
+            print(f"[video] sec_{idx}: пустое/невалидное аудио, пропуск")
+            section_durs.append(estimate)
+            continue
+        section_durs.append(file_dur)
+        valid_entries.append((idx, file_path, section, file_dur))
+
+    if not valid_entries:
         print("[video] ни один чанк не озвучен — видео без звука")
-        return None, durs, {"cues": [], "section_bounds": []}
-    sil = os.path.join(tmpdir, "sil.mp3")
-    subprocess.run(
-        [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
-         "-t", str(CHUNK_GAP), "-c:a", "libmp3lame", sil],
-        capture_output=True)
-    lead_s = LEAD_IN if lead_in is None else float(lead_in)
-    lead = os.path.join(tmpdir, "lead.mp3")
-    subprocess.run(
-        [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
-         "-t", str(lead_s), "-c:a", "libmp3lame", lead],
-        capture_output=True)
-    tail = os.path.join(tmpdir, "tail.mp3")
-    subprocess.run(
-        [ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
-         "-t", str(TAIL_OUT), "-c:a", "libmp3lame", tail],
-        capture_output=True)
+        return no_audio(section_durs)
+
+    # The returned weights describe the audio that was actually assembled:
+    # skipped TTS files are absent, and gaps exist only between adjacent valid
+    # chunks.  The separate ``section_weights`` metadata below remains useful
+    # to visual renderers that need an estimate for a skipped section.
+    weights = [
+        duration + (CHUNK_GAP if i < len(valid_entries) - 1 else 0.0)
+        for i, (_idx, _file_path, _section, duration) in enumerate(valid_entries)
+    ]
+    section_weights = [
+        duration + (CHUNK_GAP if i < len(section_durs) - 1 else 0.0)
+        for i, duration in enumerate(section_durs)
+    ]
+
+    def run_ffmpeg(args):
+        try:
+            result = subprocess.run(args, capture_output=True)
+        except Exception as exc:  # noqa: BLE001 - report no-audio state
+            print(f"[video] ffmpeg не создал silence ({type(exc).__name__}: {exc})")
+            return False
+        return getattr(result, "returncode", 0) in (0, None)
+
+    silence_paths = []
+    if len(valid_entries) > 1:
+        sil = os.path.join(tmpdir, "sil.mp3")
+        if not run_ffmpeg([
+                ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                "-t", str(CHUNK_GAP), "-c:a", "libmp3lame", sil]):
+            return no_audio(weights)
+        silence_paths.append(sil)
+    lead_path = None
+    if lead_s > 0.0:
+        lead_path = os.path.join(tmpdir, "lead.mp3")
+        if not run_ffmpeg([
+                ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+                "-t", str(lead_s), "-c:a", "libmp3lame", lead_path]):
+            return no_audio(weights)
+    tail_path = os.path.join(tmpdir, "tail.mp3")
+    if not run_ffmpeg([
+            ffmpeg, "-y", "-f", "lavfi", "-i", "anullsrc=r=24000:cl=mono",
+            "-t", str(TAIL_OUT), "-c:a", "libmp3lame", tail_path]):
+        return no_audio(weights)
+
+    def ffmpeg_error_tail(result):
+        """Хвост stderr ffmpeg: без него причина сбоя склейки в CI не видна."""
+        err = getattr(result, "stderr", b"") or b""
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", errors="replace")
+        return str(err).strip()[-400:]
+
+    def pcm_fallback(ordered, out_path):
+        """Склейка без concat-demuxer: raw PCM 24 кГц моно -> один encode.
+
+        ``ordered`` — абсолютные пути в порядке воспроизведения.  Каждый кусок
+        декодируется отдельно, куски склеиваются побайтно, результат кодируется
+        один раз.  Ресемплинг сохраняет длительность исходников, поэтому
+        последующая арифметика по ``section_bounds`` остаётся верной.
+        """
+        raw_paths = []
+        skipped = 0
+        for abs_path in ordered:
+            raw_path = abs_path + ".raw"
+            try:
+                raw_result = subprocess.run(
+                    [ffmpeg, "-y", "-i", abs_path, "-f", "s16le", "-ac", "1",
+                     "-ar", "24000", "-c:a", "pcm_s16le", raw_path],
+                    capture_output=True)
+            except Exception as exc:  # noqa: BLE001 - один кусок не роняет склейку
+                print(f"[video] pcm fallback пропустил кусок ({type(exc).__name__}: {exc})")
+                skipped += 1
+                continue
+            if (getattr(raw_result, "returncode", 0) in (0, None)
+                    and os.path.exists(raw_path)
+                    and os.path.getsize(raw_path) > 0):
+                raw_paths.append(raw_path)
+            else:
+                skipped += 1
+        voice_raw = os.path.join(tmpdir, "voice.raw")
+        try:
+            with open(voice_raw, "wb") as out_raw:
+                for raw_path in raw_paths:
+                    with open(raw_path, "rb") as src_raw:
+                        while True:
+                            block = src_raw.read(65536)
+                            if not block:
+                                break
+                            out_raw.write(block)
+            if os.path.getsize(voice_raw) <= 0:
+                raise RuntimeError("пустой raw")
+        except Exception as exc:  # noqa: BLE001 - нет raw, фолбэк не сработал
+            print(f"[video] pcm fallback не склеил raw ({type(exc).__name__}: {exc})")
+            return False
+        try:
+            encode = subprocess.run(
+                [ffmpeg, "-y", "-f", "s16le", "-ar", "24000", "-ac", "1",
+                 "-i", voice_raw, "-c:a", "libmp3lame", out_path],
+                capture_output=True)
+        except Exception as exc:  # noqa: BLE001 - фолбэк не сработал
+            print(f"[video] pcm fallback encode не запустился ({type(exc).__name__}: {exc})")
+            return False
+        if (getattr(encode, "returncode", 0) not in (0, None)
+                or not os.path.exists(out_path)
+                or os.path.getsize(out_path) <= 0):
+            print("[video] pcm fallback encode failed: " + ffmpeg_error_tail(encode))
+            return False
+        print(f"[video] pcm fallback: склейка без demuxer удалась"
+              + (f" (пропущено кусков: {skipped})" if skipped else ""))
+        return True
+
     lst = os.path.join(tmpdir, "join.txt")
+    # Один порядок для demuxer-списка и для PCM-фолбэка: lead, чанки с паузой
+    # между соседними, tail.  Пути абсолютные — этого требует concat.
+    ordered_paths = []
+    if lead_path:
+        ordered_paths.append(os.path.abspath(lead_path).replace("\\", "/"))
+    for index, (_idx, file_path, _section, _duration) in enumerate(valid_entries):
+        ordered_paths.append(os.path.abspath(file_path).replace("\\", "/"))
+        if index < len(valid_entries) - 1 and silence_paths:
+            ordered_paths.append(os.path.abspath(silence_paths[0]).replace("\\", "/"))
+    ordered_paths.append(os.path.abspath(tail_path).replace("\\", "/"))
+
     with open(lst, "w", encoding="utf-8") as fh:
-        # concat-демуксер резолвит относительные пути от папки join-файла,
-        # а не от cwd — поэтому только абсолютные пути; backslash заодно
-        # меняем на прямой слэш (в кавычках escape мешают)
-        def _jp(p):
-            return os.path.abspath(p).replace("\\", "/")
-        # тишина перед первым словом — субтитры стартуют с LEAD_IN
-        fh.write("file '%s'\n" % _jp(lead))
-        for i, f in enumerate(valid_files):
-            fh.write("file '%s'\n" % _jp(f))
-            if i < len(valid_files) - 1:
-                fh.write("file '%s'\n" % _jp(sil))
-        fh.write("file '%s'\n" % _jp(tail))
+        for abs_path in ordered_paths:
+            fh.write("file '%s'\n" % abs_path)
+
     out = os.path.join(tmpdir, "voice.mp3")
-    r = subprocess.run(
-        [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", lst, "-c", "copy", out],
-        capture_output=True)
-    if r.returncode != 0:
-        r = subprocess.run(
+    result = subprocess.run(
+        [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", lst,
+         "-c", "copy", out], capture_output=True)
+    if getattr(result, "returncode", 0) not in (0, None):
+        print("[video] concat copy failed: " + ffmpeg_error_tail(result))
+        result = subprocess.run(
             [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", lst,
-             "-c:a", "libmp3lame", out],
-            capture_output=True)
-        if r.returncode != 0:
+             "-c:a", "libmp3lame", out], capture_output=True)
+    if getattr(result, "returncode", 0) not in (0, None):
+        print("[video] concat transcode failed: " + ffmpeg_error_tail(result))
+        if not pcm_fallback(ordered_paths, out):
             print("[video] склейка аудио не удалась — видео будет без звука")
-            return None, [d + CHUNK_GAP for d in durs], {"cues": [], "section_bounds": []}
-    weights = [d + (CHUNK_GAP if i < len(durs) - 1 else 0.0)
-               for i, d in enumerate(durs)]
-    # --- таймлайн субтитров по фактическим границам речи ---
-    cues, cursor = [], lead_s
+            return no_audio(weights)
+
+    # Visual section bounds include every requested section, while the audio
+    # cursor advances only over valid TTS files.  Thus skipped chunks do not
+    # shift word timestamps in the concatenated voice track.
     section_bounds = [lead_s]
-    for f, s in zip(valid_files, valid_sections):
-        onset, sp_dur = speech_bounds(ffmpeg, f)
-        c_start = cursor + onset
-        c_end = c_start + max(0.3, sp_dur)
-        cues.extend(split_cues(s.get("voice") or s.get("body") or "",
-                               c_start, c_end))
-        cursor += mp3_duration(ffmpeg, f) + CHUNK_GAP
-        section_bounds.append(cursor - CHUNK_GAP if len(valid_files) > 1 else cursor)
-    if len(valid_files) > 1:
-        section_bounds[-1] = cursor - CHUNK_GAP
+    section_cursor = lead_s
+    for index, duration in enumerate(section_durs):
+        section_cursor += duration
+        section_bounds.append(section_cursor)
+        if index < len(section_durs) - 1:
+            section_cursor += CHUNK_GAP
+
+    cues = []
+    chunk_bounds = []
+    audio_cursor = lead_s
+    for entry_index, (idx, file_path, section, file_dur) in enumerate(valid_entries):
+        try:
+            onset, speech_dur = speech_bounds(ffmpeg, file_path)
+            onset = _finite_float(onset)
+            speech_dur = _finite_float(speech_dur)
+        except Exception:  # noqa: BLE001 - no speech evidence
+            onset, speech_dur = None, None
+        onset = 0.0 if onset is None else max(0.0, onset)
+        speech_dur = 0.0 if speech_dur is None else max(0.0, speech_dur)
+        onset = min(onset, file_dur)
+        speech_dur = min(speech_dur, max(0.0, file_dur - onset))
+        speech_start = audio_cursor + onset
+        speech_end = speech_start + speech_dur
+        text = str(section.get("voice") or section.get("body") or "")
+        if speech_end > speech_start and text.strip():
+            section_cues = word_cues(text, speech_start, speech_end)
+            for cue in section_cues:
+                # Preserve the source section on every word cue.  The field is
+                # ignored by SRT serialization but is the identity bridge for
+                # long-form mapping when an earlier TTS chunk is skipped.
+                cue["section"] = int(idx)
+            cues.extend(section_cues)
+        chunk_end = audio_cursor + file_dur
+        chunk_bounds.append({
+            "sec": int(idx),
+            "section": int(idx),
+            "start": float(audio_cursor),
+            "end": float(chunk_end),
+            "duration": float(file_dur),
+            "weight": float(file_dur + (
+                CHUNK_GAP if entry_index < len(valid_entries) - 1 else 0.0)),
+            "speech_start": float(speech_start),
+            "speech_end": float(speech_end),
+        })
+        if entry_index < len(valid_entries) - 1:
+            audio_cursor = chunk_end + CHUNK_GAP
+
+    audio_bounds = [float(lead_s)]
+    for chunk in chunk_bounds:
+        audio_bounds.append(float(chunk["end"]))
     print(f"[video] озвучка готова: {out} ({sum(weights):.1f} c голоса), "
-          f"субтитров: {len(cues)}")
-    return out, weights, {"cues": cues, "section_bounds": section_bounds}
+          f"субтитров: {len(cues)} слов")
+    state = "speech" if cues else "no_speech"
+    return out, weights, {
+        "cues": cues,
+        "section_bounds": section_bounds,
+        "chunk_bounds": chunk_bounds,
+        "audio_bounds": audio_bounds,
+        "section_weights": section_weights,
+        "audio_state": state,
+    }
 
 
 # ---------- скролл и кадры ----------
@@ -928,7 +1533,12 @@ def cue_at(cues, t):
 
 def _draw_cue(ov, cue, W, H, f_sub, f_sub_small=None):
     """Отрисовка субтитра: до 2 строк, тёмная подложка + белый текст с обводкой."""
-    lines = wrap_cue(cue["text"], 42, 2)
+    try:
+        lines = wrap_cue(cue["text"], 42, 2)
+    except ValueError as exc:
+        # Не терять текст и не рисовать третью строку: render path сообщает
+        # о нарушении явного capacity-контракта вызывающему коду.
+        raise RuntimeError(f"[video] cue не помещается в 2x42: {exc}") from exc
     if not lines:
         return
     font = f_sub
@@ -1019,7 +1629,17 @@ def render_video(site, anchors, seconds, fps, out_silent, caption_on=True,
         raise RuntimeError("нет ffmpeg: pip install imageio-ffmpeg")
     pos, _bounds = scroll_plan(site.height, seconds, anchors, weights, bounds=bounds)
     sections = sections if sections is not None else SECTIONS
-    cues = cues or []
+    cues = list(cues or [])
+    # Validate the hard capacity contract before starting ffmpeg.  This keeps
+    # the over-capacity policy explicit and avoids producing a partial file
+    # before a later frame happens to reach the pathological cue.
+    for cue in cues:
+        try:
+            wrap_cue(cue.get("text", ""), 42, 2)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"[video] cue не помещается в 2x42 ({exc})"
+            ) from exc
     n = int(seconds * fps)
     f_cap = _font(JURA, 30, 700)
     f_url = _font(JURA, 28, 700)
@@ -1100,6 +1720,10 @@ def mux_audio(ffmpeg, silent_mp4, voice_mp3, out_mp4, seconds):
 def generate(seconds=30, out="out/video_test.mp4", fps=FPS_DEFAULT,
               voice=VOICE_DEFAULT, no_audio=False, tmpdir="out/tmp_video",
               script_text=None, srt_out=None):
+    if srt_out and no_audio:
+        raise RuntimeError(
+            "[video] запрошенный SRT невозможен без аудио; "
+            "используйте отдельный no-SRT режим")
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     os.makedirs(tmpdir, exist_ok=True)
     ffmpeg = find_ffmpeg()
@@ -1133,9 +1757,11 @@ def generate(seconds=30, out="out/video_test.mp4", fps=FPS_DEFAULT,
     silent = os.path.join(tmpdir, "silent.mp4")
     render_video(site, anchors, seconds, fps, silent, weights=weights,
                  sections=sections, cues=cues, bounds=section_bounds or None)
-    if srt_out and cues:
-        write_srt(cues, srt_out)
-        print(f"[video] SRT: {srt_out} ({len(cues)} реплик)")
+    if srt_out:
+        if no_audio:
+            print("[video] SRT: пропущен (no_audio)")
+        elif _write_requested_srt(srt_out, cues, required=True):
+            print(f"[video] SRT: {srt_out} ({len(cues)} слов)")
     if voice_mp3:
         mux_audio(ffmpeg, silent, voice_mp3, out, seconds)
     else:
