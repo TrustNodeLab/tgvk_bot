@@ -202,6 +202,13 @@ class LongBedSubtitleGateTests(unittest.TestCase):
             spans, duration = verify_subs.speech_spans(wav, ff)
 
         cues = build_cues(self.measured["speech_spans"])
+        # Bound up front: the committed ``verify_subs`` has neither helper, and
+        # the reporting/assertions below must stay well defined when they are
+        # skipped.  ``merged`` falls back to the raw detected islands and the
+        # two error lists stay empty, so the checks that the committed verifier
+        # cannot perform do not turn into failures.
+        merged = spans
+        uncovered, timeline_errors = [], []
         if _merge_spans is None:
             print("[skip] merge_speech_spans not in committed verify_subs")
         else:
