@@ -2774,12 +2774,70 @@ def synth_sfx(kind, sr=SR):
     return None
 
 
+# ---------- гейт фона в паузах озвучки (SRT-синхронизация) ----------
+# ``bot/verify_subs.py`` ищет границы речи в уже смикшированном треке через
+# ``silencedetect=noise=-35dB:d=0.15`` и считает паузу возле ``CHUNK_GAP``
+# границей реплики. Реплики озвучки склеены ровно этим тихим участком, поэтому
+# музыкальный фон внутри паузы обязан быть заметно НИЖЕ порога детектора: один
+# удар бочки, попавший в паузу, иначе снова затыкает разделитель, и граница
+# пропадает из проверки субтитров. Замер на текущем миксере с пресетом
+# ``documentary``: без гейта фон внутри паузы достигает -34.95 dBFS, то есть
+# на 0.05 dB ВЫШЕ порога, и разделители начинают теряться примерно от -33 dBFS.
+# ``BED_GAP_FLOOR`` опускает фон в паузе примерно до -48 dBFS (запас >12 dB) и
+# при этом оставляет полный уровень под голосом.
+BED_GAP_FLOOR = 0.20
+# ``duck`` — скользящее среднее |голос| вперёд на окно ``BED_ENVELOPE_WINDOW_S``,
+# поэтому оно обнуляется только когда окно целиком ушло в тишину. Низкая часть
+# растягивается вправо ровно на это окно, иначе гейт не покроет всю паузу.
+BED_GAP_DUCK_LEVEL = 0.05
+BED_ENVELOPE_WINDOW_S = 0.2
+
+
+def _dilate_right(mask, radius):
+    """Булево расширение True вправо на ``radius`` отсчётов (дилатация).
+
+    Каждый True в позиции j помечает ``[j, j + radius]``. Ширина наращивается
+    удвоением (с точным добором остатка), поэтому смещение выходит ровно
+    заданным при O(n log r) и без временного массива индексов размера n — в
+    длинном ролике это десятки миллионов сэмплов.
+    """
+    out = mask
+    moved = 0
+    while moved < radius:
+        step = min(max(moved, 1), radius - moved)
+        shifted = np.zeros_like(out)
+        if step < out.size:
+            shifted[step:] = out[:out.size - step]
+        out = out | shifted
+        moved += step
+    return out
+
+
+def _bed_gate(duck, sr=SR):
+    """1 там, где фон остаётся на полном уровне, 0 внутри паузы озвучки.
+
+    ``duck`` обнуляется только на ``CHUNK_GAP - BED_ENVELOPE_WINDOW_S`` начале
+    паузы (окно среднего смотрит вперёд), поэтому низкая часть растягивается
+    вправо на окно и восстанавливает настоящие границы паузы. Обратная
+    растяжка влево не делается намеренно: она съела бы начало речи, где фон
+    должен быть слышен.
+    """
+    env = np.clip(np.asarray(duck, dtype=np.float64), 0.0, 1.0)
+    low = env <= BED_GAP_DUCK_LEVEL
+    if not low.any() or low.all():
+        return np.ones(env.size, dtype=np.float64)  # тишины нет или голоса нет
+    radius = max(0, int(round(BED_ENVELOPE_WINDOW_S * sr)))
+    return np.where(_dilate_right(low, radius), 0.0, 1.0)
+
+
 def build_soundtrack(shots, bounds, seconds, bpm, pause_win=None, sr=SR,
                      bed=1.0, sfx_gain=1.0, duck=None):
     """Микс: тёмный beat-bed по сетке + SFX на склейках. Возвращает int16 mono.
 
     bed/sfx_gain — уровни из пресета стиля (M15: фон тихий, не мешает голосу).
-    duck — массив 0..1 (огибающая голоса): бит проседает под речью.
+    duck — массив 0..1 (огибающая голоса). Фон держится на полном уровне под
+    речью и опускается до ``BED_GAP_FLOOR`` в паузах озвучки, иначе удар бочки
+    внутри разделителя склеивает соседние реплики в один речевой участок.
     """
     if np is None:
         return None
@@ -2814,7 +2872,10 @@ def build_soundtrack(shots, bounds, seconds, bpm, pause_win=None, sr=SR,
         if m > 0 and i < n:
             mix[i:i + m] += sfx[:m].astype(np.float64) * 0.25 * sfx_gain  # S29: quieter
     if duck is not None and len(duck) == n:
-        mix *= (1.0 - 0.65 * np.clip(duck, 0.0, 1.0))
+        # Фон непрерывен под голосом и проваливается в паузах озвучки, поэтому
+        # кик и SFX на склейке не могут перекрыть разделитель реплик.
+        mix *= (BED_GAP_FLOOR
+                + (1.0 - BED_GAP_FLOOR) * _bed_gate(duck, sr))
     mix = np.clip(mix, -32768, 32767)
     return mix.astype(np.int16)
 
