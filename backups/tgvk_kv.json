@@ -1,6 +1,6 @@
 {
- "at": "2026-09-16T22:01:06.584Z",
- "day": "2026-09-17",
+ "at": "2026-09-26T22:00:30.899Z",
+ "day": "2026-09-27",
  "schedule": {
   "mode": "auto",
   "windows": [
@@ -236,14 +236,14 @@
   ],
   "counters": {},
   "meta": {
-   "scan_chunk": 2,
+   "scan_chunk": 3,
    "last_fallback": 1786212693282,
    "last_daily_audit": "2026-08-07",
    "last_scan": {
-    "at": "2026-09-16T22:00:56.069Z",
-    "chunk": 1,
+    "at": "2026-09-26T22:00:29.295Z",
+    "chunk": 2,
     "found": 0,
-    "took_ms": 6000
+    "took_ms": 3011
    }
   },
   "blacklist": {
@@ -2618,106 +2618,6 @@
  ],
  "day_metrics": [
   {
-   "date": "2026-08-19",
-   "posts": 2,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 10,
-   "vk_members": null,
-   "collected_at": "2026-08-19T18:30:34.153Z"
-  },
-  {
-   "date": "2026-08-20",
-   "posts": 2,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 10,
-   "vk_members": null,
-   "collected_at": "2026-08-20T18:30:50.246Z"
-  },
-  {
-   "date": "2026-08-21",
-   "posts": 2,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 10,
-   "vk_members": null,
-   "collected_at": "2026-08-21T18:30:09.581Z"
-  },
-  {
-   "date": "2026-08-22",
-   "posts": 2,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 10,
-   "vk_members": null,
-   "collected_at": "2026-08-22T18:35:03.070Z"
-  },
-  {
-   "date": "2026-08-23",
-   "posts": 0,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 10,
-   "vk_members": null,
-   "collected_at": "2026-08-23T15:05:03.618Z"
-  },
-  {
-   "date": "2026-08-24",
-   "posts": 2,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 10,
-   "vk_members": null,
-   "collected_at": "2026-08-24T18:30:05.166Z"
-  },
-  {
-   "date": "2026-08-25",
-   "posts": 2,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 10,
-   "vk_members": null,
-   "collected_at": "2026-08-25T18:30:04.479Z"
-  },
-  {
-   "date": "2026-08-26",
-   "posts": 1,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 10,
-   "vk_members": null,
-   "collected_at": "2026-08-26T18:30:04.522Z"
-  },
-  {
-   "date": "2026-08-27",
-   "posts": 3,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 10,
-   "vk_members": null,
-   "collected_at": "2026-08-27T18:30:04.120Z"
-  },
-  {
-   "date": "2026-08-28",
-   "posts": 2,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 10,
-   "vk_members": null,
-   "collected_at": "2026-08-28T18:30:05.702Z"
-  },
-  {
    "date": "2026-08-29",
    "posts": 0,
    "vk_views": 0,
@@ -2915,7 +2815,97 @@
    "vk_reposts": 0,
    "tg_members": 13,
    "vk_members": null,
-   "collected_at": "2026-09-16T22:01:01.303Z"
+   "collected_at": "2026-09-17T03:01:13.884Z"
+  },
+  {
+   "date": "2026-09-18",
+   "posts": 2,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-09-18T15:06:15.480Z"
+  },
+  {
+   "date": "2026-09-19",
+   "posts": 3,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-09-19T15:01:52.500Z"
+  },
+  {
+   "date": "2026-09-20",
+   "posts": 2,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-09-20T15:02:09.240Z"
+  },
+  {
+   "date": "2026-09-21",
+   "posts": 3,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-09-21T15:02:05.575Z"
+  },
+  {
+   "date": "2026-09-22",
+   "posts": 3,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-09-22T18:31:12.585Z"
+  },
+  {
+   "date": "2026-09-24",
+   "posts": 3,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-09-24T18:31:14.973Z"
+  },
+  {
+   "date": "2026-09-25",
+   "posts": 3,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-09-25T15:01:57.155Z"
+  },
+  {
+   "date": "2026-09-26",
+   "posts": 3,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-09-26T18:30:20.769Z"
+  },
+  {
+   "date": "2026-09-27",
+   "posts": 0,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-09-26T22:00:30.029Z"
   }
  ],
  "content_weights": {
