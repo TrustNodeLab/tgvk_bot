@@ -805,16 +805,18 @@ def _looks_like_successful_detector_log(text):
     ))
 
 
-def speech_bounds(ffmpeg, path, noise_db=-35.0, min_sil=0.12):
-    """Return the detected speech range as ``(onset, speech_duration)``.
+def _detected_speech_spans(ffmpeg, path, noise_db=-35.0, min_sil=0.12):
+    """Return the detected speech ISLANDS of one file as ``[(start, end)]``.
 
     ``silencedetect`` reports a silence start at its beginning and a silence end
     at its end.  Leading silence therefore ends the onset boundary, while an
-    unmatched final start marks the trailing boundary.  Internal pauses are
-    ignored.  A failed detector, malformed/empty output, or unknown duration
-    returns no speech range instead of fabricating one.  A successful detector
-    with metadata and no silence events means continuous speech for the whole
-    known decoded stream.
+    unmatched final start marks the trailing boundary.  Unlike the single range
+    :func:`speech_bounds` reports, the pauses INSIDE a TTS chunk are kept, so a
+    caller can lay cues on the parts of the chunk that actually carry sound.
+    A failed detector, malformed/empty output, or unknown duration returns no
+    islands instead of fabricating them.  A successful detector with metadata
+    and no silence events means continuous speech for the whole known decoded
+    stream, i.e. one island.
 
     ``mp3_duration``/the ffmpeg ``Duration:`` header may include an MP3 frame
     or container padding value.  The decoded ``time=`` value and a trailing
@@ -837,11 +839,11 @@ def speech_bounds(ffmpeg, path, noise_db=-35.0, min_sil=0.12):
         )
     except Exception as exc:  # noqa: BLE001 - do not invent a speech span
         print(f"[video] silencedetect не удался ({exc}) — речь не определена")
-        return 0.0, 0.0
+        return []
 
     if getattr(result, "returncode", 0) not in (0, None):
         print("[video] silencedetect завершился с ошибкой — речь не определена")
-        return 0.0, 0.0
+        return []
 
     err = getattr(result, "stderr", "") or ""
     if isinstance(err, bytes):
@@ -852,7 +854,7 @@ def speech_bounds(ffmpeg, path, noise_db=-35.0, min_sil=0.12):
     # A duration-looking line in detector text is not enough to turn an
     # unknown/zero-duration input into a speech span.
     if probed_duration is None or not math.isfinite(probed_duration) or probed_duration <= 0.0:
-        return 0.0, 0.0
+        return []
     duration_candidates = [probed_duration]
     if log_duration is not None:
         duration_candidates.append(log_duration)
@@ -860,22 +862,22 @@ def speech_bounds(ffmpeg, path, noise_db=-35.0, min_sil=0.12):
         duration_candidates.append(stream_duration)
     duration = min(duration_candidates)
     if not math.isfinite(duration) or duration <= 0.0:
-        return 0.0, 0.0
+        return []
 
     events, marker_present, malformed = _silence_events(err)
     if malformed:
-        return 0.0, 0.0
+        return []
     if not events:
         # No events plus a valid ffmpeg metadata header is the only positive
         # evidence of continuous speech.  Empty/malformed detector output is
         # deliberately not treated as speech.
         if marker_present or not _looks_like_successful_detector_log(err):
-            return 0.0, 0.0
-        return 0.0, float(duration)
+            return []
+        return [(0.0, float(duration))]
 
     intervals = _validated_silence_intervals(events)
     if intervals is None:
-        return 0.0, 0.0
+        return []
 
     # Prefer the decoded EOF when ffmpeg reports one.  If a final silence end is
     # within the bounded padding tolerance of the probe duration, it is the
@@ -890,7 +892,7 @@ def speech_bounds(ffmpeg, path, noise_db=-35.0, min_sil=0.12):
         decoded_eof = min(decoded_eof, max(0.0, last_timestamp))
     decoded_eof = max(0.0, min(decoded_eof, duration))
     if decoded_eof <= 0.0:
-        return 0.0, 0.0
+        return []
 
     intervals = [
         (max(0.0, min(decoded_eof, start)),
@@ -900,7 +902,7 @@ def speech_bounds(ffmpeg, path, noise_db=-35.0, min_sil=0.12):
     intervals = [(start, end) for start, end in intervals
                  if end > start and end > 0.0]
     if not intervals:
-        return 0.0, 0.0
+        return []
 
     # A leading interval consumes the initial silence.  If it reaches EOF, the
     # file is positively all-silent and no speech may be returned.
@@ -908,11 +910,11 @@ def speech_bounds(ffmpeg, path, noise_db=-35.0, min_sil=0.12):
     if intervals[0][0] <= 1e-3:
         leading_end = intervals[0][1]
         if leading_end <= 1e-3 or leading_end >= decoded_eof - 1e-3:
-            return 0.0, 0.0
+            return []
         onset = min(decoded_eof, max(0.0, leading_end))
 
     # Only the final interval can be trailing silence.  Internal pauses do not
-    # move the speech boundary.
+    # move the speech boundary, and do split the island list.
     trailing_start = None
     start, end = intervals[-1]
     if start > onset + 1e-3 and end >= decoded_eof - 1e-3:
@@ -920,8 +922,65 @@ def speech_bounds(ffmpeg, path, noise_db=-35.0, min_sil=0.12):
     offset = min(decoded_eof, max(0.0, trailing_start)) \
         if trailing_start is not None else decoded_eof
     if offset <= onset:
+        return []
+
+    # Every interval strictly inside ``[onset, offset]`` is a pause, so it cuts
+    # the speech into consecutive islands.  The list is chronological by
+    # construction: ``intervals`` is, and clipping is monotonic.
+    islands = []
+    cursor = onset
+    for silence_start, silence_end in intervals:
+        if silence_start < onset - 1e-9 or silence_end > offset + 1e-9:
+            continue
+        if silence_start > cursor:
+            islands.append((cursor, min(silence_start, offset)))
+        cursor = max(cursor, min(silence_end, offset))
+    if offset > cursor:
+        islands.append((cursor, offset))
+    return [(lo, hi) for lo, hi in islands if hi > lo]
+
+
+def speech_bounds(ffmpeg, path, noise_db=-35.0, min_sil=0.12):
+    """Return the detected speech range as ``(onset, speech_duration)``.
+
+    This is the outer envelope of :func:`_detected_speech_spans`: the first
+    sound in the file and the last one, with the pauses inside the file ignored.
+    Callers that place cues must use the islands instead, otherwise a cue can
+    be laid across a pause -- see :func:`word_cues_across_spans`.
+    """
+    spans = _detected_speech_spans(ffmpeg, path, noise_db, min_sil)
+    if not spans:
         return 0.0, 0.0
-    return float(onset), float(offset - onset)
+    return spans[0][0], spans[-1][1] - spans[0][0]
+
+
+def _chunk_spans(spans, audio_cursor, file_dur):
+    """Move file-local detected islands onto the assembled audio timeline.
+
+    ``spans`` come from :func:`_detected_speech_spans`, i.e. they are relative
+    to the TTS file itself.  The assembled voice track places that file at
+    ``audio_cursor``, and the chunk cannot reach past ``audio_cursor + file_dur``.
+    A structurally unusable input yields no islands, which makes the caller
+    emit no cues for the chunk exactly as an undetected chunk does.
+    """
+    base = _finite_float(audio_cursor)
+    duration = _finite_float(file_dur)
+    if base is None or duration is None or duration <= 0.0:
+        return []
+    base = max(0.0, base)
+    limit = base + max(0.0, duration)
+    clipped = []
+    for span in list(spans or []):
+        try:
+            start = base + max(0.0, float(span[0]))
+            end = base + max(0.0, float(span[1]))
+        except (IndexError, KeyError, TypeError, ValueError, OverflowError):
+            return []
+        start = min(limit, max(base, start))
+        end = min(limit, max(base, end))
+        if end > start:
+            clipped.append((start, end))
+    return clipped
 
 
 def _srt_ts(sec):
@@ -972,35 +1031,17 @@ def split_cues(text, start, end, max_chars=42, max_lines=2, min_dur=1.0):
     return cues
 
 
-def word_cues(text, start, end, min_dur=WORD_CUE_MIN_DUR):
-    """Строит один SRT-таймкод на каждое слово внутри речевого спана.
+def _cue_tokens(text):
+    """Split cue text into the tokens TTS actually voices, or ``None``.
 
-    Полноценный ASR здесь намеренно не нужен: TTS уже даёт нам реальный
-    диапазон речи через :func:`speech_bounds`, а внутри этого диапазона
-    длительности распределяются пропорционально длине слов.  Такой
-    fallback не требует тяжёлой модели, детерминирован и не теряет
-    пунктуацию — исходный токен возвращается в ``text`` без очистки.
-
-    ``min_dur`` — желаемая нижняя граница одного cue.  Если слов больше, чем
-    помещается в интервал при этой границе, она пропорционально уменьшается,
-    но остаётся положительной.  Границы вычисляются точной дробной
-    арифметикой и лишь затем приводятся к float, поэтому округление не
-    создаёт нулевых или перекрывающихся cues.
+    A plain TTS voice gives punctuation no token of its own.  If the input
+    still contains ``слово ,``, the mark is joined to the word so that no
+    "spoken word" is invented out of a comma while the punctuation survives in
+    ``text``.  ``None`` means the text has no speakable token at all.
     """
     normalized = re.sub(r"\s+", " ", str(text or "").strip())
     if not normalized:
-        return []
-    try:
-        start = float(start)
-        end = float(end)
-    except (TypeError, ValueError):
-        return []
-    if not (math.isfinite(start) and math.isfinite(end) and end > start):
-        return []
-
-    # Обычный TTS не оставляет отдельные токены для знаков препинания.
-    # Если вход всё же содержит ``слово ,``, присоединяем знак к слову,
-    # чтобы не создавать «голос» из символа, но не потерять punctuation.
+        return None
     words, pending = [], ""
     for token in normalized.split(" "):
         if any(ch.isalnum() for ch in token):
@@ -1014,27 +1055,32 @@ def word_cues(text, start, end, min_dur=WORD_CUE_MIN_DUR):
         if words:
             words[-1] += pending
         else:
-            return []
-    if not words:
-        return []
+            return None
+    return words or None
 
+
+def _normalised_min_dur(min_dur):
+    """Coerce a requested minimum cue duration to a usable non-negative float."""
     try:
         min_dur = float(min_dur)
     except (TypeError, ValueError):
         min_dur = 0.0
-    if not math.isfinite(min_dur) or min_dur < 0.0:
-        min_dur = 0.0
+    return min_dur if math.isfinite(min_dur) and min_dur >= 0.0 else 0.0
 
-    # Fraction не теряет короткий интервал при округлении до миллисекунд.
-    # from_float() также сохраняет именно те границы, которые видит вызывающий
-    # код, поэтому итоговые cue всегда заканчиваются его точным ``end``.
+
+def _weighted_boundaries(start, end, weights, min_dur):
+    """Exact, strictly increasing cue boundaries for weighted tokens.
+
+    ``Fraction`` не теряет короткий интервал при округлении до миллисекунд.
+    from_float() также сохраняет именно те границы, которые видит вызывающий
+    код, поэтому итоговые cue всегда заканчиваются его точным ``end``.
+    """
     start_exact = Fraction.from_float(start)
     end_exact = Fraction.from_float(end)
     span = end_exact - start_exact
-    count = len(words)
+    count = len(weights)
     minimum = min(Fraction.from_float(min_dur), span / count)
     remaining = span - minimum * count
-    weights = [max(1, len(word)) for word in words]
     total_weight = sum(weights)
     durations = [
         minimum + remaining * weight / total_weight
@@ -1071,16 +1117,157 @@ def word_cues(text, start, end, min_dur=WORD_CUE_MIN_DUR):
         and all(left < right
                 for left, right in zip(float_boundaries, float_boundaries[1:]))
     )
-    boundaries = float_boundaries if boundaries_are_float else exact_boundaries
+    return float_boundaries if boundaries_are_float else exact_boundaries
 
+
+def _cues_from_tokens(tokens, boundaries, start, end):
+    """Pair every token with the interval the boundaries give it."""
+    count = len(tokens)
     cues = []
-    for i, (word, cue_end) in enumerate(zip(words, boundaries[1:])):
+    for i, (word, cue_end) in enumerate(zip(tokens, boundaries[1:])):
         cue_start = boundaries[i]
         if i == 0:
             cue_start = start
         if i == count - 1:
             cue_end = end
         cues.append({"start": cue_start, "end": cue_end, "text": word})
+    return cues
+
+
+def word_cues(text, start, end, min_dur=WORD_CUE_MIN_DUR):
+    """Строит один SRT-таймкод на каждое слово внутри речевого спана.
+
+    Полноценный ASR здесь намеренно не нужен: TTS уже даёт нам реальный
+    диапазон речи через :func:`speech_bounds`, а внутри этого диапазона
+    длительности распределяются пропорционально длине слов.  Такой
+    fallback не требует тяжёлой модели, детерминирован и не теряет
+    пунктуацию — исходный токен возвращается в ``text`` без очистки.
+
+    ``min_dur`` — желаемая нижняя граница одного cue.  Если слов больше, чем
+    помещается в интервал при этой границе, она пропорционально уменьшается,
+    но остаётся положительной.  Границы вычисляются точной дробной
+    арифметикой и лишь затем приводятся к float, поэтому округление не
+    создаёт нулевых или перекрывающихся cues.
+
+    ``start``/``end`` — один непрерывный речевой спан.  Если речь внутри
+    файла прерывается паузами, используйте :func:`word_cues_across_spans`.
+    """
+    tokens = _cue_tokens(text)
+    if tokens is None:
+        return []
+    try:
+        start = float(start)
+        end = float(end)
+    except (TypeError, ValueError):
+        return []
+    if not (math.isfinite(start) and math.isfinite(end) and end > start):
+        return []
+
+    weights = [max(1, len(word)) for word in tokens]
+    boundaries = _weighted_boundaries(start, end, weights,
+                                      _normalised_min_dur(min_dur))
+    return _cues_from_tokens(tokens, boundaries, start, end)
+
+
+def _usable_speech_spans(spans, min_len=WORD_CUE_MIN_DUR):
+    """Normalise detected speech islands, or ``[]`` if the input is unusable.
+
+    A detected island shorter than one visible cue window cannot host a cue of
+    its own and is dropped.  Anything structurally wrong -- non-numeric bounds,
+    reversed or overlapping islands -- yields ``[]`` so the caller falls back to
+    the single-span behaviour instead of inventing a timeline.
+    """
+    cleaned = []
+    for span in list(spans or []):
+        try:
+            start, end = float(span[0]), float(span[1])
+        except (IndexError, KeyError, TypeError, ValueError, OverflowError):
+            return []
+        if not (math.isfinite(start) and math.isfinite(end)) or end < start:
+            return []
+        if end - start >= min_len:
+            cleaned.append((start, end))
+    for previous, current in zip(cleaned, cleaned[1:]):
+        if current[0] < previous[1] - 1e-9:
+            return []
+    return cleaned
+
+
+def _tokens_per_span(token_count, spans):
+    """Split ``token_count`` tokens into one contiguous block per island.
+
+    Blocks are proportional to island duration, every island keeps at least one
+    token while tokens remain, and the blocks stay in text order so the cues are
+    monotonic.  When there are more islands than tokens each token takes one
+    island -- the longest ones -- because a cue stretched across a pause is
+    exactly what the verifier rejects.
+    """
+    durations = [end - start for start, end in spans]
+    total = sum(durations)
+    if total <= 0.0:
+        return [token_count] + [0] * (len(spans) - 1)
+    if len(spans) >= token_count:
+        longest = sorted(range(len(spans)), key=lambda i: durations[i],
+                         reverse=True)[:token_count]
+        keep = set(longest)
+        return [1 if index in keep else 0 for index in range(len(spans))]
+
+    counts = []
+    remaining = token_count
+    left_duration = total
+    for index, duration in enumerate(durations):
+        islands_left = len(spans) - index
+        if islands_left == 1:
+            share = remaining
+        else:
+            share = int(round(remaining * duration / left_duration))
+            share = max(1, min(share, remaining - (islands_left - 1)))
+        counts.append(share)
+        remaining -= share
+        left_duration -= duration
+    return counts
+
+
+def word_cues_across_spans(text, spans, min_dur=WORD_CUE_MIN_DUR):
+    """Build one word cue per token, laid across the DETECTED speech islands.
+
+    :func:`word_cues` spreads a chunk's tokens evenly over one measured range,
+    which assumes the chunk speaks continuously.  TTS does not: a heading or a
+    list marker gets its own beat, and ``silencedetect`` then finds a pause of
+    0.7 s or more inside the chunk.  The uniform spread has no idea where that
+    pause is, so whichever cue happens to span it gets an end inside a silence
+    -- and ``bot/verify_subs.py`` counts that cue as ``вне речи`` and fails the
+    run.  Measured on the real run-4 artifact that accounted for all 7 failures.
+
+    Here the chunk's detected islands get a share of the tokens proportional to
+    their duration, and each island hosts its own block, so every cue lies
+    inside one continuous island of sound.  A missing, empty or malformed
+    detection result yields no cues instead of raising; when the islands cannot
+    be divided the previous uniform spread is used unchanged.
+    """
+    tokens = _cue_tokens(text)
+    islands = _usable_speech_spans(spans)
+    if tokens is None or not islands:
+        return []
+
+    minimum = _normalised_min_dur(min_dur)
+    counts = _tokens_per_span(len(tokens), islands)
+    cues = []
+    cursor = 0
+    for (start, end), count in zip(islands, counts):
+        if count <= 0:
+            continue
+        block = tokens[cursor:cursor + count]
+        cursor += count
+        if not block:
+            continue
+        boundaries = _weighted_boundaries(
+            start, end, [max(1, len(token)) for token in block], minimum)
+        cues.extend(_cues_from_tokens(block, boundaries, start, end))
+    if cursor < len(tokens):
+        # Defensive: islands that could not absorb every token fall back to the
+        # previous uniform spread rather than dropping a word from the SRT.
+        return word_cues(text, islands[0][0], islands[-1][1], min_dur=min_dur)
     return cues
 
 
@@ -1456,20 +1643,19 @@ def make_voiceover_sections(ffmpeg, sections, voice, tmpdir, lead_in=None):
     audio_cursor = lead_s
     for entry_index, (idx, file_path, section, file_dur) in enumerate(valid_entries):
         try:
-            onset, speech_dur = speech_bounds(ffmpeg, file_path)
-            onset = _finite_float(onset)
-            speech_dur = _finite_float(speech_dur)
+            detected = _detected_speech_spans(ffmpeg, file_path)
         except Exception:  # noqa: BLE001 - no speech evidence
-            onset, speech_dur = None, None
-        onset = 0.0 if onset is None else max(0.0, onset)
-        speech_dur = 0.0 if speech_dur is None else max(0.0, speech_dur)
-        onset = min(onset, file_dur)
-        speech_dur = min(speech_dur, max(0.0, file_dur - onset))
-        speech_start = audio_cursor + onset
-        speech_end = speech_start + speech_dur
+            detected = []
+        chunk_spans = _chunk_spans(detected, audio_cursor, file_dur)
+        speech_start = chunk_spans[0][0] if chunk_spans else audio_cursor
+        speech_end = chunk_spans[-1][1] if chunk_spans else audio_cursor
         text = str(section.get("voice") or section.get("body") or "")
-        if speech_end > speech_start and text.strip():
-            section_cues = word_cues(text, speech_start, speech_end)
+        if chunk_spans and text.strip():
+            # One token per cue, spread across the chunk's DETECTED speech
+            # islands.  A uniform spread over the chunk's outer bounds lays cues
+            # across the pause TTS takes for a heading or a list marker, and
+            # bot/verify_subs.py then reports those cues as outside the speech.
+            section_cues = word_cues_across_spans(text, chunk_spans)
             for cue in section_cues:
                 # Preserve the source section on every word cue.  The field is
                 # ignored by SRT serialization but is the identity bridge for
