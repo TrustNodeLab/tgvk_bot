@@ -69,6 +69,7 @@ jobs:
           python -m unittest tests.test_long_profiles
           python -m unittest tests.test_video_long_profile
           python -m unittest tests.test_digest_video_dispatch
+          python -m unittest tests.test_long_bed_subtitle_gate
 
       - name: Start VoiceStudio (XTTS clone ruslan p-2)
         run: |

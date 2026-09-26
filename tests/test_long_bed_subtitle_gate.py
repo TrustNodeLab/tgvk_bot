@@ -202,13 +202,14 @@ class LongBedSubtitleGateTests(unittest.TestCase):
             spans, duration = verify_subs.speech_spans(wav, ff)
 
         cues = build_cues(self.measured["speech_spans"])
-        # Bound up front: the committed ``verify_subs`` has neither helper, and
-        # the reporting/assertions below must stay well defined when they are
-        # skipped.  ``merged`` falls back to the raw detected islands and the
-        # two error lists stay empty, so the checks that the committed verifier
-        # cannot perform do not turn into failures.
-        merged = spans
-        uncovered, timeline_errors = [], []
+        # Bound up front: the committed ``verify_subs`` has neither helper, so
+        # these three locals are initialised to honest placeholders *before*
+        # the guards.  ``None`` means "this check did not run" and is reported
+        # as ``n/a`` below -- it is never asserted on, and it never becomes a
+        # silent pass.  The decisive gap gate further down stays unconditional.
+        merged = None
+        uncovered = None
+        timeline_errors = None
         if _merge_spans is None:
             print("[skip] merge_speech_spans not in committed verify_subs")
         else:
@@ -218,14 +219,16 @@ class LongBedSubtitleGateTests(unittest.TestCase):
         else:
             uncovered, timeline_errors = _validate_cues(cues, merged)
         raw_gaps = [spans[i + 1][0] - spans[i][1] for i in range(len(spans) - 1)]
-        print("\n[gate] duration=%.3fs cues=%d raw_islands=%d merged_islands=%d"
-              % (duration, len(cues), len(spans), len(merged)))
+        print("\n[gate] duration=%.3fs cues=%d raw_islands=%d merged_islands=%s"
+              % (duration, len(cues), len(spans),
+                 "n/a" if merged is None else len(merged)))
         print("[gate] bed_peak=%.2f dBFS bed_in_gap_peak=%.2f dBFS (floor %.2f)"
               % (peak_dbfs(self.measured["bed"]),
                  dbfs(self.measured["bed_gap_peak"]), DETECTOR_FLOOR_DBFS))
         print("[gate] raw gaps=%s" % ["%.3f" % g for g in raw_gaps])
-        print("[gate] uncovered=%s" % (uncovered,))
-        print("[gate] timeline_errors=%s" % (timeline_errors,))
+        print("[gate] uncovered=%s" % ("n/a" if uncovered is None else uncovered,))
+        print("[gate] timeline_errors=%s"
+              % ("n/a" if timeline_errors is None else timeline_errors,))
 
         self.assertLessEqual(
             dbfs(self.measured["bed_gap_peak"]),
@@ -246,9 +249,18 @@ class LongBedSubtitleGateTests(unittest.TestCase):
                     for s, e in detected),
                 "chunk gap %.3f..%.3f was bridged by the bed; detected silences %s"
                 % (lo, hi, ["%.3f..%.3f" % (s, e) for s, e in detected]))
-        self.assertEqual(uncovered, [], "every cue must sit inside a speech island")
-        self.assertEqual(timeline_errors, [],
-                         "every chunk separator must stay a real audio boundary")
+        # Helper-dependent checks: only meaningful where the helper exists, and
+        # skipped with a printed reason elsewhere instead of asserting on the
+        # ``None`` placeholder.
+        if uncovered is None:
+            print("[skip] cue-coverage check needs verify_subs.validate_cues")
+        else:
+            self.assertEqual(uncovered, [], "every cue must sit inside a speech island")
+        if timeline_errors is None:
+            print("[skip] timeline check needs verify_subs.validate_cues")
+        else:
+            self.assertEqual(timeline_errors, [],
+                             "every chunk separator must stay a real audio boundary")
 
     def test_cut_sfx_at_a_chunk_edge_cannot_bridge_the_gap(self):
         """A cut effect starting on the gap edge is the worst case for the bed."""
