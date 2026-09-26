@@ -96,6 +96,10 @@ STYLES = {
         "bpm": 72,
         "voice_over": True,
         "sfx": False,
+        # Keep the bed and effects below narration; explicit values avoid the
+        # long mixer's full-gain fallback and preserve speech boundaries.
+        "bed_level": 0.12,
+        "sfx_level": 0.08,
         "max_text_lines": 3,
         "forbidden": (),
     },
