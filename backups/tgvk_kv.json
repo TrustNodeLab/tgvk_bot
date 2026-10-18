@@ -1,6 +1,6 @@
 {
- "at": "2026-10-15T22:00:49.442Z",
- "day": "2026-10-16",
+ "at": "2026-10-18T22:00:27.659Z",
+ "day": "2026-10-19",
  "schedule": {
   "mode": "auto",
   "windows": [
@@ -236,14 +236,14 @@
   ],
   "counters": {},
   "meta": {
-   "scan_chunk": 0,
+   "scan_chunk": 3,
    "last_fallback": 1786212693282,
    "last_daily_audit": "2026-08-07",
    "last_scan": {
-    "at": "2026-10-15T22:00:47.867Z",
-    "chunk": 3,
+    "at": "2026-10-18T22:00:21.846Z",
+    "chunk": 2,
     "found": 0,
-    "took_ms": 3944
+    "took_ms": 5796
    }
   },
   "blacklist": {
@@ -2618,36 +2618,6 @@
  ],
  "day_metrics": [
   {
-   "date": "2026-09-17",
-   "posts": 0,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 13,
-   "vk_members": null,
-   "collected_at": "2026-09-17T03:01:13.884Z"
-  },
-  {
-   "date": "2026-09-18",
-   "posts": 2,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 13,
-   "vk_members": null,
-   "collected_at": "2026-09-18T15:06:15.480Z"
-  },
-  {
-   "date": "2026-09-19",
-   "posts": 3,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 13,
-   "vk_members": null,
-   "collected_at": "2026-09-19T15:01:52.500Z"
-  },
-  {
    "date": "2026-09-20",
    "posts": 2,
    "vk_views": 0,
@@ -2899,13 +2869,43 @@
   },
   {
    "date": "2026-10-16",
+   "posts": 2,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-10-16T18:30:43.545Z"
+  },
+  {
+   "date": "2026-10-17",
+   "posts": 2,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-10-17T18:30:16.052Z"
+  },
+  {
+   "date": "2026-10-18",
+   "posts": 1,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-10-18T18:30:15.243Z"
+  },
+  {
+   "date": "2026-10-19",
    "posts": 0,
    "vk_views": 0,
    "vk_likes": 0,
    "vk_reposts": 0,
    "tg_members": 13,
    "vk_members": null,
-   "collected_at": "2026-10-15T22:00:48.647Z"
+   "collected_at": "2026-10-18T22:00:24.657Z"
   }
  ],
  "content_weights": {
