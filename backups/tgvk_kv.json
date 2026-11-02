@@ -1,6 +1,6 @@
 {
- "at": "2026-10-30T22:00:55.931Z",
- "day": "2026-10-31",
+ "at": "2026-11-02T22:00:42.579Z",
+ "day": "2026-11-03",
  "schedule": {
   "mode": "auto",
   "windows": [
@@ -236,12 +236,12 @@
   ],
   "counters": {},
   "meta": {
-   "scan_chunk": 2,
+   "scan_chunk": 3,
    "last_fallback": 1786212693282,
    "last_daily_audit": "2026-08-07",
    "last_scan": {
-    "at": "2026-10-30T22:00:50.718Z",
-    "chunk": 1,
+    "at": "2026-11-02T22:00:32.005Z",
+    "chunk": 2,
     "found": 0,
     "took_ms": 6000
    }
@@ -2618,36 +2618,6 @@
  ],
  "day_metrics": [
   {
-   "date": "2026-10-02",
-   "posts": 3,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 13,
-   "vk_members": null,
-   "collected_at": "2026-10-02T18:30:18.708Z"
-  },
-  {
-   "date": "2026-10-03",
-   "posts": 1,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 13,
-   "vk_members": null,
-   "collected_at": "2026-10-03T18:30:12.921Z"
-  },
-  {
-   "date": "2026-10-04",
-   "posts": 0,
-   "vk_views": 0,
-   "vk_likes": 0,
-   "vk_reposts": 0,
-   "tg_members": 13,
-   "vk_members": null,
-   "collected_at": "2026-10-04T18:30:16.283Z"
-  },
-  {
    "date": "2026-10-05",
    "posts": 0,
    "vk_views": 0,
@@ -2909,13 +2879,43 @@
   },
   {
    "date": "2026-10-31",
+   "posts": 2,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-10-31T17:00:41.824Z"
+  },
+  {
+   "date": "2026-11-01",
    "posts": 0,
    "vk_views": 0,
    "vk_likes": 0,
    "vk_reposts": 0,
    "tg_members": 13,
    "vk_members": null,
-   "collected_at": "2026-10-30T22:00:53.130Z"
+   "collected_at": "2026-11-01T16:00:49.315Z"
+  },
+  {
+   "date": "2026-11-02",
+   "posts": 2,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-11-02T17:00:41.019Z"
+  },
+  {
+   "date": "2026-11-03",
+   "posts": 0,
+   "vk_views": 0,
+   "vk_likes": 0,
+   "vk_reposts": 0,
+   "tg_members": 13,
+   "vk_members": null,
+   "collected_at": "2026-11-02T22:00:37.205Z"
   }
  ],
  "content_weights": {
